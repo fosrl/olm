@@ -32,10 +32,17 @@ func (s *olmService) Execute(args []string, r <-chan svc.ChangeRequest, changes 
 	const cmdsAccepted = svc.AcceptStop | svc.AcceptShutdown
 	changes <- svc.Status{State: svc.StartPending}
 
+	s.elog.Info(1, "Service Execute called, starting main logic")
+
 	// Start the main olm functionality
-	go s.runOlm()
+	olmDone := make(chan struct{})
+	go func() {
+		s.runOlm()
+		close(olmDone)
+	}()
 
 	changes <- svc.Status{State: svc.Running, Accepts: cmdsAccepted}
+	s.elog.Info(1, "Service status set to Running")
 
 	for {
 		select {
@@ -46,11 +53,24 @@ func (s *olmService) Execute(args []string, r <-chan svc.ChangeRequest, changes 
 			case svc.Stop, svc.Shutdown:
 				s.elog.Info(1, "Service stopping")
 				changes <- svc.Status{State: svc.StopPending}
-				s.stop()
+				if s.stop != nil {
+					s.stop()
+				}
+				// Wait for main logic to finish or timeout
+				select {
+				case <-olmDone:
+					s.elog.Info(1, "Main logic finished gracefully")
+				case <-time.After(10 * time.Second):
+					s.elog.Info(1, "Timeout waiting for main logic to finish")
+				}
 				return false, 0
 			default:
 				s.elog.Error(1, fmt.Sprintf("Unexpected control request #%d", c))
 			}
+		case <-olmDone:
+			s.elog.Info(1, "Main olm logic completed, stopping service")
+			changes <- svc.Status{State: svc.StopPending}
+			return false, 0
 		}
 	}
 }
@@ -59,21 +79,31 @@ func (s *olmService) runOlm() {
 	// Create a context that can be cancelled when the service stops
 	s.ctx, s.stop = context.WithCancel(context.Background())
 
-	// Run the main olm logic in a separate goroutine
+	// Setup logging for service mode
+	setupWindowsEventLog()
+	s.elog.Info(1, "Starting Olm main logic")
+
+	// Run the main olm logic and wait for it to complete
+	done := make(chan struct{})
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				s.elog.Error(1, fmt.Sprintf("Olm panic: %v", r))
 			}
+			close(done)
 		}()
 
 		// Call the main olm function
 		runOlmMain(s.ctx)
 	}()
 
-	// Wait for context cancellation
-	<-s.ctx.Done()
-	s.elog.Info(1, "Olm service context cancelled")
+	// Wait for either context cancellation or main logic completion
+	select {
+	case <-s.ctx.Done():
+		s.elog.Info(1, "Olm service context cancelled")
+	case <-done:
+		s.elog.Info(1, "Olm main logic completed")
+	}
 }
 
 func runService(name string, isDebug bool) {
@@ -82,9 +112,11 @@ func runService(name string, isDebug bool) {
 
 	if isDebug {
 		elog = debug.New(name)
+		fmt.Printf("Starting %s service in debug mode\n", name)
 	} else {
 		elog, err = eventlog.Open(name)
 		if err != nil {
+			fmt.Printf("Failed to open event log: %v\n", err)
 			return
 		}
 	}
@@ -100,9 +132,15 @@ func runService(name string, isDebug bool) {
 	err = run(name, service)
 	if err != nil {
 		elog.Error(1, fmt.Sprintf("%s service failed: %v", name, err))
+		if isDebug {
+			fmt.Printf("Service failed: %v\n", err)
+		}
 		return
 	}
 	elog.Info(1, fmt.Sprintf("%s service stopped", name))
+	if isDebug {
+		fmt.Printf("%s service stopped\n", name)
+	}
 }
 
 func installService() error {
@@ -292,18 +330,25 @@ func getServiceStatus() (string, error) {
 }
 
 func isWindowsService() bool {
-	interactive, err := svc.IsWindowsService()
-	return err == nil && interactive
+	isWindowsService, err := svc.IsWindowsService()
+	return err == nil && isWindowsService
 }
 
 func setupWindowsEventLog() {
 	// Create log directory if it doesn't exist
 	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "Olm", "logs")
-	os.MkdirAll(logDir, 0755)
+	err := os.MkdirAll(logDir, 0755)
+	if err != nil {
+		fmt.Printf("Failed to create log directory: %v\n", err)
+		return
+	}
 
 	logFile := filepath.Join(logDir, "olm.log")
 	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err == nil {
-		log.SetOutput(file)
+	if err != nil {
+		fmt.Printf("Failed to open log file: %v\n", err)
+		return
 	}
+	log.SetOutput(file)
+	log.Printf("Olm service logging initialized - log file: %s", logFile)
 }

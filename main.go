@@ -29,17 +29,12 @@ func main() {
 	// Check if we're running as a Windows service
 	if isWindowsService() {
 		runService("OlmWireguardService", false)
-		fmt.Println("Service started successfully")
+		fmt.Println("Running as Windows service")
 		return
 	}
 
 	// Handle service management commands on Windows
-	// print the args
-	for i, arg := range os.Args {
-		fmt.Printf("Arg %d: %s\n", i, arg)
-	}
 	if runtime.GOOS == "windows" && len(os.Args) > 1 {
-		fmt.Println("Handling Windows service management command:", os.Args[1])
 		switch os.Args[1] {
 		case "install":
 			err := installService()
@@ -107,6 +102,9 @@ func main() {
 }
 
 func runOlmMain(ctx context.Context) {
+	// Log that we've entered the main function
+	fmt.Printf("runOlmMain() called - starting main logic\n")
+
 	// Setup Windows event logging if on Windows
 	if runtime.GOOS == "windows" {
 		setupWindowsEventLog()
@@ -146,6 +144,9 @@ func runOlmMain(ctx context.Context) {
 	httpAddr = os.Getenv("HTTP_ADDR")
 	pingIntervalStr := os.Getenv("PING_INTERVAL")
 	pingTimeoutStr := os.Getenv("PING_TIMEOUT")
+
+	// Debug: Print all environment variables we're checking
+	fmt.Printf("Environment variables: PANGOLIN_ENDPOINT='%s', OLM_ID='%s', OLM_SECRET='%s'\n", endpoint, id, secret)
 
 	if endpoint == "" {
 		flag.StringVar(&endpoint, "endpoint", "", "Endpoint of your Pangolin server")
@@ -207,6 +208,9 @@ func runOlmMain(ctx context.Context) {
 
 	flag.Parse()
 
+	// Debug: Print final values after flag parsing
+	fmt.Printf("After flag parsing: endpoint='%s', id='%s', secret='%s'\n", endpoint, id, secret)
+
 	if *version {
 		fmt.Println("Olm version replaceme")
 		os.Exit(0)
@@ -215,6 +219,11 @@ func runOlmMain(ctx context.Context) {
 	logger.Init()
 	loggerLevel := parseLogLevel(logLevel)
 	logger.GetLogger().SetLevel(parseLogLevel(logLevel))
+
+	// Log startup information
+	logger.Info("Olm service starting...")
+	logger.Info("Parameters: endpoint='%s', id='%s', secret='%s'", endpoint, id, secret)
+	logger.Info("HTTP enabled: %v, HTTP addr: %s", enableHTTP, httpAddr)
 
 	// Handle test mode
 	if testMode {
@@ -264,10 +273,55 @@ func runOlmMain(ctx context.Context) {
 			}
 		}()
 	}
+
+	// Check if required parameters are missing and provide helpful guidance
+	missingParams := []string{}
+	if id == "" {
+		missingParams = append(missingParams, "id (use -id flag or OLM_ID env var)")
+	}
+	if secret == "" {
+		missingParams = append(missingParams, "secret (use -secret flag or OLM_SECRET env var)")
+	}
+	if endpoint == "" {
+		missingParams = append(missingParams, "endpoint (use -endpoint flag or PANGOLIN_ENDPOINT env var)")
+	}
+
+	if len(missingParams) > 0 {
+		logger.Error("Missing required parameters: %v", missingParams)
+		logger.Error("Either provide them as command line flags or set as environment variables")
+		fmt.Printf("ERROR: Missing required parameters: %v\n", missingParams)
+		fmt.Printf("Please provide them as command line flags or set as environment variables\n")
+		if !enableHTTP {
+			logger.Error("HTTP server is disabled, cannot receive parameters via API")
+			fmt.Printf("HTTP server is disabled, cannot receive parameters via API\n")
+			return
+		}
+	}
+
 	// wait until we have a client id and secret and endpoint
+	waitCount := 0
 	for id == "" || secret == "" || endpoint == "" {
-		logger.Debug("Waiting for client ID, secret, and endpoint...")
-		time.Sleep(1 * time.Second)
+		select {
+		case <-ctx.Done():
+			logger.Info("Context cancelled while waiting for credentials")
+			return
+		default:
+			missing := []string{}
+			if id == "" {
+				missing = append(missing, "id")
+			}
+			if secret == "" {
+				missing = append(missing, "secret")
+			}
+			if endpoint == "" {
+				missing = append(missing, "endpoint")
+			}
+			waitCount++
+			if waitCount%10 == 1 { // Log every 10 seconds instead of every second
+				logger.Debug("Waiting for missing parameters: %v (waiting %d seconds)", missing, waitCount)
+			}
+			time.Sleep(1 * time.Second)
+		}
 	}
 
 	// parse the mtu string into an int
@@ -748,4 +802,7 @@ func runOlmMain(ctx context.Context) {
 	if dev != nil {
 		dev.Close()
 	}
+
+	logger.Info("runOlmMain() exiting")
+	fmt.Printf("runOlmMain() exiting\n")
 }
