@@ -373,12 +373,7 @@ func debugService(args []string) error {
 		}
 	}
 
-	// Get the log file path
-	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "Olm", "logs")
-	logFile := filepath.Join(logDir, "olm.log")
-
 	fmt.Printf("Starting service in debug mode...\n")
-	fmt.Printf("Log file: %s\n", logFile)
 
 	// Start the service
 	err := startService([]string{}) // Pass empty args since we already saved them
@@ -390,10 +385,12 @@ func debugService(args []string) error {
 	fmt.Printf("================================================================================\n")
 
 	// Watch the log file
-	return watchLogFile(logFile)
+	return watchLogFile(true)
 }
 
-func watchLogFile(logPath string) error {
+func watchLogFile(end bool) error {
+	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "Olm", "logs")
+	logPath := filepath.Join(logDir, "olm.log")
 	// Open the log file
 	file, err := os.Open(logPath)
 	if err != nil {
@@ -422,8 +419,10 @@ func watchLogFile(logPath string) error {
 		case <-sigCh:
 			fmt.Printf("\n\nStopping log watch...\n")
 			// stop the service if needed
-			if err := stopService(); err != nil {
-				fmt.Printf("Failed to stop service: %v\n", err)
+			if end {
+				if err := stopService(); err != nil {
+					fmt.Printf("Failed to stop service: %v\n", err)
+				}
 			}
 			fmt.Printf("Log watch stopped.\n")
 			return nil

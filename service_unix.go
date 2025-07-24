@@ -44,3 +44,7 @@ func runService(name string, isDebug bool, args []string) {
 func setupWindowsEventLog() {
 	// No-op on non-Windows platforms
 }
+
+func watchLogFile(end bool) error {
+	return fmt.Errorf("watching log file is only available on Windows")
+}

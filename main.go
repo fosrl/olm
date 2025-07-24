@@ -87,6 +87,13 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "logs":
+			err := watchLogFile(false)
+			if err != nil {
+				fmt.Printf("Failed to watch log file: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "help", "--help", "-h":
 			fmt.Println("Olm WireGuard VPN Client")
 			fmt.Println("\nWindows Service Management:")
