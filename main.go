@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/websocket"
 	"github.com/fosrl/olm/httpserver"
+	"github.com/fosrl/olm/logger"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/wgtester"
 
@@ -28,7 +28,7 @@ import (
 func main() {
 	// Check if we're running as a Windows service
 	if isWindowsService() {
-		runService("OlmWireguardService", false)
+		runService("OlmWireguardService", false, os.Args[1:])
 		fmt.Println("Running as Windows service")
 		return
 	}
@@ -77,7 +77,11 @@ func main() {
 			fmt.Printf("Service status: %s\n", status)
 			return
 		case "debug":
-			runService("OlmWireguardService", true)
+			err := debugService()
+			if err != nil {
+				fmt.Printf("Failed to debug service: %v\n", err)
+				os.Exit(1)
+			}
 			return
 		case "help", "--help", "-h":
 			fmt.Println("Olm WireGuard VPN Client")
@@ -102,13 +106,15 @@ func main() {
 }
 
 func runOlmMain(ctx context.Context) {
-	// Log that we've entered the main function
-	fmt.Printf("runOlmMain() called - starting main logic\n")
+	runOlmMainWithArgs(ctx, os.Args[1:])
+}
 
-	// Setup Windows event logging if on Windows
-	if runtime.GOOS == "windows" {
-		setupWindowsEventLog()
-	}
+func runOlmMainWithArgs(ctx context.Context, args []string) {
+	// Log that we've entered the main function
+	fmt.Printf("runOlmMainWithArgs() called with args: %v\n", args)
+
+	// Create a new FlagSet for parsing service arguments
+	serviceFlags := flag.NewFlagSet("service", flag.ContinueOnError)
 
 	var (
 		endpoint      string
@@ -146,39 +152,63 @@ func runOlmMain(ctx context.Context) {
 	pingTimeoutStr := os.Getenv("PING_TIMEOUT")
 
 	// Debug: Print all environment variables we're checking
-	fmt.Printf("Environment variables: PANGOLIN_ENDPOINT='%s', OLM_ID='%s', OLM_SECRET='%s'\n", endpoint, id, secret)
+	// fmt.Printf("Environment variables: PANGOLIN_ENDPOINT='%s', OLM_ID='%s', OLM_SECRET='%s'\n", endpoint, id, secret)
 
+	// Setup flags for service mode
+	// serviceFlags.StringVar(&endpoint, "endpoint", endpoint, "Endpoint of your Pangolin server")
+	// serviceFlags.StringVar(&id, "id", id, "Olm ID")
+	// serviceFlags.StringVar(&secret, "secret", secret, "Olm secret")
+	// serviceFlags.StringVar(&mtu, "mtu", "1280", "MTU to use")
+	// serviceFlags.StringVar(&dns, "dns", "8.8.8.8", "DNS server to use")
+	// serviceFlags.StringVar(&logLevel, "log-level", "INFO", "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
+	// serviceFlags.StringVar(&interfaceName, "interface", "olm", "Name of the WireGuard interface")
+	// serviceFlags.StringVar(&httpAddr, "http-addr", ":9452", "HTTP server address (e.g., ':9452')")
+	// serviceFlags.StringVar(&pingIntervalStr, "ping-interval", "3s", "Interval for pinging the server (default 3s)")
+	// serviceFlags.StringVar(&pingTimeoutStr, "ping-timeout", "5s", "Timeout for each ping (default 5s)")
+	// serviceFlags.BoolVar(&enableHTTP, "http", false, "Enable HTTP server")
+	// serviceFlags.BoolVar(&testMode, "test", false, "Test WireGuard connectivity to a target")
+	// serviceFlags.StringVar(&testTarget, "test-target", "", "Target server:port for test mode")
 	if endpoint == "" {
-		flag.StringVar(&endpoint, "endpoint", "", "Endpoint of your Pangolin server")
+		serviceFlags.StringVar(&endpoint, "endpoint", "", "Endpoint of your Pangolin server")
 	}
 	if id == "" {
-		flag.StringVar(&id, "id", "", "Olm ID")
+		serviceFlags.StringVar(&id, "id", "", "Olm ID")
 	}
 	if secret == "" {
-		flag.StringVar(&secret, "secret", "", "Olm secret")
+		serviceFlags.StringVar(&secret, "secret", "", "Olm secret")
 	}
 	if mtu == "" {
-		flag.StringVar(&mtu, "mtu", "1280", "MTU to use")
+		serviceFlags.StringVar(&mtu, "mtu", "1280", "MTU to use")
 	}
 	if dns == "" {
-		flag.StringVar(&dns, "dns", "8.8.8.8", "DNS server to use")
+		serviceFlags.StringVar(&dns, "dns", "8.8.8.8", "DNS server to use")
 	}
 	if logLevel == "" {
-		flag.StringVar(&logLevel, "log-level", "INFO", "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
+		serviceFlags.StringVar(&logLevel, "log-level", "INFO", "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
 	}
 	if interfaceName == "" {
-		flag.StringVar(&interfaceName, "interface", "olm", "Name of the WireGuard interface")
+		serviceFlags.StringVar(&interfaceName, "interface", "olm", "Name of the WireGuard interface")
 	}
 	if httpAddr == "" {
-		flag.StringVar(&httpAddr, "http-addr", ":9452", "HTTP server address (e.g., ':9452')")
+		serviceFlags.StringVar(&httpAddr, "http-addr", ":9452", "HTTP server address (e.g., ':9452')")
 	}
 	if pingIntervalStr == "" {
-		flag.StringVar(&pingIntervalStr, "ping-interval", "3s", "Interval for pinging the server (default 3s)")
+		serviceFlags.StringVar(&pingIntervalStr, "ping-interval", "3s", "Interval for pinging the server (default 3s)")
 	}
 	if pingTimeoutStr == "" {
-		flag.StringVar(&pingTimeoutStr, "ping-timeout", "5s", "	Timeout for each ping (default 3s)")
+		serviceFlags.StringVar(&pingTimeoutStr, "ping-timeout", "5s", "	Timeout for each ping (default 3s)")
 	}
 
+	// Parse the service arguments
+	if err := serviceFlags.Parse(args); err != nil {
+		fmt.Printf("Error parsing service arguments: %v\n", err)
+		return
+	}
+
+	// Debug: Print final values after flag parsing
+	fmt.Printf("After flag parsing: endpoint='%s', id='%s', secret='%s'\n", endpoint, id, secret)
+
+	// Parse ping intervals
 	if pingIntervalStr != "" {
 		pingInterval, err = time.ParseDuration(pingIntervalStr)
 		if err != nil {
@@ -199,24 +229,13 @@ func runOlmMain(ctx context.Context) {
 		pingTimeout = 5 * time.Second
 	}
 
-	flag.BoolVar(&enableHTTP, "http", false, "Enable HTTP server")
-	flag.BoolVar(&testMode, "test", false, "Test WireGuard connectivity to a target")
-	flag.StringVar(&testTarget, "test-target", "", "Target server:port for test mode")
-
-	// do a --version check
-	version := flag.Bool("version", false, "Print the version")
-
-	flag.Parse()
-
-	// Debug: Print final values after flag parsing
-	fmt.Printf("After flag parsing: endpoint='%s', id='%s', secret='%s'\n", endpoint, id, secret)
-
-	if *version {
-		fmt.Println("Olm version replaceme")
-		os.Exit(0)
+	// Setup Windows event logging if on Windows
+	if runtime.GOOS == "windows" {
+		setupWindowsEventLog()
+	} else {
+		// Initialize logger for non-Windows platforms
+		logger.Init()
 	}
-
-	logger.Init()
 	loggerLevel := parseLogLevel(logLevel)
 	logger.GetLogger().SetLevel(parseLogLevel(logLevel))
 

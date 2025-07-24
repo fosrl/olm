@@ -5,11 +5,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
+	"github.com/fosrl/olm/logger"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/debug"
 	"golang.org/x/sys/windows/svc/eventlog"
@@ -22,10 +26,14 @@ const (
 	serviceDescription = "Olm WireGuard VPN client service for secure network connectivity"
 )
 
+// Global variable to store service arguments
+var serviceArgs []string
+
 type olmService struct {
 	elog debug.Log
 	ctx  context.Context
 	stop context.CancelFunc
+	args []string
 }
 
 func (s *olmService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
@@ -80,7 +88,6 @@ func (s *olmService) runOlm() {
 	s.ctx, s.stop = context.WithCancel(context.Background())
 
 	// Setup logging for service mode
-	setupWindowsEventLog()
 	s.elog.Info(1, "Starting Olm main logic")
 
 	// Run the main olm logic and wait for it to complete
@@ -93,8 +100,8 @@ func (s *olmService) runOlm() {
 			close(done)
 		}()
 
-		// Call the main olm function
-		runOlmMain(s.ctx)
+		// Call the main olm function with stored arguments
+		runOlmMainWithArgs(s.ctx, s.args)
 	}()
 
 	// Wait for either context cancellation or main logic completion
@@ -106,7 +113,7 @@ func (s *olmService) runOlm() {
 	}
 }
 
-func runService(name string, isDebug bool) {
+func runService(name string, isDebug bool, args []string) {
 	var err error
 	var elog debug.Log
 
@@ -128,7 +135,7 @@ func runService(name string, isDebug bool) {
 		run = debug.Run
 	}
 
-	service := &olmService{elog: elog}
+	service := &olmService{elog: elog, args: args}
 	err = run(name, service)
 	if err != nil {
 		elog.Error(1, fmt.Sprintf("%s service failed: %v", name, err))
@@ -291,6 +298,76 @@ func stopService() error {
 	return nil
 }
 
+func debugService() error {
+	// Get the log file path
+	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "Olm", "logs")
+	logFile := filepath.Join(logDir, "olm.log")
+
+	fmt.Printf("Starting service in debug mode...\n")
+	fmt.Printf("Log file: %s\n", logFile)
+
+	// Start the service
+	err := startService()
+	if err != nil {
+		return fmt.Errorf("failed to start service: %v", err)
+	}
+
+	fmt.Printf("Service started. Watching logs (Press Ctrl+C to stop watching)...\n")
+	fmt.Printf("================================================================================\n")
+
+	// Watch the log file
+	return watchLogFile(logFile)
+}
+
+func watchLogFile(logPath string) error {
+	// Open the log file
+	file, err := os.Open(logPath)
+	if err != nil {
+		return fmt.Errorf("failed to open log file: %v", err)
+	}
+	defer file.Close()
+
+	// Seek to the end of the file to only show new logs
+	_, err = file.Seek(0, 2)
+	if err != nil {
+		return fmt.Errorf("failed to seek to end of file: %v", err)
+	}
+
+	// Set up signal handling for graceful exit
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	// Create a ticker to check for new content
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	buffer := make([]byte, 4096)
+
+	for {
+		select {
+		case <-sigCh:
+			fmt.Printf("\n\nStopping log watch...\n")
+			// stop the service if needed
+			if err := stopService(); err != nil {
+				fmt.Printf("Failed to stop service: %v\n", err)
+			}
+			fmt.Printf("Log watch stopped.\n")
+			return nil
+		case <-ticker.C:
+			// Read new content
+			n, err := file.Read(buffer)
+			if err != nil && err != io.EOF {
+				return fmt.Errorf("error reading log file: %v", err)
+			}
+
+			if n > 0 {
+				// Print the new content
+				fmt.Print(string(buffer[:n]))
+			}
+		}
+	}
+}
+
 func getServiceStatus() (string, error) {
 	m, err := mgr.Connect()
 	if err != nil {
@@ -349,6 +426,9 @@ func setupWindowsEventLog() {
 		fmt.Printf("Failed to open log file: %v\n", err)
 		return
 	}
-	log.SetOutput(file)
+
+	// Set the custom logger output
+	logger.GetLogger().SetOutput(file)
+
 	log.Printf("Olm service logging initialized - log file: %s", logFile)
 }
