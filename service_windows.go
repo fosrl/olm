@@ -69,6 +69,12 @@ func loadServiceArgs() ([]string, error) {
 		return nil, fmt.Errorf("failed to read service args: %v", err)
 	}
 
+	// delete the file after reading
+	err = os.Remove(argsPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete service args file: %v", err)
+	}
+
 	var args []string
 	err = json.Unmarshal(data, &args)
 	if err != nil {
@@ -228,7 +234,7 @@ func installService() error {
 
 	config := mgr.Config{
 		ServiceType:    0x10, // SERVICE_WIN32_OWN_PROCESS
-		StartType:      mgr.StartAutomatic,
+		StartType:      mgr.StartManual,
 		ErrorControl:   mgr.ErrorNormal,
 		DisplayName:    serviceDisplayName,
 		Description:    serviceDescription,
@@ -391,10 +397,28 @@ func debugService(args []string) error {
 func watchLogFile(end bool) error {
 	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "Olm", "logs")
 	logPath := filepath.Join(logDir, "olm.log")
-	// Open the log file
-	file, err := os.Open(logPath)
+
+	// Ensure the log directory exists
+	err := os.MkdirAll(logDir, 0755)
 	if err != nil {
-		return fmt.Errorf("failed to open log file: %v", err)
+		return fmt.Errorf("failed to create log directory: %v", err)
+	}
+
+	// Wait for the log file to be created if it doesn't exist
+	var file *os.File
+	for i := 0; i < 30; i++ { // Wait up to 15 seconds
+		file, err = os.Open(logPath)
+		if err == nil {
+			break
+		}
+		if i == 0 {
+			fmt.Printf("Waiting for log file to be created...\n")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to open log file after waiting: %v", err)
 	}
 	defer file.Close()
 
@@ -430,7 +454,13 @@ func watchLogFile(end bool) error {
 			// Read new content
 			n, err := file.Read(buffer)
 			if err != nil && err != io.EOF {
-				return fmt.Errorf("error reading log file: %v", err)
+				// Try to reopen the file in case it was recreated
+				file.Close()
+				file, err = os.Open(logPath)
+				if err != nil {
+					return fmt.Errorf("error reopening log file: %v", err)
+				}
+				continue
 			}
 
 			if n > 0 {

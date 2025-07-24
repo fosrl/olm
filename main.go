@@ -162,23 +162,6 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	pingIntervalStr := os.Getenv("PING_INTERVAL")
 	pingTimeoutStr := os.Getenv("PING_TIMEOUT")
 
-	// Debug: Print all environment variables we're checking
-	// fmt.Printf("Environment variables: PANGOLIN_ENDPOINT='%s', OLM_ID='%s', OLM_SECRET='%s'\n", endpoint, id, secret)
-
-	// Setup flags for service mode
-	// serviceFlags.StringVar(&endpoint, "endpoint", endpoint, "Endpoint of your Pangolin server")
-	// serviceFlags.StringVar(&id, "id", id, "Olm ID")
-	// serviceFlags.StringVar(&secret, "secret", secret, "Olm secret")
-	// serviceFlags.StringVar(&mtu, "mtu", "1280", "MTU to use")
-	// serviceFlags.StringVar(&dns, "dns", "8.8.8.8", "DNS server to use")
-	// serviceFlags.StringVar(&logLevel, "log-level", "INFO", "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
-	// serviceFlags.StringVar(&interfaceName, "interface", "olm", "Name of the WireGuard interface")
-	// serviceFlags.StringVar(&httpAddr, "http-addr", ":9452", "HTTP server address (e.g., ':9452')")
-	// serviceFlags.StringVar(&pingIntervalStr, "ping-interval", "3s", "Interval for pinging the server (default 3s)")
-	// serviceFlags.StringVar(&pingTimeoutStr, "ping-timeout", "5s", "Timeout for each ping (default 5s)")
-	// serviceFlags.BoolVar(&enableHTTP, "http", false, "Enable HTTP server")
-	// serviceFlags.BoolVar(&testMode, "test", false, "Test WireGuard connectivity to a target")
-	// serviceFlags.StringVar(&testTarget, "test-target", "", "Target server:port for test mode")
 	if endpoint == "" {
 		serviceFlags.StringVar(&endpoint, "endpoint", "", "Endpoint of your Pangolin server")
 	}
@@ -251,9 +234,9 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	logger.GetLogger().SetLevel(parseLogLevel(logLevel))
 
 	// Log startup information
-	logger.Info("Olm service starting...")
-	logger.Info("Parameters: endpoint='%s', id='%s', secret='%s'", endpoint, id, secret)
-	logger.Info("HTTP enabled: %v, HTTP addr: %s", enableHTTP, httpAddr)
+	logger.Debug("Olm service starting...")
+	logger.Debug("Parameters: endpoint='%s', id='%s', secret='%s'", endpoint, id, secret)
+	logger.Debug("HTTP enabled: %v, HTTP addr: %s", enableHTTP, httpAddr)
 
 	// Handle test mode
 	if testMode {
@@ -304,55 +287,55 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		}()
 	}
 
-	// Check if required parameters are missing and provide helpful guidance
-	missingParams := []string{}
-	if id == "" {
-		missingParams = append(missingParams, "id (use -id flag or OLM_ID env var)")
-	}
-	if secret == "" {
-		missingParams = append(missingParams, "secret (use -secret flag or OLM_SECRET env var)")
-	}
-	if endpoint == "" {
-		missingParams = append(missingParams, "endpoint (use -endpoint flag or PANGOLIN_ENDPOINT env var)")
-	}
+	// // Check if required parameters are missing and provide helpful guidance
+	// missingParams := []string{}
+	// if id == "" {
+	// 	missingParams = append(missingParams, "id (use -id flag or OLM_ID env var)")
+	// }
+	// if secret == "" {
+	// 	missingParams = append(missingParams, "secret (use -secret flag or OLM_SECRET env var)")
+	// }
+	// if endpoint == "" {
+	// 	missingParams = append(missingParams, "endpoint (use -endpoint flag or PANGOLIN_ENDPOINT env var)")
+	// }
 
-	if len(missingParams) > 0 {
-		logger.Error("Missing required parameters: %v", missingParams)
-		logger.Error("Either provide them as command line flags or set as environment variables")
-		fmt.Printf("ERROR: Missing required parameters: %v\n", missingParams)
-		fmt.Printf("Please provide them as command line flags or set as environment variables\n")
-		if !enableHTTP {
-			logger.Error("HTTP server is disabled, cannot receive parameters via API")
-			fmt.Printf("HTTP server is disabled, cannot receive parameters via API\n")
-			return
-		}
-	}
+	// if len(missingParams) > 0 {
+	// 	logger.Error("Missing required parameters: %v", missingParams)
+	// 	logger.Error("Either provide them as command line flags or set as environment variables")
+	// 	fmt.Printf("ERROR: Missing required parameters: %v\n", missingParams)
+	// 	fmt.Printf("Please provide them as command line flags or set as environment variables\n")
+	// 	if !enableHTTP {
+	// 		logger.Error("HTTP server is disabled, cannot receive parameters via API")
+	// 		fmt.Printf("HTTP server is disabled, cannot receive parameters via API\n")
+	// 		return
+	// 	}
+	// }
 
-	// wait until we have a client id and secret and endpoint
-	waitCount := 0
-	for id == "" || secret == "" || endpoint == "" {
-		select {
-		case <-ctx.Done():
-			logger.Info("Context cancelled while waiting for credentials")
-			return
-		default:
-			missing := []string{}
-			if id == "" {
-				missing = append(missing, "id")
-			}
-			if secret == "" {
-				missing = append(missing, "secret")
-			}
-			if endpoint == "" {
-				missing = append(missing, "endpoint")
-			}
-			waitCount++
-			if waitCount%10 == 1 { // Log every 10 seconds instead of every second
-				logger.Debug("Waiting for missing parameters: %v (waiting %d seconds)", missing, waitCount)
-			}
-			time.Sleep(1 * time.Second)
-		}
-	}
+	// // wait until we have a client id and secret and endpoint
+	// waitCount := 0
+	// for id == "" || secret == "" || endpoint == "" {
+	// 	select {
+	// 	case <-ctx.Done():
+	// 		logger.Info("Context cancelled while waiting for credentials")
+	// 		return
+	// 	default:
+	// 		missing := []string{}
+	// 		if id == "" {
+	// 			missing = append(missing, "id")
+	// 		}
+	// 		if secret == "" {
+	// 			missing = append(missing, "secret")
+	// 		}
+	// 		if endpoint == "" {
+	// 			missing = append(missing, "endpoint")
+	// 		}
+	// 		waitCount++
+	// 		if waitCount%10 == 1 { // Log every 10 seconds instead of every second
+	// 			logger.Debug("Waiting for missing parameters: %v (waiting %d seconds)", missing, waitCount)
+	// 		}
+	// 		time.Sleep(1 * time.Second)
+	// 	}
+	// }
 
 	// parse the mtu string into an int
 	mtuInt, err = strconv.Atoi(mtu)
