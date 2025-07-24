@@ -86,6 +86,69 @@ WantedBy=multi-user.target
 
 Make sure to `mv ./olm /usr/local/bin/olm`!
 
+## Windows Service
+
+On Windows, Olm can be installed and run as a Windows service. This allows it to start automatically at boot and run in the background.
+
+### Service Management Commands
+
+```cmd
+# Install the service
+olm.exe install
+
+# Start the service
+olm.exe start
+
+# Stop the service
+olm.exe stop
+
+# Check service status
+olm.exe status
+
+# Remove the service
+olm.exe remove
+
+# Run in debug mode (console output)
+olm.exe debug
+
+# Show help
+olm.exe help
+```
+
+**Helper Scripts**: For easier service management, you can use the provided helper scripts:
+- `olm-service.bat` - Batch script (requires Administrator privileges)
+- `olm-service.ps1` - PowerShell script with better error handling
+
+Example using the batch script:
+```cmd
+# Run as Administrator
+olm-service.bat install
+olm-service.bat start
+olm-service.bat status
+```
+
+### Service Configuration
+
+When running as a service, Olm will read configuration from environment variables or you can modify the service to include command-line arguments:
+
+1. Install the service: `olm.exe install`
+2. Configure the service with your credentials using Windows Service Manager or by setting system environment variables:
+   - `PANGOLIN_ENDPOINT=https://example.com`
+   - `OLM_ID=your_olm_id`
+   - `OLM_SECRET=your_secret`
+3. Start the service: `olm.exe start`
+
+### Service Logs
+
+When running as a service, logs are written to:
+- Windows Event Log (Application log, source: "OlmWireguardService")
+- Log files in: `%PROGRAMDATA%\Olm\logs\olm.log`
+
+You can view the Windows Event Log using Event Viewer or PowerShell:
+```powershell
+Get-EventLog -LogName Application -Source "OlmWireguardService" -Newest 10
+```
+
 ## Build
 
 ### Container 

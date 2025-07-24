@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"runtime"
@@ -24,6 +26,92 @@ import (
 )
 
 func main() {
+	// Check if we're running as a Windows service
+	if isWindowsService() {
+		runService("OlmWireguardService", false)
+		fmt.Println("Service started successfully")
+		return
+	}
+
+	// Handle service management commands on Windows
+	// print the args
+	for i, arg := range os.Args {
+		fmt.Printf("Arg %d: %s\n", i, arg)
+	}
+	if runtime.GOOS == "windows" && len(os.Args) > 1 {
+		fmt.Println("Handling Windows service management command:", os.Args[1])
+		switch os.Args[1] {
+		case "install":
+			err := installService()
+			if err != nil {
+				fmt.Printf("Failed to install service: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Service installed successfully")
+			return
+		case "remove", "uninstall":
+			err := removeService()
+			if err != nil {
+				fmt.Printf("Failed to remove service: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Service removed successfully")
+			return
+		case "start":
+			err := startService()
+			if err != nil {
+				fmt.Printf("Failed to start service: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Service started successfully")
+			return
+		case "stop":
+			err := stopService()
+			if err != nil {
+				fmt.Printf("Failed to stop service: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Service stopped successfully")
+			return
+		case "status":
+			status, err := getServiceStatus()
+			if err != nil {
+				fmt.Printf("Failed to get service status: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Service status: %s\n", status)
+			return
+		case "debug":
+			runService("OlmWireguardService", true)
+			return
+		case "help", "--help", "-h":
+			fmt.Println("Olm WireGuard VPN Client")
+			fmt.Println("\nWindows Service Management:")
+			fmt.Println("  install     Install the service")
+			fmt.Println("  remove      Remove the service")
+			fmt.Println("  start       Start the service")
+			fmt.Println("  stop        Stop the service")
+			fmt.Println("  status      Show service status")
+			fmt.Println("  debug       Run service in debug mode")
+			fmt.Println("\nFor console mode, run without arguments or with standard flags.")
+			return
+		default:
+			fmt.Println("Unknown command:", os.Args[1])
+			fmt.Println("Use 'olm --help' for usage information.")
+			return
+		}
+	}
+
+	// Run in console mode
+	runOlmMain(context.Background())
+}
+
+func runOlmMain(ctx context.Context) {
+	// Setup Windows event logging if on Windows
+	if runtime.GOOS == "windows" {
+		setupWindowsEventLog()
+	}
+
 	var (
 		endpoint      string
 		id            string
@@ -210,7 +298,7 @@ func main() {
 	var dev *device.Device
 	var wgData WgData
 	var holePunchData HolePunchData
-	var uapi *os.File
+	var uapiListener net.Listener
 	var tdev tun.Device
 
 	sourcePort, err := FindAvailableUDPPort(49152, 65535)
@@ -327,7 +415,7 @@ func main() {
 
 		errs := make(chan error)
 
-		uapi, err := uapiListen(interfaceName, fileUAPI)
+		uapiListener, err = uapiListen(interfaceName, fileUAPI)
 		if err != nil {
 			logger.Error("Failed to listen on uapi socket: %v", err)
 			os.Exit(1)
@@ -335,7 +423,7 @@ func main() {
 
 		go func() {
 			for {
-				conn, err := uapi.Accept()
+				conn, err := uapiListener.Accept()
 				if err != nil {
 					errs <- err
 					return
@@ -622,10 +710,16 @@ func main() {
 	}
 	defer olm.Close()
 
-	// Wait for interrupt signal
+	// Wait for interrupt signal or context cancellation
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+
+	select {
+	case <-sigCh:
+		logger.Info("Received interrupt signal")
+	case <-ctx.Done():
+		logger.Info("Context cancelled")
+	}
 
 	select {
 	case <-stopHolepunch:
@@ -648,6 +742,10 @@ func main() {
 		close(stopPing)
 	}
 
-	uapi.Close()
-	dev.Close()
+	if uapiListener != nil {
+		uapiListener.Close()
+	}
+	if dev != nil {
+		dev.Close()
+	}
 }
