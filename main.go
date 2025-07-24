@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/websocket"
 	"github.com/fosrl/olm/httpserver"
-	"github.com/fosrl/olm/logger"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/wgtester"
 
@@ -79,9 +79,24 @@ func main() {
 			fmt.Printf("Service status: %s\n", status)
 			return
 		case "debug":
+			// get the status and if it is Not Installed then install it first
+			status, err := getServiceStatus()
+			if err != nil {
+				fmt.Printf("Failed to get service status: %v\n", err)
+				os.Exit(1)
+			}
+			if status == "Not Installed" {
+				err := installService()
+				if err != nil {
+					fmt.Printf("Failed to install service: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println("Service installed successfully, now running in debug mode")
+			}
+
 			// Pass the remaining arguments (after "debug") to the service
 			serviceArgs := os.Args[2:]
-			err := debugService(serviceArgs)
+			err = debugService(serviceArgs)
 			if err != nil {
 				fmt.Printf("Failed to debug service: %v\n", err)
 				os.Exit(1)
@@ -106,8 +121,28 @@ func main() {
 			fmt.Println("\nFor console mode, run without arguments or with standard flags.")
 			return
 		default:
-			fmt.Println("Unknown command:", os.Args[1])
-			fmt.Println("Use 'olm --help' for usage information.")
+			// get the status and if it is Not Installed then install it first
+			status, err := getServiceStatus()
+			if err != nil {
+				fmt.Printf("Failed to get service status: %v\n", err)
+				os.Exit(1)
+			}
+			if status == "Not Installed" {
+				err := installService()
+				if err != nil {
+					fmt.Printf("Failed to install service: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println("Service installed successfully, now running")
+			}
+
+			// Pass the remaining arguments (after "debug") to the service
+			serviceArgs := os.Args[1:]
+			err = debugService(serviceArgs)
+			if err != nil {
+				fmt.Printf("Failed to debug service: %v\n", err)
+				os.Exit(1)
+			}
 			return
 		}
 	}
@@ -200,7 +235,7 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	}
 
 	// Debug: Print final values after flag parsing
-	fmt.Printf("After flag parsing: endpoint='%s', id='%s', secret='%s'\n", endpoint, id, secret)
+	// fmt.Printf("After flag parsing: endpoint='%s', id='%s', secret='%s'\n", endpoint, id, secret)
 
 	// Parse ping intervals
 	if pingIntervalStr != "" {

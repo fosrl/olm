@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fosrl/olm/logger"
+	"github.com/fosrl/newt/logger"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/debug"
 	"golang.org/x/sys/windows/svc/eventlog"
@@ -32,13 +32,13 @@ var serviceArgs []string
 
 // getServiceArgsPath returns the path where service arguments are stored
 func getServiceArgsPath() string {
-	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "Olm")
+	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "olm")
 	return filepath.Join(logDir, "service_args.json")
 }
 
 // saveServiceArgs saves the service arguments to a file
 func saveServiceArgs(args []string) error {
-	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "Olm")
+	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "olm")
 	err := os.MkdirAll(logDir, 0755)
 	if err != nil {
 		return fmt.Errorf("failed to create config directory: %v", err)
@@ -395,7 +395,7 @@ func debugService(args []string) error {
 }
 
 func watchLogFile(end bool) error {
-	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "Olm", "logs")
+	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "olm", "logs")
 	logPath := filepath.Join(logDir, "olm.log")
 
 	// Ensure the log directory exists
@@ -516,7 +516,7 @@ func isWindowsService() bool {
 
 func setupWindowsEventLog() {
 	// Create log directory if it doesn't exist
-	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "Olm", "logs")
+	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "olm", "logs")
 	err := os.MkdirAll(logDir, 0755)
 	if err != nil {
 		fmt.Printf("Failed to create log directory: %v\n", err)

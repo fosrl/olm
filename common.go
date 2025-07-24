@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/websocket"
-	"github.com/fosrl/olm/logger"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -69,6 +69,7 @@ var (
 	stopPing           chan struct{}
 	olmToken           string
 	gerbilServerPubKey string
+	holePunchRunning   bool
 )
 
 const (
@@ -316,6 +317,19 @@ func encryptPayload(payload []byte, serverPublicKey string) (interface{}, error)
 }
 
 func keepSendingUDPHolePunch(endpoint string, olmID string, sourcePort uint16) {
+	// Check if hole punching is already running
+	if holePunchRunning {
+		logger.Debug("UDP hole punch already running, skipping new request")
+		return
+	}
+
+	// Set the flag to indicate hole punching is running
+	holePunchRunning = true
+	defer func() {
+		holePunchRunning = false
+		logger.Info("UDP hole punch goroutine ended")
+	}()
+
 	host, err := resolveDomain(endpoint)
 	if err != nil {
 		logger.Error("Failed to resolve endpoint: %v", err)
@@ -597,7 +611,7 @@ func configureWindows(interfaceName string, ip net.IP, ipNet *net.IPNet) error {
 	// Bring up the interface if needed (in Windows, setting the IP usually brings it up)
 	// But we'll explicitly enable it to be sure
 	cmd = exec.Command("netsh", "interface", "set", "interface",
-		fmt.Sprintf("%s", interfaceName),
+		interfaceName,
 		"admin=enable")
 
 	logger.Info("Running command: %v", cmd)
