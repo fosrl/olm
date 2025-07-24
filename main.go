@@ -395,6 +395,8 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	if err != nil {
 		logger.Fatal("Failed to create olm: %v", err)
 	}
+	endpoint = olm.GetConfig().Endpoint // Update endpoint from config
+	id = olm.GetConfig().ID             // Update ID from config
 
 	// Create TUN device and network stack
 	var dev *device.Device

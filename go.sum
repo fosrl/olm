@@ -20,6 +20,8 @@ github.com/fosrl/newt v0.0.0-20250718235538-510e78437ca4 h1:bK/MQyTOLGthrXZ7ExvO
 github.com/fosrl/newt v0.0.0-20250718235538-510e78437ca4/go.mod h1:oqHsCx1rsEc8hAVGVXemfeolIwlr19biJSQiLYi7Mvo=
 github.com/fosrl/newt v0.0.0-20250724190153-64c22a94a47a h1:Jgd60yfFJxb5z6L3LcoraaosHjiRgKLnMz6T3mv3D4Q=
 github.com/fosrl/newt v0.0.0-20250724190153-64c22a94a47a/go.mod h1:oqHsCx1rsEc8hAVGVXemfeolIwlr19biJSQiLYi7Mvo=
+github.com/fosrl/newt v0.0.0-20250724194014-008be54c554a h1:17r/Uhef6aIxpO0xYGI3771LJx7cTyc1WziDOgghc54=
+github.com/fosrl/newt v0.0.0-20250724194014-008be54c554a/go.mod h1:oqHsCx1rsEc8hAVGVXemfeolIwlr19biJSQiLYi7Mvo=
 github.com/go-logr/logr v1.2.2/go.mod h1:jdQByPbusPIv2/zmleS9BjJVeZ6kBagPoEUsqbVz/1A=
 github.com/go-logr/logr v1.4.3 h1:CjnDlHq8ikf6E492q6eKboGOC0T8CDaOvkHCIg8idEI=
 github.com/go-logr/logr v1.4.3/go.mod h1:9T104GzyrTigFIr8wt5mBrctHMim0Nb2HLGrmQ40KvY=
