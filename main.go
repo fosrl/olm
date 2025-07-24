@@ -157,7 +157,7 @@ func runOlmMain(ctx context.Context) {
 
 func runOlmMainWithArgs(ctx context.Context, args []string) {
 	// Log that we've entered the main function
-	fmt.Printf("runOlmMainWithArgs() called with args: %v\n", args)
+	// fmt.Printf("runOlmMainWithArgs() called with args: %v\n", args)
 
 	// Create a new FlagSet for parsing service arguments
 	serviceFlags := flag.NewFlagSet("service", flag.ContinueOnError)
@@ -179,10 +179,10 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		testTarget    string // Add this var for test target
 		pingInterval  time.Duration
 		pingTimeout   time.Duration
+		doHolepunch   bool
 	)
 
 	stopHolepunch = make(chan struct{})
-	stopRegister = make(chan struct{})
 	stopPing = make(chan struct{})
 
 	// if PANGOLIN_ENDPOINT, OLM_ID, and OLM_SECRET are set as environment variables, they will be used as default values
@@ -196,6 +196,7 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	httpAddr = os.Getenv("HTTP_ADDR")
 	pingIntervalStr := os.Getenv("PING_INTERVAL")
 	pingTimeoutStr := os.Getenv("PING_TIMEOUT")
+	doHolepunch = os.Getenv("HOLEPUNCH") == "true" // Default to true, can be overridden by flag
 
 	if endpoint == "" {
 		serviceFlags.StringVar(&endpoint, "endpoint", "", "Endpoint of your Pangolin server")
@@ -227,6 +228,8 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	if pingTimeoutStr == "" {
 		serviceFlags.StringVar(&pingTimeoutStr, "ping-timeout", "5s", "	Timeout for each ping (default 3s)")
 	}
+	serviceFlags.BoolVar(&enableHTTP, "enable-http", false, "Enable HTT server for receiving connection requests")
+	serviceFlags.BoolVar(&doHolepunch, "holepunch", false, "Enable hole punching (default false)")
 
 	// Parse the service arguments
 	if err := serviceFlags.Parse(args); err != nil {
@@ -442,7 +445,10 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 
 		connectTimes++
 
-		close(stopRegister)
+		if stopRegister != nil {
+			stopRegister()
+			stopRegister = nil
+		}
 
 		// if there is an existing tunnel then close it
 		if dev != nil {
@@ -566,6 +572,7 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 			fixKey(privateKey.String()),
 			olm,
 			dev,
+			doHolepunch,
 		)
 
 		// loop over the sites and call ConfigurePeer for each one
@@ -791,9 +798,14 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 
 	olm.OnConnect(func() error {
 		publicKey := privateKey.PublicKey()
-		logger.Debug("Public key: %s", publicKey)
 
-		go keepSendingRegistration(olm, publicKey.String())
+		logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !doHolepunch)
+
+		stopRegister = olm.SendMessageInterval("olm/wg/register", map[string]interface{}{
+			"publicKey": publicKey.String(),
+			"relay":     !doHolepunch,
+		}, 1*time.Second)
+
 		go keepSendingPing(olm)
 
 		if httpServer != nil {
@@ -832,11 +844,9 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		close(stopHolepunch)
 	}
 
-	select {
-	case <-stopRegister:
-		// Channel already closed
-	default:
-		close(stopRegister)
+	if stopRegister != nil {
+		stopRegister()
+		stopRegister = nil
 	}
 
 	select {

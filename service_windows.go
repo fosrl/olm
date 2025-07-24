@@ -379,7 +379,7 @@ func debugService(args []string) error {
 		}
 	}
 
-	fmt.Printf("Starting service in debug mode...\n")
+	// fmt.Printf("Starting service in debug mode...\n")
 
 	// Start the service
 	err := startService([]string{}) // Pass empty args since we already saved them
@@ -387,8 +387,8 @@ func debugService(args []string) error {
 		return fmt.Errorf("failed to start service: %v", err)
 	}
 
-	fmt.Printf("Service started. Watching logs (Press Ctrl+C to stop watching)...\n")
-	fmt.Printf("================================================================================\n")
+	// fmt.Printf("Service started. Watching logs (Press Ctrl+C to stop watching)...\n")
+	// fmt.Printf("================================================================================\n")
 
 	// Watch the log file
 	return watchLogFile(true)

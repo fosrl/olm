@@ -26,31 +26,33 @@ type WireGuardConfig struct {
 
 // PeerMonitor handles monitoring the connection status to multiple WireGuard peers
 type PeerMonitor struct {
-	monitors    map[int]*wgtester.Client
-	configs     map[int]*WireGuardConfig
-	callback    PeerMonitorCallback
-	mutex       sync.Mutex
-	running     bool
-	interval    time.Duration
-	timeout     time.Duration
-	maxAttempts int
-	privateKey  string
-	wsClient    *websocket.Client
-	device      *device.Device
+	monitors          map[int]*wgtester.Client
+	configs           map[int]*WireGuardConfig
+	callback          PeerMonitorCallback
+	mutex             sync.Mutex
+	running           bool
+	interval          time.Duration
+	timeout           time.Duration
+	maxAttempts       int
+	privateKey        string
+	wsClient          *websocket.Client
+	device            *device.Device
+	handleRelaySwitch bool // Whether to handle relay switching
 }
 
 // NewPeerMonitor creates a new peer monitor with the given callback
-func NewPeerMonitor(callback PeerMonitorCallback, privateKey string, wsClient *websocket.Client, device *device.Device) *PeerMonitor {
+func NewPeerMonitor(callback PeerMonitorCallback, privateKey string, wsClient *websocket.Client, device *device.Device, handleRelaySwitch bool) *PeerMonitor {
 	return &PeerMonitor{
-		monitors:    make(map[int]*wgtester.Client),
-		configs:     make(map[int]*WireGuardConfig),
-		callback:    callback,
-		interval:    1 * time.Second, // Default check interval
-		timeout:     2500 * time.Millisecond,
-		maxAttempts: 8,
-		privateKey:  privateKey,
-		wsClient:    wsClient,
-		device:      device,
+		monitors:          make(map[int]*wgtester.Client),
+		configs:           make(map[int]*WireGuardConfig),
+		callback:          callback,
+		interval:          1 * time.Second, // Default check interval
+		timeout:           2500 * time.Millisecond,
+		maxAttempts:       8,
+		privateKey:        privateKey,
+		wsClient:          wsClient,
+		device:            device,
+		handleRelaySwitch: handleRelaySwitch,
 	}
 }
 
@@ -214,6 +216,10 @@ persistent_keepalive_interval=1`, pm.privateKey, config.PublicKey, config.Server
 
 // sendRelay sends a relay message to the server
 func (pm *PeerMonitor) sendRelay(siteID int) error {
+	if !pm.handleRelaySwitch {
+		return nil
+	}
+
 	if pm.wsClient == nil {
 		return fmt.Errorf("websocket client is nil")
 	}

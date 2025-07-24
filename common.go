@@ -65,7 +65,7 @@ type EncryptedHolePunchMessage struct {
 var (
 	peerMonitor        *peermonitor.PeerMonitor
 	stopHolepunch      chan struct{}
-	stopRegister       chan struct{}
+	stopRegister       func()
 	stopPing           chan struct{}
 	olmToken           string
 	gerbilServerPubKey string
@@ -373,35 +373,6 @@ func keepSendingUDPHolePunch(endpoint string, olmID string, sourcePort uint16) {
 		case <-ticker.C:
 			if err := sendUDPHolePunchWithConn(conn, remoteAddr, olmID); err != nil {
 				logger.Error("Failed to send UDP hole punch: %v", err)
-			}
-		}
-	}
-}
-
-func sendRegistration(olm *websocket.Client, publicKey string) error {
-	err := olm.SendMessage("olm/wg/register", map[string]interface{}{
-		"publicKey": publicKey,
-	})
-	if err != nil {
-		logger.Error("Failed to send registration message: %v", err)
-		return err
-	}
-	logger.Info("Sent registration message")
-	return nil
-}
-
-func keepSendingRegistration(olm *websocket.Client, publicKey string) {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-stopRegister:
-			logger.Info("Stopping registration messages")
-			return
-		case <-ticker.C:
-			if err := sendRegistration(olm, publicKey); err != nil {
-				logger.Error("Failed to send periodic registration: %v", err)
 			}
 		}
 	}
