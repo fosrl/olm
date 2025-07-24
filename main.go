@@ -53,7 +53,9 @@ func main() {
 			fmt.Println("Service removed successfully")
 			return
 		case "start":
-			err := startService()
+			// Pass the remaining arguments (after "start") to the service
+			serviceArgs := os.Args[2:]
+			err := startService(serviceArgs)
 			if err != nil {
 				fmt.Printf("Failed to start service: %v\n", err)
 				os.Exit(1)
@@ -77,7 +79,9 @@ func main() {
 			fmt.Printf("Service status: %s\n", status)
 			return
 		case "debug":
-			err := debugService()
+			// Pass the remaining arguments (after "debug") to the service
+			serviceArgs := os.Args[2:]
+			err := debugService(serviceArgs)
 			if err != nil {
 				fmt.Printf("Failed to debug service: %v\n", err)
 				os.Exit(1)

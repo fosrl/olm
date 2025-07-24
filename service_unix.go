@@ -15,7 +15,8 @@ func removeService() error {
 	return fmt.Errorf("service management is only available on Windows")
 }
 
-func startService() error {
+func startService(args []string) error {
+	_ = args // unused on Unix platforms
 	return fmt.Errorf("service management is only available on Windows")
 }
 
@@ -27,7 +28,8 @@ func getServiceStatus() (string, error) {
 	return "", fmt.Errorf("service management is only available on Windows")
 }
 
-func debugService() error {
+func debugService(args []string) error {
+	_ = args // unused on Unix platforms
 	return fmt.Errorf("debug service is only available on Windows")
 }
 

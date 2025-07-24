@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -29,6 +30,54 @@ const (
 // Global variable to store service arguments
 var serviceArgs []string
 
+// getServiceArgsPath returns the path where service arguments are stored
+func getServiceArgsPath() string {
+	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "Olm")
+	return filepath.Join(logDir, "service_args.json")
+}
+
+// saveServiceArgs saves the service arguments to a file
+func saveServiceArgs(args []string) error {
+	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "Olm")
+	err := os.MkdirAll(logDir, 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create config directory: %v", err)
+	}
+
+	argsPath := getServiceArgsPath()
+	data, err := json.Marshal(args)
+	if err != nil {
+		return fmt.Errorf("failed to marshal service args: %v", err)
+	}
+
+	err = os.WriteFile(argsPath, data, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write service args: %v", err)
+	}
+
+	return nil
+}
+
+// loadServiceArgs loads the service arguments from a file
+func loadServiceArgs() ([]string, error) {
+	argsPath := getServiceArgsPath()
+	data, err := os.ReadFile(argsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil // Return empty args if file doesn't exist
+		}
+		return nil, fmt.Errorf("failed to read service args: %v", err)
+	}
+
+	var args []string
+	err = json.Unmarshal(data, &args)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal service args: %v", err)
+	}
+
+	return args, nil
+}
+
 type olmService struct {
 	elog debug.Log
 	ctx  context.Context
@@ -41,6 +90,15 @@ func (s *olmService) Execute(args []string, r <-chan svc.ChangeRequest, changes 
 	changes <- svc.Status{State: svc.StartPending}
 
 	s.elog.Info(1, "Service Execute called, starting main logic")
+
+	// Load saved service arguments
+	savedArgs, err := loadServiceArgs()
+	if err != nil {
+		s.elog.Error(1, fmt.Sprintf("Failed to load service args: %v", err))
+		// Continue with empty args if loading fails
+		savedArgs = []string{}
+	}
+	s.args = savedArgs
 
 	// Start the main olm functionality
 	olmDone := make(chan struct{})
@@ -244,7 +302,15 @@ func removeService() error {
 	return nil
 }
 
-func startService() error {
+func startService(args []string) error {
+	// Save the service arguments before starting
+	if len(args) > 0 {
+		err := saveServiceArgs(args)
+		if err != nil {
+			return fmt.Errorf("failed to save service args: %v", err)
+		}
+	}
+
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("failed to connect to service manager: %v", err)
@@ -298,7 +364,15 @@ func stopService() error {
 	return nil
 }
 
-func debugService() error {
+func debugService(args []string) error {
+	// Save the service arguments before starting
+	if len(args) > 0 {
+		err := saveServiceArgs(args)
+		if err != nil {
+			return fmt.Errorf("failed to save service args: %v", err)
+		}
+	}
+
 	// Get the log file path
 	logDir := filepath.Join(os.Getenv("PROGRAMDATA"), "Olm", "logs")
 	logFile := filepath.Join(logDir, "olm.log")
@@ -307,7 +381,7 @@ func debugService() error {
 	fmt.Printf("Log file: %s\n", logFile)
 
 	// Start the service
-	err := startService()
+	err := startService([]string{}) // Pass empty args since we already saved them
 	if err != nil {
 		return fmt.Errorf("failed to start service: %v", err)
 	}
