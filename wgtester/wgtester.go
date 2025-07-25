@@ -30,6 +30,7 @@ type Client struct {
 	serverAddr     string
 	monitorRunning bool
 	monitorLock    sync.Mutex
+	connLock       sync.Mutex // Protects connection operations
 	shutdownCh     chan struct{}
 	packetInterval time.Duration
 	timeout        time.Duration
@@ -71,6 +72,10 @@ func (c *Client) SetMaxAttempts(attempts int) {
 // Close cleans up client resources
 func (c *Client) Close() {
 	c.StopMonitor()
+
+	c.connLock.Lock()
+	defer c.connLock.Unlock()
+
 	if c.conn != nil {
 		c.conn.Close()
 		c.conn = nil
@@ -79,6 +84,9 @@ func (c *Client) Close() {
 
 // ensureConnection makes sure we have an active UDP connection
 func (c *Client) ensureConnection() error {
+	c.connLock.Lock()
+	defer c.connLock.Unlock()
+
 	if c.conn != nil {
 		return nil
 	}
@@ -119,9 +127,19 @@ func (c *Client) TestConnection(ctx context.Context) (bool, time.Duration) {
 			timestamp := time.Now().UnixNano()
 			binary.BigEndian.PutUint64(packet[5:13], uint64(timestamp))
 
+			// Lock the connection for the entire send/receive operation
+			c.connLock.Lock()
+
+			// Check if connection is still valid after acquiring lock
+			if c.conn == nil {
+				c.connLock.Unlock()
+				return false, 0
+			}
+
 			logger.Debug("Attempting to send monitor packet to %s", c.serverAddr)
 			_, err := c.conn.Write(packet)
 			if err != nil {
+				c.connLock.Unlock()
 				logger.Info("Error sending packet: %v", err)
 				continue
 			}
@@ -133,6 +151,8 @@ func (c *Client) TestConnection(ctx context.Context) (bool, time.Duration) {
 			// Wait for response
 			responseBuffer := make([]byte, packetSize)
 			n, err := c.conn.Read(responseBuffer)
+			c.connLock.Unlock()
+
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					// Timeout, try next attempt

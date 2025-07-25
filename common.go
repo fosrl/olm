@@ -488,6 +488,8 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 		monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
 		monitorPeer := fmt.Sprintf("%s:%d", monitorAddress, siteConfig.ServerPort+1) // +1 for the monitor port
 
+		logger.Debug("Setting up peer monitor for site %d at %s", siteConfig.SiteId, monitorPeer)
+
 		primaryRelay, err := resolveDomain(endpoint) // Using global endpoint variable
 		if err != nil {
 			logger.Warn("Failed to resolve primary relay endpoint: %v", err)

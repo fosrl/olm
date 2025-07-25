@@ -103,7 +103,7 @@ func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, wgConfig *WireGuardC
 	// Check if we're already monitoring this peer
 	if _, exists := pm.monitors[siteID]; exists {
 		// Update the endpoint instead of creating a new monitor
-		pm.RemovePeer(siteID)
+		pm.removePeerUnlocked(siteID)
 	}
 
 	client, err := wgtester.NewClient(endpoint)
@@ -131,11 +131,9 @@ func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, wgConfig *WireGuardC
 	return err
 }
 
-// RemovePeer stops monitoring a peer and removes it from the monitor
-func (pm *PeerMonitor) RemovePeer(siteID int) {
-	pm.mutex.Lock()
-	defer pm.mutex.Unlock()
-
+// removePeerUnlocked stops monitoring a peer and removes it from the monitor
+// This function assumes the mutex is already held by the caller
+func (pm *PeerMonitor) removePeerUnlocked(siteID int) {
 	client, exists := pm.monitors[siteID]
 	if !exists {
 		return
@@ -145,6 +143,14 @@ func (pm *PeerMonitor) RemovePeer(siteID int) {
 	client.Close()
 	delete(pm.monitors, siteID)
 	delete(pm.configs, siteID)
+}
+
+// RemovePeer stops monitoring a peer and removes it from the monitor
+func (pm *PeerMonitor) RemovePeer(siteID int) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+
+	pm.removePeerUnlocked(siteID)
 }
 
 // Start begins monitoring all peers
