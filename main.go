@@ -450,6 +450,11 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 			stopRegister = nil
 		}
 
+		close(stopHolepunch)
+
+		// wait 10 milliseconds to ensure the previous connection is closed
+		time.Sleep(10 * time.Millisecond)
+
 		// if there is an existing tunnel then close it
 		if dev != nil {
 			logger.Info("Got new message. Closing existing tunnel!")
@@ -544,8 +549,6 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 
 		logger.Info("UAPI listener started")
 
-		close(stopHolepunch)
-
 		// Bring up the device
 		err = dev.Up()
 		if err != nil {
@@ -586,16 +589,17 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 				return
 			}
 
-			err = DarwinAddRoute(site.ServerIP, "", interfaceName)
+			err = addRouteForServerIP(site.ServerIP, interfaceName)
 			if err != nil {
 				logger.Error("Failed to add route for peer: %v", err)
 				return
 			}
-			// err = WindowsAddRoute(site.ServerIP, "", interfaceName)
-			// if err != nil {
-			// 	logger.Error("Failed to add route for peer: %v", err)
-			// 	return
-			// }
+
+			// Add routes for remote subnets
+			if err := addRoutesForRemoteSubnets(site.RemoteSubnets, interfaceName); err != nil {
+				logger.Error("Failed to add routes for remote subnets: %v", err)
+				return
+			}
 
 			logger.Info("Configured peer %s", site.PublicKey)
 		}
@@ -622,19 +626,43 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 
 		// Convert to SiteConfig
 		siteConfig := SiteConfig{
-			SiteId:     updateData.SiteId,
-			Endpoint:   updateData.Endpoint,
-			PublicKey:  updateData.PublicKey,
-			ServerIP:   updateData.ServerIP,
-			ServerPort: updateData.ServerPort,
+			SiteId:        updateData.SiteId,
+			Endpoint:      updateData.Endpoint,
+			PublicKey:     updateData.PublicKey,
+			ServerIP:      updateData.ServerIP,
+			ServerPort:    updateData.ServerPort,
+			RemoteSubnets: updateData.RemoteSubnets,
 		}
 
 		// Update the peer in WireGuard
 		if dev != nil {
+			// Find the existing peer to get old RemoteSubnets
+			var oldRemoteSubnets string
+			for _, site := range wgData.Sites {
+				if site.SiteId == updateData.SiteId {
+					oldRemoteSubnets = site.RemoteSubnets
+					break
+				}
+			}
+
 			if err := ConfigurePeer(dev, siteConfig, privateKey, endpoint); err != nil {
 				logger.Error("Failed to update peer: %v", err)
 				// Send error response if needed
 				return
+			}
+
+			// Remove old remote subnet routes if they changed
+			if oldRemoteSubnets != siteConfig.RemoteSubnets {
+				if err := removeRoutesForRemoteSubnets(oldRemoteSubnets); err != nil {
+					logger.Error("Failed to remove old remote subnet routes: %v", err)
+					// Continue anyway to add new routes
+				}
+
+				// Add new remote subnet routes
+				if err := addRoutesForRemoteSubnets(siteConfig.RemoteSubnets, interfaceName); err != nil {
+					logger.Error("Failed to add new remote subnet routes: %v", err)
+					return
+				}
 			}
 
 			// Update successful
@@ -669,11 +697,12 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 
 		// Convert to SiteConfig
 		siteConfig := SiteConfig{
-			SiteId:     addData.SiteId,
-			Endpoint:   addData.Endpoint,
-			PublicKey:  addData.PublicKey,
-			ServerIP:   addData.ServerIP,
-			ServerPort: addData.ServerPort,
+			SiteId:        addData.SiteId,
+			Endpoint:      addData.Endpoint,
+			PublicKey:     addData.PublicKey,
+			ServerIP:      addData.ServerIP,
+			ServerPort:    addData.ServerPort,
+			RemoteSubnets: addData.RemoteSubnets,
 		}
 
 		// Add the peer to WireGuard
@@ -684,16 +713,17 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 			}
 
 			// Add route for the new peer
-			err = DarwinAddRoute(siteConfig.ServerIP, "", interfaceName)
+			err = addRouteForServerIP(siteConfig.ServerIP, interfaceName)
 			if err != nil {
 				logger.Error("Failed to add route for new peer: %v", err)
 				return
 			}
-			// err = WindowsAddRoute(siteConfig.ServerIP, "", interfaceName)
-			// if err != nil {
-			// 	logger.Error("Failed to add route for new peer: %v", err)
-			// 	return
-			// }
+
+			// Add routes for remote subnets
+			if err := addRoutesForRemoteSubnets(siteConfig.RemoteSubnets, interfaceName); err != nil {
+				logger.Error("Failed to add routes for remote subnets: %v", err)
+				return
+			}
 
 			// Add successful
 			logger.Info("Successfully added peer for site %d", addData.SiteId)
@@ -747,14 +777,15 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 			}
 
 			// Remove route for the peer
-			err = DarwinRemoveRoute(peerToRemove.ServerIP)
+			err = removeRouteForServerIP(peerToRemove.ServerIP)
 			if err != nil {
 				logger.Error("Failed to remove route for peer: %v", err)
 				return
 			}
-			err = WindowsRemoveRoute(peerToRemove.ServerIP)
-			if err != nil {
-				logger.Error("Failed to remove route for peer: %v", err)
+
+			// Remove routes for remote subnets
+			if err := removeRoutesForRemoteSubnets(peerToRemove.RemoteSubnets); err != nil {
+				logger.Error("Failed to remove routes for remote subnets: %v", err)
 				return
 			}
 

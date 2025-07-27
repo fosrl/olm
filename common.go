@@ -31,11 +31,12 @@ type WgData struct {
 }
 
 type SiteConfig struct {
-	SiteId     int    `json:"siteId"`
-	Endpoint   string `json:"endpoint"`
-	PublicKey  string `json:"publicKey"`
-	ServerIP   string `json:"serverIP"`
-	ServerPort uint16 `json:"serverPort"`
+	SiteId        int    `json:"siteId"`
+	Endpoint      string `json:"endpoint"`
+	PublicKey     string `json:"publicKey"`
+	ServerIP      string `json:"serverIP"`
+	ServerPort    uint16 `json:"serverPort"`
+	RemoteSubnets string `json:"remoteSubnets,omitempty"` // optional, comma-separated list of subnets that this site can access
 }
 
 type TargetsByType struct {
@@ -91,20 +92,22 @@ type PeerAction struct {
 
 // UpdatePeerData represents the data needed to update a peer
 type UpdatePeerData struct {
-	SiteId     int    `json:"siteId"`
-	Endpoint   string `json:"endpoint"`
-	PublicKey  string `json:"publicKey"`
-	ServerIP   string `json:"serverIP"`
-	ServerPort uint16 `json:"serverPort"`
+	SiteId        int    `json:"siteId"`
+	Endpoint      string `json:"endpoint"`
+	PublicKey     string `json:"publicKey"`
+	ServerIP      string `json:"serverIP"`
+	ServerPort    uint16 `json:"serverPort"`
+	RemoteSubnets string `json:"remoteSubnets,omitempty"` // optional, comma-separated list of subnets that this site can access
 }
 
 // AddPeerData represents the data needed to add a peer
 type AddPeerData struct {
-	SiteId     int    `json:"siteId"`
-	Endpoint   string `json:"endpoint"`
-	PublicKey  string `json:"publicKey"`
-	ServerIP   string `json:"serverIP"`
-	ServerPort uint16 `json:"serverPort"`
+	SiteId        int    `json:"siteId"`
+	Endpoint      string `json:"endpoint"`
+	PublicKey     string `json:"publicKey"`
+	ServerIP      string `json:"serverIP"`
+	ServerPort    uint16 `json:"serverPort"`
+	RemoteSubnets string `json:"remoteSubnets,omitempty"` // optional, comma-separated list of subnets that this site can access
 }
 
 // RemovePeerData represents the data needed to remove a peer
@@ -467,11 +470,32 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 	}
 	allowedIpStr := strings.Join(allowedIp, "/")
 
+	// Collect all allowed IPs in a slice
+	var allowedIPs []string
+	allowedIPs = append(allowedIPs, allowedIpStr)
+
+	// If we have anything in remoteSubnets, add those as well
+	if siteConfig.RemoteSubnets != "" {
+		// Split remote subnets by comma and add each one
+		remoteSubnets := strings.Split(siteConfig.RemoteSubnets, ",")
+		for _, subnet := range remoteSubnets {
+			subnet = strings.TrimSpace(subnet)
+			if subnet != "" {
+				allowedIPs = append(allowedIPs, subnet)
+			}
+		}
+	}
+
 	// Construct WireGuard config for this peer
 	var configBuilder strings.Builder
 	configBuilder.WriteString(fmt.Sprintf("private_key=%s\n", fixKey(privateKey.String())))
 	configBuilder.WriteString(fmt.Sprintf("public_key=%s\n", fixKey(siteConfig.PublicKey)))
-	configBuilder.WriteString(fmt.Sprintf("allowed_ip=%s\n", allowedIpStr))
+
+	// Add each allowed IP separately
+	for _, allowedIP := range allowedIPs {
+		configBuilder.WriteString(fmt.Sprintf("allowed_ip=%s\n", allowedIP))
+	}
+
 	configBuilder.WriteString(fmt.Sprintf("endpoint=%s\n", siteHost))
 	configBuilder.WriteString("persistent_keepalive_interval=1\n")
 
@@ -487,7 +511,6 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 	if peerMonitor != nil {
 		monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
 		monitorPeer := fmt.Sprintf("%s:%d", monitorAddress, siteConfig.ServerPort+1) // +1 for the monitor port
-
 		logger.Debug("Setting up peer monitor for site %d at %s", siteConfig.SiteId, monitorPeer)
 
 		primaryRelay, err := resolveDomain(endpoint) // Using global endpoint variable
@@ -860,5 +883,148 @@ func DarwinRemoveRoute(destination string) error {
 		return fmt.Errorf("route delete command failed: %v, output: %s", err, out)
 	}
 
+	return nil
+}
+
+func LinuxAddRoute(destination string, gateway string, interfaceName string) error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+
+	var cmd *exec.Cmd
+
+	if gateway != "" {
+		// Route with specific gateway
+		cmd = exec.Command("ip", "route", "add", destination, "via", gateway)
+	} else if interfaceName != "" {
+		// Route via interface
+		cmd = exec.Command("ip", "route", "add", destination, "dev", interfaceName)
+	} else {
+		return fmt.Errorf("either gateway or interface must be specified")
+	}
+
+	logger.Info("Running command: %v", cmd)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ip route command failed: %v, output: %s", err, out)
+	}
+
+	return nil
+}
+
+func LinuxRemoveRoute(destination string) error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+
+	cmd := exec.Command("ip", "route", "del", destination)
+	logger.Info("Running command: %v", cmd)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ip route delete command failed: %v, output: %s", err, out)
+	}
+
+	return nil
+}
+
+// addRouteForServerIP adds an OS-specific route for the server IP
+func addRouteForServerIP(serverIP, interfaceName string) error {
+	if runtime.GOOS == "darwin" {
+		return DarwinAddRoute(serverIP, "", interfaceName)
+	}
+	// else if runtime.GOOS == "windows" {
+	//	return WindowsAddRoute(serverIP, "", interfaceName)
+	// } else if runtime.GOOS == "linux" {
+	//	return LinuxAddRoute(serverIP, "", interfaceName)
+	// }
+	return nil
+}
+
+// removeRouteForServerIP removes an OS-specific route for the server IP
+func removeRouteForServerIP(serverIP string) error {
+	if runtime.GOOS == "darwin" {
+		return DarwinRemoveRoute(serverIP)
+	}
+	// else if runtime.GOOS == "windows" {
+	// 	return WindowsRemoveRoute(serverIP)
+	// } else if runtime.GOOS == "linux" {
+	// 	return LinuxRemoveRoute(serverIP)
+	// }
+	return nil
+}
+
+// addRoutesForRemoteSubnets adds routes for each comma-separated CIDR in RemoteSubnets
+func addRoutesForRemoteSubnets(remoteSubnets, interfaceName string) error {
+	if remoteSubnets == "" {
+		return nil
+	}
+
+	// Split remote subnets by comma and add routes for each one
+	subnets := strings.Split(remoteSubnets, ",")
+	for _, subnet := range subnets {
+		subnet = strings.TrimSpace(subnet)
+		if subnet == "" {
+			continue
+		}
+
+		// Add route based on operating system
+		if runtime.GOOS == "darwin" {
+			if err := DarwinAddRoute(subnet, "", interfaceName); err != nil {
+				logger.Error("Failed to add Darwin route for subnet %s: %v", subnet, err)
+				return err
+			}
+		} else if runtime.GOOS == "windows" {
+			if err := WindowsAddRoute(subnet, "", interfaceName); err != nil {
+				logger.Error("Failed to add Windows route for subnet %s: %v", subnet, err)
+				return err
+			}
+		} else if runtime.GOOS == "linux" {
+			if err := LinuxAddRoute(subnet, "", interfaceName); err != nil {
+				logger.Error("Failed to add Linux route for subnet %s: %v", subnet, err)
+				return err
+			}
+		}
+
+		logger.Info("Added route for remote subnet: %s", subnet)
+	}
+	return nil
+}
+
+// removeRoutesForRemoteSubnets removes routes for each comma-separated CIDR in RemoteSubnets
+func removeRoutesForRemoteSubnets(remoteSubnets string) error {
+	if remoteSubnets == "" {
+		return nil
+	}
+
+	// Split remote subnets by comma and remove routes for each one
+	subnets := strings.Split(remoteSubnets, ",")
+	for _, subnet := range subnets {
+		subnet = strings.TrimSpace(subnet)
+		if subnet == "" {
+			continue
+		}
+
+		// Remove route based on operating system
+		if runtime.GOOS == "darwin" {
+			if err := DarwinRemoveRoute(subnet); err != nil {
+				logger.Error("Failed to remove Darwin route for subnet %s: %v", subnet, err)
+				return err
+			}
+		} else if runtime.GOOS == "windows" {
+			if err := WindowsRemoveRoute(subnet); err != nil {
+				logger.Error("Failed to remove Windows route for subnet %s: %v", subnet, err)
+				return err
+			}
+		} else if runtime.GOOS == "linux" {
+			if err := LinuxRemoveRoute(subnet); err != nil {
+				logger.Error("Failed to remove Linux route for subnet %s: %v", subnet, err)
+				return err
+			}
+		}
+
+		logger.Info("Removed route for remote subnet: %s", subnet)
+	}
 	return nil
 }
