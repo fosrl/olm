@@ -180,6 +180,7 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		pingInterval  time.Duration
 		pingTimeout   time.Duration
 		doHolepunch   bool
+		connected     bool
 	)
 
 	stopHolepunch = make(chan struct{})
@@ -433,17 +434,14 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		go keepSendingUDPHolePunch(holePunchData.Endpoint, id, sourcePort)
 	})
 
-	connectTimes := 0
 	// Register handlers for different message types
 	olm.RegisterHandler("olm/wg/connect", func(msg websocket.WSMessage) {
 		logger.Debug("Received message: %v", msg.Data)
 
-		if connectTimes > 0 {
+		if connected {
 			logger.Info("Already connected. Ignoring new connection request.")
 			return
 		}
-
-		connectTimes++
 
 		if stopRegister != nil {
 			stopRegister()
@@ -605,6 +603,8 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		}
 
 		peerMonitor.Start()
+
+		connected = true
 
 		logger.Info("WireGuard device created.")
 	})
@@ -828,6 +828,17 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	})
 
 	olm.OnConnect(func() error {
+		logger.Info("Websocket Connected")
+
+		if httpServer != nil {
+			httpServer.SetConnectionStatus(true)
+		}
+
+		if connected {
+			logger.Debug("Already connected, skipping registration")
+			return nil
+		}
+
 		publicKey := privateKey.PublicKey()
 
 		logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !doHolepunch)
@@ -838,10 +849,6 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		}, 1*time.Second)
 
 		go keepSendingPing(olm)
-
-		if httpServer != nil {
-			httpServer.SetConnectionStatus(true)
-		}
 
 		logger.Info("Sent registration message")
 		return nil
