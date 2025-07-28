@@ -1,302 +1,380 @@
 package main
 
 import (
-	"bytes"
-	"encoding/base64"
-	"encoding/hex"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"math/rand"
 	"net"
-	"net/netip"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/fosrl/newt/logger"
-	"github.com/fosrl/newt/proxy"
 	"github.com/fosrl/newt/websocket"
+	"github.com/fosrl/olm/httpserver"
+	"github.com/fosrl/olm/peermonitor"
+	"github.com/fosrl/olm/wgtester"
 
-	"golang.org/x/net/icmp"
-	"golang.org/x/net/ipv4"
-	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
-	"golang.zx2c4.com/wireguard/tun/netstack"
+
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-type WgData struct {
-	Endpoint  string        `json:"endpoint"`
-	PublicKey string        `json:"publicKey"`
-	ServerIP  string        `json:"serverIP"`
-	TunnelIP  string        `json:"tunnelIP"`
-	Targets   TargetsByType `json:"targets"`
-}
-
-type TargetsByType struct {
-	UDP []string `json:"udp"`
-	TCP []string `json:"tcp"`
-}
-
-type TargetData struct {
-	Targets []string `json:"targets"`
-}
-
-func fixKey(key string) string {
-	// Remove any whitespace
-	key = strings.TrimSpace(key)
-
-	// Decode from base64
-	decoded, err := base64.StdEncoding.DecodeString(key)
-	if err != nil {
-		logger.Fatal("Error decoding base64:", err)
-	}
-
-	// Convert to hex
-	return hex.EncodeToString(decoded)
-}
-
-func ping(tnet *netstack.Net, dst string) error {
-	logger.Info("Pinging %s", dst)
-	socket, err := tnet.Dial("ping4", dst)
-	if err != nil {
-		return fmt.Errorf("failed to create ICMP socket: %w", err)
-	}
-	defer socket.Close()
-
-	requestPing := icmp.Echo{
-		Seq:  rand.Intn(1 << 16),
-		Data: []byte("gopher burrow"),
-	}
-
-	icmpBytes, err := (&icmp.Message{Type: ipv4.ICMPTypeEcho, Code: 0, Body: &requestPing}).Marshal(nil)
-	if err != nil {
-		return fmt.Errorf("failed to marshal ICMP message: %w", err)
-	}
-
-	if err := socket.SetReadDeadline(time.Now().Add(time.Second * 10)); err != nil {
-		return fmt.Errorf("failed to set read deadline: %w", err)
-	}
-
-	start := time.Now()
-	_, err = socket.Write(icmpBytes)
-	if err != nil {
-		return fmt.Errorf("failed to write ICMP packet: %w", err)
-	}
-
-	n, err := socket.Read(icmpBytes[:])
-	if err != nil {
-		return fmt.Errorf("failed to read ICMP packet: %w", err)
-	}
-
-	replyPacket, err := icmp.ParseMessage(1, icmpBytes[:n])
-	if err != nil {
-		return fmt.Errorf("failed to parse ICMP packet: %w", err)
-	}
-
-	replyPing, ok := replyPacket.Body.(*icmp.Echo)
-	if !ok {
-		return fmt.Errorf("invalid reply type: got %T, want *icmp.Echo", replyPacket.Body)
-	}
-
-	if !bytes.Equal(replyPing.Data, requestPing.Data) || replyPing.Seq != requestPing.Seq {
-		return fmt.Errorf("invalid ping reply: got seq=%d data=%q, want seq=%d data=%q",
-			replyPing.Seq, replyPing.Data, requestPing.Seq, requestPing.Data)
-	}
-
-	logger.Info("Ping latency: %v", time.Since(start))
-	return nil
-}
-
-func startPingCheck(tnet *netstack.Net, serverIP string, stopChan chan struct{}) {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				err := ping(tnet, serverIP)
-				if err != nil {
-					logger.Warn("Periodic ping failed: %v", err)
-					logger.Warn("HINT: Do you have UDP port 51280 (or the port in config.yml) open on your Pangolin server?")
-				}
-			case <-stopChan:
-				logger.Info("Stopping ping check")
-				return
-			}
-		}
-	}()
-}
-
-func pingWithRetry(tnet *netstack.Net, dst string) error {
-	const (
-		maxAttempts = 5
-		retryDelay  = 2 * time.Second
-	)
-
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		logger.Info("Ping attempt %d of %d", attempt, maxAttempts)
-
-		if err := ping(tnet, dst); err != nil {
-			lastErr = err
-			logger.Warn("Ping attempt %d failed: %v", attempt, err)
-
-			if attempt < maxAttempts {
-				time.Sleep(retryDelay)
-				continue
-			}
-			return fmt.Errorf("all ping attempts failed after %d tries, last error: %w",
-				maxAttempts, lastErr)
-		}
-
-		// Successful ping
-		return nil
-	}
-
-	// This shouldn't be reached due to the return in the loop, but added for completeness
-	return fmt.Errorf("unexpected error: all ping attempts failed")
-}
-
-func parseLogLevel(level string) logger.LogLevel {
-	switch strings.ToUpper(level) {
-	case "DEBUG":
-		return logger.DEBUG
-	case "INFO":
-		return logger.INFO
-	case "WARN":
-		return logger.WARN
-	case "ERROR":
-		return logger.ERROR
-	case "FATAL":
-		return logger.FATAL
-	default:
-		return logger.INFO // default to INFO if invalid level provided
-	}
-}
-
-func mapToWireGuardLogLevel(level logger.LogLevel) int {
-	switch level {
-	case logger.DEBUG:
-		return device.LogLevelVerbose
-	// case logger.INFO:
-	// return device.LogLevel
-	case logger.WARN:
-		return device.LogLevelError
-	case logger.ERROR, logger.FATAL:
-		return device.LogLevelSilent
-	default:
-		return device.LogLevelSilent
-	}
-}
-
-func resolveDomain(domain string) (string, error) {
-	// Check if there's a port in the domain
-	host, port, err := net.SplitHostPort(domain)
-	if err != nil {
-		// No port found, use the domain as is
-		host = domain
-		port = ""
-	}
-
-	// Remove any protocol prefix if present
-	if strings.HasPrefix(host, "http://") {
-		host = strings.TrimPrefix(host, "http://")
-	} else if strings.HasPrefix(host, "https://") {
-		host = strings.TrimPrefix(host, "https://")
-	}
-
-	// Lookup IP addresses
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return "", fmt.Errorf("DNS lookup failed: %v", err)
-	}
-
-	if len(ips) == 0 {
-		return "", fmt.Errorf("no IP addresses found for domain %s", host)
-	}
-
-	// Get the first IPv4 address if available
-	var ipAddr string
-	for _, ip := range ips {
-		if ipv4 := ip.To4(); ipv4 != nil {
-			ipAddr = ipv4.String()
-			break
-		}
-	}
-
-	// If no IPv4 found, use the first IP (might be IPv6)
-	if ipAddr == "" {
-		ipAddr = ips[0].String()
-	}
-
-	// Add port back if it existed
-	if port != "" {
-		ipAddr = net.JoinHostPort(ipAddr, port)
-	}
-
-	return ipAddr, nil
-}
-
 func main() {
+	// Check if we're running as a Windows service
+	if isWindowsService() {
+		runService("OlmWireguardService", false, os.Args[1:])
+		fmt.Println("Running as Windows service")
+		return
+	}
+
+	// Handle service management commands on Windows
+	if runtime.GOOS == "windows" && len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "install":
+			err := installService()
+			if err != nil {
+				fmt.Printf("Failed to install service: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Service installed successfully")
+			return
+		case "remove", "uninstall":
+			err := removeService()
+			if err != nil {
+				fmt.Printf("Failed to remove service: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Service removed successfully")
+			return
+		case "start":
+			// Pass the remaining arguments (after "start") to the service
+			serviceArgs := os.Args[2:]
+			err := startService(serviceArgs)
+			if err != nil {
+				fmt.Printf("Failed to start service: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Service started successfully")
+			return
+		case "stop":
+			err := stopService()
+			if err != nil {
+				fmt.Printf("Failed to stop service: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Service stopped successfully")
+			return
+		case "status":
+			status, err := getServiceStatus()
+			if err != nil {
+				fmt.Printf("Failed to get service status: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Service status: %s\n", status)
+			return
+		case "debug":
+			// get the status and if it is Not Installed then install it first
+			status, err := getServiceStatus()
+			if err != nil {
+				fmt.Printf("Failed to get service status: %v\n", err)
+				os.Exit(1)
+			}
+			if status == "Not Installed" {
+				err := installService()
+				if err != nil {
+					fmt.Printf("Failed to install service: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println("Service installed successfully, now running in debug mode")
+			}
+
+			// Pass the remaining arguments (after "debug") to the service
+			serviceArgs := os.Args[2:]
+			err = debugService(serviceArgs)
+			if err != nil {
+				fmt.Printf("Failed to debug service: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "logs":
+			err := watchLogFile(false)
+			if err != nil {
+				fmt.Printf("Failed to watch log file: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "help", "--help", "-h":
+			fmt.Println("Olm WireGuard VPN Client")
+			fmt.Println("\nWindows Service Management:")
+			fmt.Println("  install     Install the service")
+			fmt.Println("  remove      Remove the service")
+			fmt.Println("  start       Start the service")
+			fmt.Println("  stop        Stop the service")
+			fmt.Println("  status      Show service status")
+			fmt.Println("  debug       Run service in debug mode")
+			fmt.Println("\nFor console mode, run without arguments or with standard flags.")
+			return
+		default:
+			// get the status and if it is Not Installed then install it first
+			status, err := getServiceStatus()
+			if err != nil {
+				fmt.Printf("Failed to get service status: %v\n", err)
+				os.Exit(1)
+			}
+			if status == "Not Installed" {
+				err := installService()
+				if err != nil {
+					fmt.Printf("Failed to install service: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println("Service installed successfully, now running")
+			}
+
+			// Pass the remaining arguments (after "debug") to the service
+			serviceArgs := os.Args[1:]
+			err = debugService(serviceArgs)
+			if err != nil {
+				fmt.Printf("Failed to debug service: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
+	// Run in console mode
+	runOlmMain(context.Background())
+}
+
+func runOlmMain(ctx context.Context) {
+	runOlmMainWithArgs(ctx, os.Args[1:])
+}
+
+func runOlmMainWithArgs(ctx context.Context, args []string) {
+	// Log that we've entered the main function
+	// fmt.Printf("runOlmMainWithArgs() called with args: %v\n", args)
+
+	// Create a new FlagSet for parsing service arguments
+	serviceFlags := flag.NewFlagSet("service", flag.ContinueOnError)
+
 	var (
-		endpoint   string
-		id         string
-		secret     string
-		mtu        string
-		mtuInt     int
-		dns        string
-		privateKey wgtypes.Key
-		err        error
-		logLevel   string
+		endpoint      string
+		id            string
+		secret        string
+		mtu           string
+		mtuInt        int
+		dns           string
+		privateKey    wgtypes.Key
+		err           error
+		logLevel      string
+		interfaceName string
+		enableHTTP    bool
+		httpAddr      string
+		testMode      bool   // Add this var for the test flag
+		testTarget    string // Add this var for test target
+		pingInterval  time.Duration
+		pingTimeout   time.Duration
+		doHolepunch   bool
+		connected     bool
 	)
 
-	// if PANGOLIN_ENDPOINT, NEWT_ID, and NEWT_SECRET are set as environment variables, they will be used as default values
+	stopHolepunch = make(chan struct{})
+	stopPing = make(chan struct{})
+
+	// if PANGOLIN_ENDPOINT, OLM_ID, and OLM_SECRET are set as environment variables, they will be used as default values
 	endpoint = os.Getenv("PANGOLIN_ENDPOINT")
-	id = os.Getenv("NEWT_ID")
-	secret = os.Getenv("NEWT_SECRET")
+	id = os.Getenv("OLM_ID")
+	secret = os.Getenv("OLM_SECRET")
 	mtu = os.Getenv("MTU")
 	dns = os.Getenv("DNS")
 	logLevel = os.Getenv("LOG_LEVEL")
+	interfaceName = os.Getenv("INTERFACE")
+	httpAddr = os.Getenv("HTTP_ADDR")
+	pingIntervalStr := os.Getenv("PING_INTERVAL")
+	pingTimeoutStr := os.Getenv("PING_TIMEOUT")
+	doHolepunch = os.Getenv("HOLEPUNCH") == "true" // Default to true, can be overridden by flag
 
 	if endpoint == "" {
-		flag.StringVar(&endpoint, "endpoint", "", "Endpoint of your pangolin server")
+		serviceFlags.StringVar(&endpoint, "endpoint", "", "Endpoint of your Pangolin server")
 	}
 	if id == "" {
-		flag.StringVar(&id, "id", "", "Newt ID")
+		serviceFlags.StringVar(&id, "id", "", "Olm ID")
 	}
 	if secret == "" {
-		flag.StringVar(&secret, "secret", "", "Newt secret")
+		serviceFlags.StringVar(&secret, "secret", "", "Olm secret")
 	}
 	if mtu == "" {
-		flag.StringVar(&mtu, "mtu", "1280", "MTU to use")
+		serviceFlags.StringVar(&mtu, "mtu", "1280", "MTU to use")
 	}
 	if dns == "" {
-		flag.StringVar(&dns, "dns", "8.8.8.8", "DNS server to use")
+		serviceFlags.StringVar(&dns, "dns", "8.8.8.8", "DNS server to use")
 	}
 	if logLevel == "" {
-		flag.StringVar(&logLevel, "log-level", "INFO", "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
+		serviceFlags.StringVar(&logLevel, "log-level", "INFO", "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
+	}
+	if interfaceName == "" {
+		serviceFlags.StringVar(&interfaceName, "interface", "olm", "Name of the WireGuard interface")
+	}
+	if httpAddr == "" {
+		serviceFlags.StringVar(&httpAddr, "http-addr", ":9452", "HTTP server address (e.g., ':9452')")
+	}
+	if pingIntervalStr == "" {
+		serviceFlags.StringVar(&pingIntervalStr, "ping-interval", "3s", "Interval for pinging the server (default 3s)")
+	}
+	if pingTimeoutStr == "" {
+		serviceFlags.StringVar(&pingTimeoutStr, "ping-timeout", "5s", "	Timeout for each ping (default 3s)")
+	}
+	serviceFlags.BoolVar(&enableHTTP, "enable-http", false, "Enable HTT server for receiving connection requests")
+	serviceFlags.BoolVar(&doHolepunch, "holepunch", false, "Enable hole punching (default false)")
+
+	// Parse the service arguments
+	if err := serviceFlags.Parse(args); err != nil {
+		fmt.Printf("Error parsing service arguments: %v\n", err)
+		return
 	}
 
-	// do a --version check
-	version := flag.Bool("version", false, "Print the version")
+	// Debug: Print final values after flag parsing
+	// fmt.Printf("After flag parsing: endpoint='%s', id='%s', secret='%s'\n", endpoint, id, secret)
 
-	flag.Parse()
-
-	if *version {
-		fmt.Println("Newt version replaceme")
-		os.Exit(0)
+	// Parse ping intervals
+	if pingIntervalStr != "" {
+		pingInterval, err = time.ParseDuration(pingIntervalStr)
+		if err != nil {
+			fmt.Printf("Invalid PING_INTERVAL value: %s, using default 3 seconds\n", pingIntervalStr)
+			pingInterval = 3 * time.Second
+		}
+	} else {
+		pingInterval = 3 * time.Second
 	}
 
-	logger.Init()
+	if pingTimeoutStr != "" {
+		pingTimeout, err = time.ParseDuration(pingTimeoutStr)
+		if err != nil {
+			fmt.Printf("Invalid PING_TIMEOUT value: %s, using default 5 seconds\n", pingTimeoutStr)
+			pingTimeout = 5 * time.Second
+		}
+	} else {
+		pingTimeout = 5 * time.Second
+	}
+
+	// Setup Windows event logging if on Windows
+	if runtime.GOOS == "windows" {
+		setupWindowsEventLog()
+	} else {
+		// Initialize logger for non-Windows platforms
+		logger.Init()
+	}
 	loggerLevel := parseLogLevel(logLevel)
 	logger.GetLogger().SetLevel(parseLogLevel(logLevel))
+
+	// Log startup information
+	logger.Debug("Olm service starting...")
+	logger.Debug("Parameters: endpoint='%s', id='%s', secret='%s'", endpoint, id, secret)
+	logger.Debug("HTTP enabled: %v, HTTP addr: %s", enableHTTP, httpAddr)
+
+	// Handle test mode
+	if testMode {
+		if testTarget == "" {
+			logger.Fatal("Test mode requires -test-target to be set to a server:port")
+		}
+
+		logger.Info("Running in test mode, connecting to %s", testTarget)
+
+		// Create a new tester client
+		tester, err := wgtester.NewClient(testTarget)
+		if err != nil {
+			logger.Fatal("Failed to create tester client: %v", err)
+		}
+		defer tester.Close()
+
+		// Test connection with a 2-second timeout
+		connected, rtt := tester.TestConnectionWithTimeout(2 * time.Second)
+
+		if connected {
+			logger.Info("Connection test successful! RTT: %v", rtt)
+			fmt.Printf("Connection test successful! RTT: %v\n", rtt)
+			os.Exit(0)
+		} else {
+			logger.Error("Connection test failed - no response received")
+			fmt.Println("Connection test failed - no response received")
+			os.Exit(1)
+		}
+	}
+
+	var httpServer *httpserver.HTTPServer
+	if enableHTTP {
+		httpServer = httpserver.NewHTTPServer(httpAddr)
+		if err := httpServer.Start(); err != nil {
+			logger.Fatal("Failed to start HTTP server: %v", err)
+		}
+
+		// Use a goroutine to handle connection requests
+		go func() {
+			for req := range httpServer.GetConnectionChannel() {
+				logger.Info("Received connection request via HTTP: id=%s, endpoint=%s", req.ID, req.Endpoint)
+
+				// Set the connection parameters
+				id = req.ID
+				secret = req.Secret
+				endpoint = req.Endpoint
+			}
+		}()
+	}
+
+	// // Check if required parameters are missing and provide helpful guidance
+	// missingParams := []string{}
+	// if id == "" {
+	// 	missingParams = append(missingParams, "id (use -id flag or OLM_ID env var)")
+	// }
+	// if secret == "" {
+	// 	missingParams = append(missingParams, "secret (use -secret flag or OLM_SECRET env var)")
+	// }
+	// if endpoint == "" {
+	// 	missingParams = append(missingParams, "endpoint (use -endpoint flag or PANGOLIN_ENDPOINT env var)")
+	// }
+
+	// if len(missingParams) > 0 {
+	// 	logger.Error("Missing required parameters: %v", missingParams)
+	// 	logger.Error("Either provide them as command line flags or set as environment variables")
+	// 	fmt.Printf("ERROR: Missing required parameters: %v\n", missingParams)
+	// 	fmt.Printf("Please provide them as command line flags or set as environment variables\n")
+	// 	if !enableHTTP {
+	// 		logger.Error("HTTP server is disabled, cannot receive parameters via API")
+	// 		fmt.Printf("HTTP server is disabled, cannot receive parameters via API\n")
+	// 		return
+	// 	}
+	// }
+
+	// // wait until we have a client id and secret and endpoint
+	// waitCount := 0
+	// for id == "" || secret == "" || endpoint == "" {
+	// 	select {
+	// 	case <-ctx.Done():
+	// 		logger.Info("Context cancelled while waiting for credentials")
+	// 		return
+	// 	default:
+	// 		missing := []string{}
+	// 		if id == "" {
+	// 			missing = append(missing, "id")
+	// 		}
+	// 		if secret == "" {
+	// 			missing = append(missing, "secret")
+	// 		}
+	// 		if endpoint == "" {
+	// 			missing = append(missing, "endpoint")
+	// 		}
+	// 		waitCount++
+	// 		if waitCount%10 == 1 { // Log every 10 seconds instead of every second
+	// 			logger.Debug("Waiting for missing parameters: %v (waiting %d seconds)", missing, waitCount)
+	// 		}
+	// 		time.Sleep(1 * time.Second)
+	// 	}
+	// }
 
 	// parse the mtu string into an int
 	mtuInt, err = strconv.Atoi(mtu)
@@ -309,52 +387,76 @@ func main() {
 		logger.Fatal("Failed to generate private key: %v", err)
 	}
 
-	// Create a new client
-	client, err := websocket.NewClient(
+	// Create a new olm
+	olm, err := websocket.NewClient(
+		"olm",
 		id,     // CLI arg takes precedence
 		secret, // CLI arg takes precedence
 		endpoint,
+		pingInterval,
+		pingTimeout,
 	)
 	if err != nil {
-		logger.Fatal("Failed to create client: %v", err)
+		logger.Fatal("Failed to create olm: %v", err)
 	}
+	endpoint = olm.GetConfig().Endpoint // Update endpoint from config
+	id = olm.GetConfig().ID             // Update ID from config
 
 	// Create TUN device and network stack
-	var tun tun.Device
-	var tnet *netstack.Net
 	var dev *device.Device
-	var pm *proxy.ProxyManager
-	var connected bool
 	var wgData WgData
+	var holePunchData HolePunchData
+	var uapiListener net.Listener
+	var tdev tun.Device
 
-	client.RegisterHandler("newt/terminate", func(msg websocket.WSMessage) {
-		logger.Info("Received terminate message")
-		if pm != nil {
-			pm.Stop()
+	sourcePort, err := FindAvailableUDPPort(49152, 65535)
+	if err != nil {
+		fmt.Printf("Error finding available port: %v\n", err)
+		os.Exit(1)
+	}
+
+	olm.RegisterHandler("olm/wg/holepunch", func(msg websocket.WSMessage) {
+		logger.Debug("Received message: %v", msg.Data)
+
+		jsonData, err := json.Marshal(msg.Data)
+		if err != nil {
+			logger.Info("Error marshaling data: %v", err)
+			return
 		}
-		if dev != nil {
-			dev.Close()
+
+		if err := json.Unmarshal(jsonData, &holePunchData); err != nil {
+			logger.Info("Error unmarshaling target data: %v", err)
+			return
 		}
-		client.Close()
+
+		gerbilServerPubKey = holePunchData.ServerPubKey
+
+		go keepSendingUDPHolePunch(holePunchData.Endpoint, id, sourcePort)
 	})
 
-	pingStopChan := make(chan struct{})
-	defer close(pingStopChan)
-
 	// Register handlers for different message types
-	client.RegisterHandler("newt/wg/connect", func(msg websocket.WSMessage) {
-		logger.Info("Received registration message")
+	olm.RegisterHandler("olm/wg/connect", func(msg websocket.WSMessage) {
+		logger.Debug("Received message: %v", msg.Data)
 
 		if connected {
-			logger.Info("Already connected! But I will send a ping anyway...")
-			// ping(tnet, wgData.ServerIP)
-			err = pingWithRetry(tnet, wgData.ServerIP)
-			if err != nil {
-				// Handle complete failure after all retries
-				logger.Warn("Failed to ping %s: %v", wgData.ServerIP, err)
-				logger.Warn("HINT: Do you have UDP port 51280 (or the port in config.yml) open on your Pangolin server?")
-			}
+			logger.Info("Already connected. Ignoring new connection request.")
 			return
+		}
+
+		if stopRegister != nil {
+			stopRegister()
+			stopRegister = nil
+		}
+
+		close(stopHolepunch)
+
+		// wait 10 milliseconds to ensure the previous connection is closed
+		time.Sleep(10 * time.Millisecond)
+
+		// if there is an existing tunnel then close it
+		if dev != nil {
+			logger.Info("Got new message. Closing existing tunnel!")
+			dev.Close()
 		}
 
 		jsonData, err := json.Marshal(msg.Data)
@@ -368,38 +470,82 @@ func main() {
 			return
 		}
 
-		logger.Info("Received: %+v", msg)
-		tun, tnet, err = netstack.CreateNetTUN(
-			[]netip.Addr{netip.MustParseAddr(wgData.TunnelIP)},
-			[]netip.Addr{netip.MustParseAddr(dns)},
-			mtuInt)
+		tdev, err = func() (tun.Device, error) {
+			tunFdStr := os.Getenv(ENV_WG_TUN_FD)
+
+			// if on macOS, call findUnusedUTUN to get a new utun device
+			if runtime.GOOS == "darwin" {
+				interfaceName, err := findUnusedUTUN()
+				if err != nil {
+					return nil, err
+				}
+				return tun.CreateTUN(interfaceName, mtuInt)
+			}
+
+			if tunFdStr == "" {
+				return tun.CreateTUN(interfaceName, mtuInt)
+			}
+
+			return createTUNFromFD(tunFdStr, mtuInt)
+		}()
+
 		if err != nil {
 			logger.Error("Failed to create TUN device: %v", err)
+			return
 		}
 
-		// Create WireGuard device
-		dev = device.NewDevice(tun, conn.NewDefaultBind(), device.NewLogger(
+		realInterfaceName, err2 := tdev.Name()
+		if err2 == nil {
+			interfaceName = realInterfaceName
+		}
+
+		// open UAPI file (or use supplied fd)
+		fileUAPI, err := func() (*os.File, error) {
+			uapiFdStr := os.Getenv(ENV_WG_UAPI_FD)
+			if uapiFdStr == "" {
+				return uapiOpen(interfaceName)
+			}
+
+			// use supplied fd
+
+			fd, err := strconv.ParseUint(uapiFdStr, 10, 32)
+			if err != nil {
+				return nil, err
+			}
+
+			return os.NewFile(uintptr(fd), ""), nil
+		}()
+		if err != nil {
+			logger.Error("UAPI listen error: %v", err)
+			os.Exit(1)
+			return
+		}
+
+		dev = device.NewDevice(tdev, NewFixedPortBind(uint16(sourcePort)), device.NewLogger(
 			mapToWireGuardLogLevel(loggerLevel),
 			"wireguard: ",
 		))
 
-		endpoint, err := resolveDomain(wgData.Endpoint)
+		errs := make(chan error)
+
+		uapiListener, err = uapiListen(interfaceName, fileUAPI)
 		if err != nil {
-			logger.Error("Failed to resolve endpoint: %v", err)
-			return
+			logger.Error("Failed to listen on uapi socket: %v", err)
+			os.Exit(1)
 		}
 
-		// Configure WireGuard
-		config := fmt.Sprintf(`private_key=%s
-public_key=%s
-allowed_ip=%s/32
-endpoint=%s
-persistent_keepalive_interval=5`, fixKey(fmt.Sprintf("%s", privateKey)), fixKey(wgData.PublicKey), wgData.ServerIP, endpoint)
+		go func() {
+			for {
+				conn, err := uapiListener.Accept()
+				if err != nil {
+					errs <- err
+					return
+				}
+				go dev.IpcHandle(conn)
+			}
+		}()
 
-		err = dev.IpcSet(config)
-		if err != nil {
-			logger.Error("Failed to configure WireGuard device: %v", err)
-		}
+		logger.Info("UAPI listener started")
 
 		// Bring up the device
 		err = dev.Up()
@@ -407,206 +553,354 @@ persistent_keepalive_interval=5`, fixKey(fmt.Sprintf("%s", privateKey)), fixKey(
 			logger.Error("Failed to bring up WireGuard device: %v", err)
 		}
 
-		logger.Info("WireGuard device created. Lets ping the server now...")
-		// Ping to bring the tunnel up on the server side quickly
-		// ping(tnet, wgData.ServerIP)
-		err = pingWithRetry(tnet, wgData.ServerIP)
+		// configure the interface
+		err = ConfigureInterface(realInterfaceName, wgData)
 		if err != nil {
-			// Handle complete failure after all retries
-			logger.Error("Failed to ping %s: %v", wgData.ServerIP, err)
+			logger.Error("Failed to configure interface: %v", err)
 		}
 
-		if !connected {
-			logger.Info("Starting ping check")
-			startPingCheck(tnet, wgData.ServerIP, pingStopChan)
+		peerMonitor = peermonitor.NewPeerMonitor(
+			func(siteID int, connected bool, rtt time.Duration) {
+				if httpServer != nil {
+					httpServer.UpdatePeerStatus(siteID, connected, rtt)
+				}
+				if connected {
+					logger.Info("Peer %d is now connected (RTT: %v)", siteID, rtt)
+				} else {
+					logger.Warn("Peer %d is disconnected", siteID)
+				}
+			},
+			fixKey(privateKey.String()),
+			olm,
+			dev,
+			doHolepunch,
+		)
+
+		// loop over the sites and call ConfigurePeer for each one
+		for _, site := range wgData.Sites {
+			if httpServer != nil {
+				httpServer.UpdatePeerStatus(site.SiteId, false, 0)
+			}
+			err = ConfigurePeer(dev, site, privateKey, endpoint)
+			if err != nil {
+				logger.Error("Failed to configure peer: %v", err)
+				return
+			}
+
+			err = addRouteForServerIP(site.ServerIP, interfaceName)
+			if err != nil {
+				logger.Error("Failed to add route for peer: %v", err)
+				return
+			}
+
+			// Add routes for remote subnets
+			if err := addRoutesForRemoteSubnets(site.RemoteSubnets, interfaceName); err != nil {
+				logger.Error("Failed to add routes for remote subnets: %v", err)
+				return
+			}
+
+			logger.Info("Configured peer %s", site.PublicKey)
 		}
 
-		// Create proxy manager
-		pm = proxy.NewProxyManager(tnet)
+		peerMonitor.Start()
 
 		connected = true
 
-		// add the targets if there are any
-		if len(wgData.Targets.TCP) > 0 {
-			updateTargets(pm, "add", wgData.TunnelIP, "tcp", TargetData{Targets: wgData.Targets.TCP})
-		}
+		logger.Info("WireGuard device created.")
+	})
 
-		if len(wgData.Targets.UDP) > 0 {
-			updateTargets(pm, "add", wgData.TunnelIP, "udp", TargetData{Targets: wgData.Targets.UDP})
-		}
+	olm.RegisterHandler("olm/wg/peer/update", func(msg websocket.WSMessage) {
+		logger.Debug("Received update-peer message: %v", msg.Data)
 
-		err = pm.Start()
+		jsonData, err := json.Marshal(msg.Data)
 		if err != nil {
-			logger.Error("Failed to start proxy manager: %v", err)
+			logger.Error("Error marshaling data: %v", err)
+			return
+		}
+
+		var updateData UpdatePeerData
+		if err := json.Unmarshal(jsonData, &updateData); err != nil {
+			logger.Error("Error unmarshaling update data: %v", err)
+			return
+		}
+
+		// Convert to SiteConfig
+		siteConfig := SiteConfig{
+			SiteId:        updateData.SiteId,
+			Endpoint:      updateData.Endpoint,
+			PublicKey:     updateData.PublicKey,
+			ServerIP:      updateData.ServerIP,
+			ServerPort:    updateData.ServerPort,
+			RemoteSubnets: updateData.RemoteSubnets,
+		}
+
+		// Update the peer in WireGuard
+		if dev != nil {
+			// Find the existing peer to get old RemoteSubnets
+			var oldRemoteSubnets string
+			for _, site := range wgData.Sites {
+				if site.SiteId == updateData.SiteId {
+					oldRemoteSubnets = site.RemoteSubnets
+					break
+				}
+			}
+
+			if err := ConfigurePeer(dev, siteConfig, privateKey, endpoint); err != nil {
+				logger.Error("Failed to update peer: %v", err)
+				// Send error response if needed
+				return
+			}
+
+			// Remove old remote subnet routes if they changed
+			if oldRemoteSubnets != siteConfig.RemoteSubnets {
+				if err := removeRoutesForRemoteSubnets(oldRemoteSubnets); err != nil {
+					logger.Error("Failed to remove old remote subnet routes: %v", err)
+					// Continue anyway to add new routes
+				}
+
+				// Add new remote subnet routes
+				if err := addRoutesForRemoteSubnets(siteConfig.RemoteSubnets, interfaceName); err != nil {
+					logger.Error("Failed to add new remote subnet routes: %v", err)
+					return
+				}
+			}
+
+			// Update successful
+			logger.Info("Successfully updated peer for site %d", updateData.SiteId)
+			// If this is part of a WgData structure, update it
+			for i, site := range wgData.Sites {
+				if site.SiteId == updateData.SiteId {
+					wgData.Sites[i] = siteConfig
+					break
+				}
+			}
+		} else {
+			logger.Error("WireGuard device not initialized")
 		}
 	})
 
-	client.RegisterHandler("newt/tcp/add", func(msg websocket.WSMessage) {
-		logger.Info("Received: %+v", msg)
+	// Handler for adding a new peer
+	olm.RegisterHandler("olm/wg/peer/add", func(msg websocket.WSMessage) {
+		logger.Debug("Received add-peer message: %v", msg.Data)
 
-		// if there is no wgData or pm, we can't add targets
-		if wgData.TunnelIP == "" || pm == nil {
-			logger.Info("No tunnel IP or proxy manager available")
-			return
-		}
-
-		targetData, err := parseTargetData(msg.Data)
+		jsonData, err := json.Marshal(msg.Data)
 		if err != nil {
-			logger.Info("Error parsing target data: %v", err)
+			logger.Error("Error marshaling data: %v", err)
 			return
 		}
 
-		if len(targetData.Targets) > 0 {
-			updateTargets(pm, "add", wgData.TunnelIP, "tcp", targetData)
+		var addData AddPeerData
+		if err := json.Unmarshal(jsonData, &addData); err != nil {
+			logger.Error("Error unmarshaling add data: %v", err)
+			return
+		}
+
+		// Convert to SiteConfig
+		siteConfig := SiteConfig{
+			SiteId:        addData.SiteId,
+			Endpoint:      addData.Endpoint,
+			PublicKey:     addData.PublicKey,
+			ServerIP:      addData.ServerIP,
+			ServerPort:    addData.ServerPort,
+			RemoteSubnets: addData.RemoteSubnets,
+		}
+
+		// Add the peer to WireGuard
+		if dev != nil {
+			if err := ConfigurePeer(dev, siteConfig, privateKey, endpoint); err != nil {
+				logger.Error("Failed to add peer: %v", err)
+				return
+			}
+
+			// Add route for the new peer
+			err = addRouteForServerIP(siteConfig.ServerIP, interfaceName)
+			if err != nil {
+				logger.Error("Failed to add route for new peer: %v", err)
+				return
+			}
+
+			// Add routes for remote subnets
+			if err := addRoutesForRemoteSubnets(siteConfig.RemoteSubnets, interfaceName); err != nil {
+				logger.Error("Failed to add routes for remote subnets: %v", err)
+				return
+			}
+
+			// Add successful
+			logger.Info("Successfully added peer for site %d", addData.SiteId)
+
+			// Update WgData with the new peer
+			wgData.Sites = append(wgData.Sites, siteConfig)
+		} else {
+			logger.Error("WireGuard device not initialized")
 		}
 	})
 
-	client.RegisterHandler("newt/udp/add", func(msg websocket.WSMessage) {
-		logger.Info("Received: %+v", msg)
+	// Handler for removing a peer
+	olm.RegisterHandler("olm/wg/peer/remove", func(msg websocket.WSMessage) {
+		logger.Debug("Received remove-peer message: %v", msg.Data)
 
-		// if there is no wgData or pm, we can't add targets
-		if wgData.TunnelIP == "" || pm == nil {
-			logger.Info("No tunnel IP or proxy manager available")
-			return
-		}
-
-		targetData, err := parseTargetData(msg.Data)
+		jsonData, err := json.Marshal(msg.Data)
 		if err != nil {
-			logger.Info("Error parsing target data: %v", err)
+			logger.Error("Error marshaling data: %v", err)
 			return
 		}
 
-		if len(targetData.Targets) > 0 {
-			updateTargets(pm, "add", wgData.TunnelIP, "udp", targetData)
+		var removeData RemovePeerData
+		if err := json.Unmarshal(jsonData, &removeData); err != nil {
+			logger.Error("Error unmarshaling remove data: %v", err)
+			return
+		}
+
+		// Find the peer to remove
+		var peerToRemove *SiteConfig
+		var newSites []SiteConfig
+
+		for _, site := range wgData.Sites {
+			if site.SiteId == removeData.SiteId {
+				peerToRemove = &site
+			} else {
+				newSites = append(newSites, site)
+			}
+		}
+
+		if peerToRemove == nil {
+			logger.Error("Peer with site ID %d not found", removeData.SiteId)
+			return
+		}
+
+		// Remove the peer from WireGuard
+		if dev != nil {
+			if err := RemovePeer(dev, removeData.SiteId, peerToRemove.PublicKey); err != nil {
+				logger.Error("Failed to remove peer: %v", err)
+				// Send error response if needed
+				return
+			}
+
+			// Remove route for the peer
+			err = removeRouteForServerIP(peerToRemove.ServerIP)
+			if err != nil {
+				logger.Error("Failed to remove route for peer: %v", err)
+				return
+			}
+
+			// Remove routes for remote subnets
+			if err := removeRoutesForRemoteSubnets(peerToRemove.RemoteSubnets); err != nil {
+				logger.Error("Failed to remove routes for remote subnets: %v", err)
+				return
+			}
+
+			// Remove successful
+			logger.Info("Successfully removed peer for site %d", removeData.SiteId)
+
+			// Update WgData to remove the peer
+			wgData.Sites = newSites
+		} else {
+			logger.Error("WireGuard device not initialized")
 		}
 	})
 
-	client.RegisterHandler("newt/udp/remove", func(msg websocket.WSMessage) {
-		logger.Info("Received: %+v", msg)
+	olm.RegisterHandler("olm/wg/peer/relay", func(msg websocket.WSMessage) {
+		logger.Debug("Received relay-peer message: %v", msg.Data)
 
-		// if there is no wgData or pm, we can't add targets
-		if wgData.TunnelIP == "" || pm == nil {
-			logger.Info("No tunnel IP or proxy manager available")
-			return
-		}
-
-		targetData, err := parseTargetData(msg.Data)
+		jsonData, err := json.Marshal(msg.Data)
 		if err != nil {
-			logger.Info("Error parsing target data: %v", err)
+			logger.Error("Error marshaling data: %v", err)
 			return
 		}
 
-		if len(targetData.Targets) > 0 {
-			updateTargets(pm, "remove", wgData.TunnelIP, "udp", targetData)
+		var removeData RelayPeerData
+		if err := json.Unmarshal(jsonData, &removeData); err != nil {
+			logger.Error("Error unmarshaling remove data: %v", err)
+			return
 		}
+
+		primaryRelay, err := resolveDomain(removeData.Endpoint)
+		if err != nil {
+			logger.Warn("Failed to resolve primary relay endpoint: %v", err)
+		}
+
+		peerMonitor.HandleFailover(removeData.SiteId, primaryRelay)
 	})
 
-	client.RegisterHandler("newt/tcp/remove", func(msg websocket.WSMessage) {
-		logger.Info("Received: %+v", msg)
-
-		// if there is no wgData or pm, we can't add targets
-		if wgData.TunnelIP == "" || pm == nil {
-			logger.Info("No tunnel IP or proxy manager available")
-			return
-		}
-
-		targetData, err := parseTargetData(msg.Data)
-		if err != nil {
-			logger.Info("Error parsing target data: %v", err)
-			return
-		}
-
-		if len(targetData.Targets) > 0 {
-			updateTargets(pm, "remove", wgData.TunnelIP, "tcp", targetData)
-		}
+	olm.RegisterHandler("olm/terminate", func(msg websocket.WSMessage) {
+		logger.Info("Received terminate message")
+		olm.Close()
 	})
 
-	client.OnConnect(func() error {
+	olm.OnConnect(func() error {
+		logger.Info("Websocket Connected")
+
+		if httpServer != nil {
+			httpServer.SetConnectionStatus(true)
+		}
+
+		if connected {
+			logger.Debug("Already connected, skipping registration")
+			return nil
+		}
+
 		publicKey := privateKey.PublicKey()
-		logger.Debug("Public key: %s", publicKey)
 
-		err := client.SendMessage("newt/wg/register", map[string]interface{}{
-			"publicKey": fmt.Sprintf("%s", publicKey),
-		})
-		if err != nil {
-			logger.Error("Failed to send registration message: %v", err)
-			return err
-		}
+		logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !doHolepunch)
+
+		stopRegister = olm.SendMessageInterval("olm/wg/register", map[string]interface{}{
+			"publicKey": publicKey.String(),
+			"relay":     !doHolepunch,
+		}, 1*time.Second)
+
+		go keepSendingPing(olm)
 
 		logger.Info("Sent registration message")
 		return nil
 	})
 
+	olm.OnTokenUpdate(func(token string) {
+		olmToken = token
+	})
+
 	// Connect to the WebSocket server
-	if err := client.Connect(); err != nil {
+	if err := olm.Connect(); err != nil {
 		logger.Fatal("Failed to connect to server: %v", err)
 	}
-	defer client.Close()
+	defer olm.Close()
 
-	// Wait for interrupt signal
+	// Wait for interrupt signal or context cancellation
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
 
-	// Cleanup
-	dev.Close()
-}
-
-func parseTargetData(data interface{}) (TargetData, error) {
-	var targetData TargetData
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		logger.Info("Error marshaling data: %v", err)
-		return targetData, err
+	select {
+	case <-sigCh:
+		logger.Info("Received interrupt signal")
+	case <-ctx.Done():
+		logger.Info("Context cancelled")
 	}
 
-	if err := json.Unmarshal(jsonData, &targetData); err != nil {
-		logger.Info("Error unmarshaling target data: %v", err)
-		return targetData, err
-	}
-	return targetData, nil
-}
-
-func updateTargets(pm *proxy.ProxyManager, action string, tunnelIP string, proto string, targetData TargetData) error {
-	for _, t := range targetData.Targets {
-		// Split the first number off of the target with : separator and use as the port
-		parts := strings.Split(t, ":")
-		if len(parts) != 3 {
-			logger.Info("Invalid target format: %s", t)
-			continue
-		}
-
-		// Get the port as an int
-		port := 0
-		_, err := fmt.Sscanf(parts[0], "%d", &port)
-		if err != nil {
-			logger.Info("Invalid port: %s", parts[0])
-			continue
-		}
-
-		if action == "add" {
-			target := parts[1] + ":" + parts[2]
-			// Only remove the specific target if it exists
-			err := pm.RemoveTarget(proto, tunnelIP, port)
-			if err != nil {
-				// Ignore "target not found" errors as this is expected for new targets
-				if !strings.Contains(err.Error(), "target not found") {
-					logger.Error("Failed to remove existing target: %v", err)
-				}
-			}
-
-			// Add the new target
-			pm.AddTarget(proto, tunnelIP, port, target)
-
-		} else if action == "remove" {
-			logger.Info("Removing target with port %d", port)
-			err := pm.RemoveTarget(proto, tunnelIP, port)
-			if err != nil {
-				logger.Error("Failed to remove target: %v", err)
-				return err
-			}
-		}
+	select {
+	case <-stopHolepunch:
+		// Channel already closed, do nothing
+	default:
+		close(stopHolepunch)
 	}
 
-	return nil
+	if stopRegister != nil {
+		stopRegister()
+		stopRegister = nil
+	}
+
+	select {
+	case <-stopPing:
+		// Channel already closed
+	default:
+		close(stopPing)
+	}
+
+	if uapiListener != nil {
+		uapiListener.Close()
+	}
+	if dev != nil {
+		dev.Close()
+	}
+
+	logger.Info("runOlmMain() exiting")
+	fmt.Printf("runOlmMain() exiting\n")
 }

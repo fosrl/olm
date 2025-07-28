@@ -4,7 +4,7 @@ set -e
 
 # first arg is `-f` or `--some-option`
 if [ "${1#-}" != "$1" ]; then
-    set -- newt "$@"
+    set -- olm "$@"
 fi
 
 exec "$@"

@@ -1,6 +1,6 @@
 .gitignore
 .dockerignore
-newt
+olm
 *.json
 README.md
 Makefile
