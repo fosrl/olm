@@ -277,6 +277,10 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	logger.Debug("Parameters: endpoint='%s', id='%s', secret='%s'", endpoint, id, secret)
 	logger.Debug("HTTP enabled: %v, HTTP addr: %s", enableHTTP, httpAddr)
 
+	if doHolepunch {
+		logger.Warn("Hole punching is enabled. This is EXPERIMENTAL and may not work in all environments.")
+	}
+
 	// Handle test mode
 	if testMode {
 		if testTarget == "" {
