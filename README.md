@@ -1,6 +1,6 @@
 # Olm
 
-Olm is a [WireGuard](https://www.wireguard.com/) tunnel client designed to securely connect you computer to Newt sites running on remote networks.
+Olm is a [WireGuard](https://www.wireguard.com/) tunnel client designed to securely connect your computer to Newt sites running on remote networks.
 
 ### Installation and Documentation
 
