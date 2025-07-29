@@ -1,22 +1,5 @@
 
-all: build push
-
-docker-build-release:
-	@if [ -z "$(tag)" ]; then \
-		echo "Error: tag is required. Usage: make build-all tag=<tag>"; \
-		exit 1; \
-	fi
-	docker buildx build --platform linux/arm64,linux/amd64 -t fosrl/olm:latest -f Dockerfile --push .
-	docker buildx build --platform linux/arm64,linux/amd64 -t fosrl/olm:$(tag) -f Dockerfile --push .
-
-build:
-	docker build -t fosrl/olm:latest .
-
-push:
-	docker push fosrl/olm:latest
-
-test:
-	docker run fosrl/olm:latest
+all: go-build-release 
 
 local: 
 	CGO_ENABLED=0 go build -o olm

@@ -17,12 +17,6 @@ jobs:
             - name: Set up Docker Buildx
               uses: docker/setup-buildx-action@v2
 
-            - name: Log in to Docker Hub
-              uses: docker/login-action@v2
-              with:
-                  username: ${{ secrets.DOCKER_HUB_USERNAME }}
-                  password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
-
             - name: Extract tag name
               id: get-tag
               run: echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
@@ -32,20 +26,15 @@ jobs:
               with:
                   go-version: 1.23.1
 
-            - name: Update version in main.go
-              run: |
-                  TAG=${{ env.TAG }}
-                  if [ -f main.go ]; then
-                    sed -i 's/Olm version replaceme/Olm version '"$TAG"'/' main.go
-                    echo "Updated main.go with version $TAG"
-                  else
-                    echo "main.go not found"
-                  fi
-
-            - name: Build and push Docker images
-              run: |
-                  TAG=${{ env.TAG }}
-                  make docker-build-release tag=$TAG
+            # - name: Update version in main.go
+            #   run: |
+            #       TAG=${{ env.TAG }}
+            #       if [ -f main.go ]; then
+            #         sed -i 's/Olm version replaceme/Olm version '"$TAG"'/' main.go
+            #         echo "Updated main.go with version $TAG"
+            #       else
+            #         echo "main.go not found"
+            #       fi
 
             - name: Build binaries
               run: |
