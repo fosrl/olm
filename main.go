@@ -822,6 +822,24 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		peerMonitor.HandleFailover(removeData.SiteId, primaryRelay)
 	})
 
+	olm.RegisterHandler("olm/register/no-sites", func(msg websocket.WSMessage) {
+		logger.Info("Received no-sites message - no sites available for connection")
+
+		// if stopRegister != nil {
+		// 	stopRegister()
+		// 	stopRegister = nil
+		// }
+
+		// select {
+		// case <-stopHolepunch:
+		// 	// Channel already closed, do nothing
+		// default:
+		// 	close(stopHolepunch)
+		// }
+
+		logger.Info("No sites available - stopped registration and holepunch processes")
+	})
+
 	olm.RegisterHandler("olm/terminate", func(msg websocket.WSMessage) {
 		logger.Info("Received terminate message")
 		olm.Close()
