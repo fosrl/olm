@@ -16,7 +16,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /olm
 
 # Start a new stage from scratch
-FROM ubuntu:22.04 AS runner
+FROM ubuntu:24.04 AS runner
 
 RUN apt-get update && apt-get install ca-certificates -y  && rm -rf /var/lib/apt/lists/*
 
