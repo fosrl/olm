@@ -52,9 +52,13 @@ type HolePunchMessage struct {
 	NewtID string `json:"newtId"`
 }
 
+type ExitNode struct {
+	Endpoint  string `json:"endpoint"`
+	PublicKey string `json:"publicKey"`
+}
+
 type HolePunchData struct {
-	ServerPubKey string `json:"serverPubKey"`
-	Endpoint     string `json:"endpoint"`
+	ExitNodes []ExitNode `json:"exitNodes"`
 }
 
 type EncryptedHolePunchMessage struct {
@@ -64,13 +68,11 @@ type EncryptedHolePunchMessage struct {
 }
 
 var (
-	peerMonitor        *peermonitor.PeerMonitor
-	stopHolepunch      chan struct{}
-	stopRegister       func()
-	stopPing           chan struct{}
-	olmToken           string
-	gerbilServerPubKey string
-	holePunchRunning   bool
+	peerMonitor   *peermonitor.PeerMonitor
+	stopHolepunch chan struct{}
+	stopRegister  func()
+	stopPing      chan struct{}
+	olmToken      string
 )
 
 const (
@@ -226,8 +228,8 @@ func resolveDomain(domain string) (string, error) {
 	return ipAddr, nil
 }
 
-func sendUDPHolePunchWithConn(conn *net.UDPConn, remoteAddr *net.UDPAddr, olmID string) error {
-	if gerbilServerPubKey == "" || olmToken == "" {
+func sendUDPHolePunchWithConn(conn *net.UDPConn, remoteAddr *net.UDPAddr, olmID string, serverPubKey string) error {
+	if serverPubKey == "" || olmToken == "" {
 		return nil
 	}
 
@@ -246,7 +248,7 @@ func sendUDPHolePunchWithConn(conn *net.UDPConn, remoteAddr *net.UDPAddr, olmID 
 	}
 
 	// Encrypt the payload using the server's WireGuard public key
-	encryptedPayload, err := encryptPayload(payloadBytes, gerbilServerPubKey)
+	encryptedPayload, err := encryptPayload(payloadBytes, serverPubKey)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt payload: %v", err)
 	}
@@ -319,19 +321,9 @@ func encryptPayload(payload []byte, serverPublicKey string) (interface{}, error)
 	return encryptedMsg, nil
 }
 
-func keepSendingUDPHolePunch(endpoint string, olmID string, sourcePort uint16) {
-	// Check if hole punching is already running
-	if holePunchRunning {
-		logger.Debug("UDP hole punch already running, skipping new request")
-		return
-	}
-
-	// Set the flag to indicate hole punching is running
-	holePunchRunning = true
-	defer func() {
-		holePunchRunning = false
-		logger.Info("UDP hole punch goroutine ended")
-	}()
+func keepSendingUDPHolePunch(endpoint string, olmID string, sourcePort uint16, serverPubKey string) {
+	logger.Info("Starting UDP hole punch to %s", endpoint)
+	defer logger.Info("UDP hole punch goroutine ended for %s", endpoint)
 
 	host, err := resolveDomain(endpoint)
 	if err != nil {
@@ -361,7 +353,7 @@ func keepSendingUDPHolePunch(endpoint string, olmID string, sourcePort uint16) {
 	defer conn.Close()
 
 	// Execute once immediately before starting the loop
-	if err := sendUDPHolePunchWithConn(conn, remoteAddr, olmID); err != nil {
+	if err := sendUDPHolePunchWithConn(conn, remoteAddr, olmID, serverPubKey); err != nil {
 		logger.Error("Failed to send UDP hole punch: %v", err)
 	}
 
@@ -374,7 +366,7 @@ func keepSendingUDPHolePunch(endpoint string, olmID string, sourcePort uint16) {
 			logger.Info("Stopping UDP holepunch")
 			return
 		case <-ticker.C:
-			if err := sendUDPHolePunchWithConn(conn, remoteAddr, olmID); err != nil {
+			if err := sendUDPHolePunchWithConn(conn, remoteAddr, olmID, serverPubKey); err != nil {
 				logger.Error("Failed to send UDP hole punch: %v", err)
 			}
 		}
