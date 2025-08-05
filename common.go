@@ -68,11 +68,12 @@ type EncryptedHolePunchMessage struct {
 }
 
 var (
-	peerMonitor   *peermonitor.PeerMonitor
-	stopHolepunch chan struct{}
-	stopRegister  func()
-	stopPing      chan struct{}
-	olmToken      string
+	peerMonitor      *peermonitor.PeerMonitor
+	stopHolepunch    chan struct{}
+	stopRegister     func()
+	stopPing         chan struct{}
+	olmToken         string
+	holePunchRunning bool
 )
 
 const (
@@ -321,7 +322,117 @@ func encryptPayload(payload []byte, serverPublicKey string) (interface{}, error)
 	return encryptedMsg, nil
 }
 
+func keepSendingUDPHolePunchToMultipleExitNodes(exitNodes []ExitNode, olmID string, sourcePort uint16) {
+	if len(exitNodes) == 0 {
+		logger.Warn("No exit nodes provided for hole punching")
+		return
+	}
+
+	// Check if hole punching is already running
+	if holePunchRunning {
+		logger.Debug("UDP hole punch already running, skipping new request")
+		return
+	}
+
+	// Set the flag to indicate hole punching is running
+	holePunchRunning = true
+	defer func() {
+		holePunchRunning = false
+		logger.Info("UDP hole punch goroutine ended")
+	}()
+
+	logger.Info("Starting UDP hole punch to %d exit nodes", len(exitNodes))
+	defer logger.Info("UDP hole punch goroutine ended for all exit nodes")
+
+	// Create the UDP connection once and reuse it for all exit nodes
+	localAddr := &net.UDPAddr{
+		Port: int(sourcePort),
+		IP:   net.IPv4zero,
+	}
+
+	conn, err := net.ListenUDP("udp", localAddr)
+	if err != nil {
+		logger.Error("Failed to bind UDP socket: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	// Resolve all endpoints upfront
+	type resolvedExitNode struct {
+		remoteAddr   *net.UDPAddr
+		publicKey    string
+		endpointName string
+	}
+
+	var resolvedNodes []resolvedExitNode
+	for _, exitNode := range exitNodes {
+		host, err := resolveDomain(exitNode.Endpoint)
+		if err != nil {
+			logger.Error("Failed to resolve endpoint %s: %v", exitNode.Endpoint, err)
+			continue
+		}
+
+		serverAddr := host + ":21820"
+		remoteAddr, err := net.ResolveUDPAddr("udp", serverAddr)
+		if err != nil {
+			logger.Error("Failed to resolve UDP address for %s: %v", exitNode.Endpoint, err)
+			continue
+		}
+
+		resolvedNodes = append(resolvedNodes, resolvedExitNode{
+			remoteAddr:   remoteAddr,
+			publicKey:    exitNode.PublicKey,
+			endpointName: exitNode.Endpoint,
+		})
+		logger.Info("Resolved exit node: %s -> %s", exitNode.Endpoint, remoteAddr.String())
+	}
+
+	if len(resolvedNodes) == 0 {
+		logger.Error("No exit nodes could be resolved")
+		return
+	}
+
+	// Send initial hole punch to all exit nodes
+	for _, node := range resolvedNodes {
+		if err := sendUDPHolePunchWithConn(conn, node.remoteAddr, olmID, node.publicKey); err != nil {
+			logger.Error("Failed to send initial UDP hole punch to %s: %v", node.endpointName, err)
+		}
+	}
+
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stopHolepunch:
+			logger.Info("Stopping UDP holepunch for all exit nodes")
+			return
+		case <-ticker.C:
+			// Send hole punch to all exit nodes
+			for _, node := range resolvedNodes {
+				if err := sendUDPHolePunchWithConn(conn, node.remoteAddr, olmID, node.publicKey); err != nil {
+					logger.Error("Failed to send UDP hole punch to %s: %v", node.endpointName, err)
+				}
+			}
+		}
+	}
+}
+
 func keepSendingUDPHolePunch(endpoint string, olmID string, sourcePort uint16, serverPubKey string) {
+
+	// Check if hole punching is already running
+	if holePunchRunning {
+		logger.Debug("UDP hole punch already running, skipping new request")
+		return
+	}
+
+	// Set the flag to indicate hole punching is running
+	holePunchRunning = true
+	defer func() {
+		holePunchRunning = false
+		logger.Info("UDP hole punch goroutine ended")
+	}()
+
 	logger.Info("Starting UDP hole punch to %s", endpoint)
 	defer logger.Info("UDP hole punch goroutine ended for %s", endpoint)
 
