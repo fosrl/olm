@@ -331,6 +331,7 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	var httpServer *httpserver.HTTPServer
 	if enableHTTP {
 		httpServer = httpserver.NewHTTPServer(httpAddr)
+		httpServer.SetVersion(olmVersion)
 		if err := httpServer.Start(); err != nil {
 			logger.Fatal("Failed to start HTTP server: %v", err)
 		}
@@ -372,31 +373,31 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	// 	}
 	// }
 
-	// // wait until we have a client id and secret and endpoint
-	// waitCount := 0
-	// for id == "" || secret == "" || endpoint == "" {
-	// 	select {
-	// 	case <-ctx.Done():
-	// 		logger.Info("Context cancelled while waiting for credentials")
-	// 		return
-	// 	default:
-	// 		missing := []string{}
-	// 		if id == "" {
-	// 			missing = append(missing, "id")
-	// 		}
-	// 		if secret == "" {
-	// 			missing = append(missing, "secret")
-	// 		}
-	// 		if endpoint == "" {
-	// 			missing = append(missing, "endpoint")
-	// 		}
-	// 		waitCount++
-	// 		if waitCount%10 == 1 { // Log every 10 seconds instead of every second
-	// 			logger.Debug("Waiting for missing parameters: %v (waiting %d seconds)", missing, waitCount)
-	// 		}
-	// 		time.Sleep(1 * time.Second)
-	// 	}
-	// }
+	// wait until we have a client id and secret and endpoint
+	waitCount := 0
+	for id == "" || secret == "" || endpoint == "" {
+		select {
+		case <-ctx.Done():
+			logger.Info("Context cancelled while waiting for credentials")
+			return
+		default:
+			missing := []string{}
+			if id == "" {
+				missing = append(missing, "id")
+			}
+			if secret == "" {
+				missing = append(missing, "secret")
+			}
+			if endpoint == "" {
+				missing = append(missing, "endpoint")
+			}
+			waitCount++
+			if waitCount%10 == 1 { // Log every 10 seconds instead of every second
+				logger.Debug("Waiting for missing parameters: %v (waiting %d seconds)", missing, waitCount)
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}
 
 	// parse the mtu string into an int
 	mtuInt, err = strconv.Atoi(mtu)
@@ -644,10 +645,27 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 			logger.Error("Failed to configure interface: %v", err)
 		}
 
+		// Set tunnel IP in HTTP server
+		if httpServer != nil {
+			httpServer.SetTunnelIP(wgData.TunnelIP)
+		}
+
 		peerMonitor = peermonitor.NewPeerMonitor(
 			func(siteID int, connected bool, rtt time.Duration) {
 				if httpServer != nil {
-					httpServer.UpdatePeerStatus(siteID, connected, rtt)
+					// Find the site config to get endpoint information
+					var endpoint string
+					var isRelay bool
+					for _, site := range wgData.Sites {
+						if site.SiteId == siteID {
+							endpoint = site.Endpoint
+							// TODO: We'll need to track relay status separately
+							// For now, assume not using relay unless we get relay data
+							isRelay = !doHolepunch
+							break
+						}
+					}
+					httpServer.UpdatePeerStatus(siteID, connected, rtt, endpoint, isRelay)
 				}
 				if connected {
 					logger.Info("Peer %d is now connected (RTT: %v)", siteID, rtt)
@@ -664,7 +682,7 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		// loop over the sites and call ConfigurePeer for each one
 		for _, site := range wgData.Sites {
 			if httpServer != nil {
-				httpServer.UpdatePeerStatus(site.SiteId, false, 0)
+				httpServer.UpdatePeerStatus(site.SiteId, false, 0, site.Endpoint, false)
 			}
 			err = ConfigurePeer(dev, site, privateKey, endpoint)
 			if err != nil {
@@ -893,18 +911,23 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 			return
 		}
 
-		var removeData RelayPeerData
-		if err := json.Unmarshal(jsonData, &removeData); err != nil {
-			logger.Error("Error unmarshaling remove data: %v", err)
+		var relayData RelayPeerData
+		if err := json.Unmarshal(jsonData, &relayData); err != nil {
+			logger.Error("Error unmarshaling relay data: %v", err)
 			return
 		}
 
-		primaryRelay, err := resolveDomain(removeData.Endpoint)
+		primaryRelay, err := resolveDomain(relayData.Endpoint)
 		if err != nil {
 			logger.Warn("Failed to resolve primary relay endpoint: %v", err)
 		}
 
-		peerMonitor.HandleFailover(removeData.SiteId, primaryRelay)
+		// Update HTTP server to mark this peer as using relay
+		if httpServer != nil {
+			httpServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.Endpoint, true)
+		}
+
+		peerMonitor.HandleFailover(relayData.SiteId, primaryRelay)
 	})
 
 	olm.RegisterHandler("olm/register/no-sites", func(msg websocket.WSMessage) {

@@ -23,6 +23,8 @@ type PeerStatus struct {
 	Connected bool          `json:"connected"`
 	RTT       time.Duration `json:"rtt"`
 	LastSeen  time.Time     `json:"lastSeen"`
+	Endpoint  string        `json:"endpoint,omitempty"`
+	IsRelay   bool          `json:"isRelay"`
 }
 
 // StatusResponse is returned by the status endpoint
@@ -30,6 +32,7 @@ type StatusResponse struct {
 	Status       string              `json:"status"`
 	Connected    bool                `json:"connected"`
 	TunnelIP     string              `json:"tunnelIP,omitempty"`
+	Version      string              `json:"version,omitempty"`
 	PeerStatuses map[int]*PeerStatus `json:"peers,omitempty"`
 }
 
@@ -42,6 +45,8 @@ type HTTPServer struct {
 	peerStatuses   map[int]*PeerStatus
 	connectedAt    time.Time
 	isConnected    bool
+	tunnelIP       string
+	version        string
 }
 
 // NewHTTPServer creates a new HTTP server
@@ -87,8 +92,8 @@ func (s *HTTPServer) GetConnectionChannel() <-chan ConnectionRequest {
 	return s.connectionChan
 }
 
-// UpdatePeerStatus updates the status of a peer
-func (s *HTTPServer) UpdatePeerStatus(siteID int, connected bool, rtt time.Duration) {
+// UpdatePeerStatus updates the status of a peer including endpoint and relay info
+func (s *HTTPServer) UpdatePeerStatus(siteID int, connected bool, rtt time.Duration, endpoint string, isRelay bool) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 
@@ -103,6 +108,8 @@ func (s *HTTPServer) UpdatePeerStatus(siteID int, connected bool, rtt time.Durat
 	status.Connected = connected
 	status.RTT = rtt
 	status.LastSeen = time.Now()
+	status.Endpoint = endpoint
+	status.IsRelay = isRelay
 }
 
 // SetConnectionStatus sets the overall connection status
@@ -118,6 +125,37 @@ func (s *HTTPServer) SetConnectionStatus(isConnected bool) {
 		// Clear peer statuses when disconnected
 		s.peerStatuses = make(map[int]*PeerStatus)
 	}
+}
+
+// SetTunnelIP sets the tunnel IP address
+func (s *HTTPServer) SetTunnelIP(tunnelIP string) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.tunnelIP = tunnelIP
+}
+
+// SetVersion sets the olm version
+func (s *HTTPServer) SetVersion(version string) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.version = version
+}
+
+// UpdatePeerRelayStatus updates only the relay status of a peer
+func (s *HTTPServer) UpdatePeerRelayStatus(siteID int, endpoint string, isRelay bool) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+
+	status, exists := s.peerStatuses[siteID]
+	if !exists {
+		status = &PeerStatus{
+			SiteID: siteID,
+		}
+		s.peerStatuses[siteID] = status
+	}
+
+	status.Endpoint = endpoint
+	status.IsRelay = isRelay
 }
 
 // handleConnect handles the /connect endpoint
@@ -163,6 +201,8 @@ func (s *HTTPServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	resp := StatusResponse{
 		Connected:    s.isConnected,
+		TunnelIP:     s.tunnelIP,
+		Version:      s.version,
 		PeerStatuses: s.peerStatuses,
 	}
 

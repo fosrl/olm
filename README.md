@@ -121,6 +121,109 @@ You can view the Windows Event Log using Event Viewer or PowerShell:
 Get-EventLog -LogName Application -Source "OlmWireguardService" -Newest 10
 ```
 
+## HTTP Endpoints
+
+Olm can be controlled with an embedded http server when using `--enable-http`. This allows you to start it as a daemon and trigger it with the following endpoints:
+
+### POST /connect
+Initiates a new connection request.
+
+**Request Body:**
+```json
+{
+  "id": "string",
+  "secret": "string", 
+  "endpoint": "string"
+}
+```
+
+**Required Fields:**
+- `id`: Connection identifier
+- `secret`: Authentication secret
+- `endpoint`: Target endpoint URL
+
+**Response:**
+- **Status Code:** `202 Accepted`
+- **Content-Type:** `application/json`
+
+```json
+{
+  "status": "connection request accepted"
+}
+```
+
+**Error Responses:**
+- `405 Method Not Allowed` - Non-POST requests
+- `400 Bad Request` - Invalid JSON or missing required fields
+
+### GET /status
+Returns the current connection status and peer information.
+
+**Response:**
+- **Status Code:** `200 OK`
+- **Content-Type:** `application/json`
+
+```json
+{
+  "status": "connected",
+  "connected": true,
+  "tunnelIP": "100.89.128.3/20",
+  "version": "version_replaceme",
+  "peers": {
+    "10": {
+      "siteId": 10,
+      "connected": true,
+      "rtt": 145338339,
+      "lastSeen": "2025-08-13T14:39:17.208334428-07:00",
+      "endpoint": "p.fosrl.io:21820",
+      "isRelay": true
+    },
+    "8": {
+      "siteId": 8,
+      "connected": false,
+      "rtt": 0,
+      "lastSeen": "2025-08-13T14:39:19.663823645-07:00",
+      "endpoint": "p.fosrl.io:21820",
+      "isRelay": true
+    }
+  }
+}
+```
+
+**Fields:**
+- `status`: Overall connection status ("connected" or "disconnected")
+- `connected`: Boolean connection state
+- `tunnelIP`: IP address and subnet of the tunnel (when connected)
+- `version`: Olm version string
+- `peers`: Map of peer statuses by site ID
+  - `siteId`: Peer site identifier
+  - `connected`: Boolean peer connection state
+  - `rtt`: Peer round-trip time (integer, nanoseconds)
+  - `lastSeen`: Last time peer was seen (RFC3339 timestamp)
+  - `endpoint`: Peer endpoint address
+  - `isRelay`: Whether the peer is relayed (true) or direct (false)
+
+**Error Responses:**
+- `405 Method Not Allowed` - Non-GET requests
+
+## Usage Examples
+
+### Connect to a peer
+```bash
+curl -X POST http://localhost:8080/connect \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "31frd0uzbjvp721",
+    "secret": "h51mmlknrvrwv8s4r1i210azhumt6isgbpyavxodibx1k2d6",
+    "endpoint": "https://example.com"
+  }'
+```
+
+### Check connection status
+```bash
+curl http://localhost:8080/status
+```
+
 ## Build
 
 ### Container
