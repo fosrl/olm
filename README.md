@@ -226,14 +226,6 @@ curl http://localhost:8080/status
 
 ## Build
 
-### Container
-
-Ensure Docker is installed.
-
-```bash
-make
-```
-
 ### Binary
 
 Make sure to have Go 1.23.1 installed.
