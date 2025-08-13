@@ -197,7 +197,11 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	httpAddr = os.Getenv("HTTP_ADDR")
 	pingIntervalStr := os.Getenv("PING_INTERVAL")
 	pingTimeoutStr := os.Getenv("PING_TIMEOUT")
-	doHolepunch = os.Getenv("HOLEPUNCH") == "true" // Default to true, can be overridden by flag
+	enableHTTPEnv := os.Getenv("ENABLE_HTTP")
+	holepunchEnv := os.Getenv("HOLEPUNCH")
+
+	enableHTTP = enableHTTPEnv == "true"
+	doHolepunch = holepunchEnv == "true"
 
 	if endpoint == "" {
 		serviceFlags.StringVar(&endpoint, "endpoint", "", "Endpoint of your Pangolin server")
@@ -229,8 +233,12 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	if pingTimeoutStr == "" {
 		serviceFlags.StringVar(&pingTimeoutStr, "ping-timeout", "5s", "	Timeout for each ping (default 3s)")
 	}
-	serviceFlags.BoolVar(&enableHTTP, "enable-http", false, "Enable HTT server for receiving connection requests")
-	serviceFlags.BoolVar(&doHolepunch, "holepunch", false, "Enable hole punching (default false)")
+	if enableHTTPEnv == "" {
+		serviceFlags.BoolVar(&enableHTTP, "enable-http", false, "Enable HTT server for receiving connection requests")
+	}
+	if holepunchEnv == "" {
+		serviceFlags.BoolVar(&doHolepunch, "holepunch", false, "Enable hole punching (default false)")
+	}
 
 	version := serviceFlags.Bool("version", false, "Print the version")
 
