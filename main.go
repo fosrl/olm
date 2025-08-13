@@ -451,6 +451,66 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		go keepSendingUDPHolePunchToMultipleExitNodes(holePunchData.ExitNodes, id, sourcePort)
 	})
 
+	olm.RegisterHandler("olm/wg/holepunch", func(msg websocket.WSMessage) {
+		// THIS ENDPOINT IS FOR BACKWARD COMPATIBILITY
+		logger.Debug("Received message: %v", msg.Data)
+
+		type LegacyHolePunchData struct {
+			ServerPubKey string `json:"serverPubKey"`
+			Endpoint     string `json:"endpoint"`
+		}
+
+		var legacyHolePunchData LegacyHolePunchData
+
+		jsonData, err := json.Marshal(msg.Data)
+		if err != nil {
+			logger.Info("Error marshaling data: %v", err)
+			return
+		}
+
+		if err := json.Unmarshal(jsonData, &legacyHolePunchData); err != nil {
+			logger.Info("Error unmarshaling target data: %v", err)
+			return
+		}
+
+		// Stop any existing hole punch goroutines by closing the current channel
+		select {
+		case <-stopHolepunch:
+			// Channel already closed
+		default:
+			close(stopHolepunch)
+		}
+
+		// Create a new stopHolepunch channel for the new set of goroutines
+		stopHolepunch = make(chan struct{})
+
+		// Start hole punching for each exit node
+		logger.Info("Starting hole punch for exit node: %s with public key: %s", legacyHolePunchData.Endpoint, legacyHolePunchData.ServerPubKey)
+		go keepSendingUDPHolePunch(legacyHolePunchData.Endpoint, id, sourcePort, legacyHolePunchData.ServerPubKey)
+	})
+
+	olm.RegisterHandler("olm/wg/holepunch/all", func(msg websocket.WSMessage) {
+		logger.Debug("Received message: %v", msg.Data)
+
+		jsonData, err := json.Marshal(msg.Data)
+		if err != nil {
+			logger.Info("Error marshaling data: %v", err)
+			return
+		}
+
+		if err := json.Unmarshal(jsonData, &holePunchData); err != nil {
+			logger.Info("Error unmarshaling target data: %v", err)
+			return
+		}
+
+		// Create a new stopHolepunch channel for the new set of goroutines
+		stopHolepunch = make(chan struct{})
+
+		// Start a single hole punch goroutine for all exit nodes
+		logger.Info("Starting hole punch for %d exit nodes", len(holePunchData.ExitNodes))
+		go keepSendingUDPHolePunchToMultipleExitNodes(holePunchData.ExitNodes, id, sourcePort)
+	})
+
 	// Register handlers for different message types
 	olm.RegisterHandler("olm/wg/connect", func(msg websocket.WSMessage) {
 		logger.Debug("Received message: %v", msg.Data)
@@ -879,8 +939,9 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !doHolepunch)
 
 		stopRegister = olm.SendMessageInterval("olm/wg/register", map[string]interface{}{
-			"publicKey": publicKey.String(),
-			"relay":     !doHolepunch,
+			"publicKey":  publicKey.String(),
+			"relay":      !doHolepunch,
+			"olmVersion": olmVersion,
 		}, 1*time.Second)
 
 		go keepSendingPing(olm)
