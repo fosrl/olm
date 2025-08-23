@@ -48,6 +48,7 @@ All CLI arguments can also be set via environment variables:
 -   `PING_INTERVAL`: Equivalent to `--ping-interval`
 -   `PING_TIMEOUT`: Equivalent to `--ping-timeout`
 -   `HOLEPUNCH`: Set to "true" to enable hole punching (equivalent to `--holepunch`)
+-   `CONFIG_FILE`: Set to the location of a JSON file to load secret values
 
 Example:
 
@@ -57,6 +58,28 @@ olm \
 --secret h51mmlknrvrwv8s4r1i210azhumt6isgbpyavxodibx1k2d6 \
 --endpoint https://example.com
 ```
+
+## Loading secrets from files
+
+You can use `CONFIG_FILE` to define a location of a config file to store the credentials between runs. 
+
+```
+$ cat ~/.config/olm-client/config.json
+{
+  "id": "spmzu8rbpzj1qq6",
+  "secret": "f6v61mjutwme2kkydbw3fjo227zl60a2tsf5psw9r25hgae3",
+  "endpoint": "https://pangolin.fossorial.io",
+  "tlsClientCert": ""
+}
+```
+
+This file is also written to when newt first starts up. So you do not need to run every time with --id and secret if you have run it once! 
+
+Default locations: 
+
+- **macOS**: `~/Library/Application Support/olm-client/config.json`
+- **Windows**: `%PROGRAMDATA%\olm\olm-client\config.json`
+- **Linux/Others**: `~/.config/olm-client/config.json`
 
 ## Hole Punching
 
