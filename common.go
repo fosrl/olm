@@ -695,7 +695,7 @@ func configureWindows(interfaceName string, ip net.IP, ipNet *net.IPNet) error {
 	maskIP := net.IP(mask)
 
 	// Set the IP address using netsh
-	cmd := exec.Command("netsh", "interface", "ipv4", "set", "address",
+	cmd := exec.Command("C:\\Windows\\System32\\netsh.exe", "interface", "ipv4", "set", "address",
 		fmt.Sprintf("name=%s", interfaceName),
 		"source=static",
 		fmt.Sprintf("addr=%s", ip.String()),
