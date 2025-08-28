@@ -1,6 +1,6 @@
 module github.com/fosrl/olm
 
-go 1.24
+go 1.25
 
 require (
 	github.com/fosrl/newt v0.0.0-20250730062419-3ccd755d557a
