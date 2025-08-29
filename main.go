@@ -537,7 +537,8 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		close(stopHolepunch)
 
 		// wait 10 milliseconds to ensure the previous connection is closed
-		time.Sleep(200 * time.Millisecond)
+		logger.Debug("Waiting 500 milliseconds to ensure previous connection is closed")
+		time.Sleep(500 * time.Millisecond)
 
 		// if there is an existing tunnel then close it
 		if dev != nil {
