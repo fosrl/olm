@@ -16,9 +16,9 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /olm
 
 # Start a new stage from scratch
-FROM ubuntu:24.04 AS runner
+FROM alpine:3.22 AS runner
 
-RUN apt-get update && apt-get install ca-certificates -y  && rm -rf /var/lib/apt/lists/*
+RUN apk --no-cache add ca-certificates
 
 # Copy the pre-built binary file from the previous stage and the entrypoint script
 COPY --from=builder /olm /usr/local/bin/
