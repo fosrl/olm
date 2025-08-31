@@ -21,5 +21,8 @@ jobs:
       - name: Build go
         run: go build
 
+      - name: Build Docker image
+        run: make build
+
       - name: Build binaries
         run: make go-build-release
