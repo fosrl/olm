@@ -1,0 +1,15 @@
+services:
+  olm:
+    image: fosrl/olm:latest
+    container_name: olm
+    restart: unless-stopped
+    environment:
+      - PANGOLIN_ENDPOINT=https://example.com
+      - OLM_ID=vdqnz8rwgb95cnp 
+      - OLM_SECRET=1sw05qv1tkfdb1k81zpw05nahnnjvmhxjvf746umwagddmdg 
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    network_mode: host
