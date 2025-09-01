@@ -120,15 +120,14 @@ olm.exe debug
 olm.exe help
 ```
 
+Note running the service requires credentials in `%PROGRAMDATA%\olm\olm-client\config.json`.
+
 ### Service Configuration
 
 When running as a service, Olm will read configuration from environment variables or you can modify the service to include command-line arguments:
 
 1. Install the service: `olm.exe install`
-2. Configure the service with your credentials using Windows Service Manager or by setting system environment variables:
-    - `PANGOLIN_ENDPOINT=https://example.com`
-    - `OLM_ID=your_olm_id`
-    - `OLM_SECRET=your_secret`
+2. Set the credentials in `%PROGRAMDATA%\olm\olm-client\config.json`. Hint: if you run olm once with --id and --secret this file will be populated! 
 3. Start the service: `olm.exe start`
 
 ### Service Logs
