@@ -372,7 +372,7 @@ func keepSendingUDPHolePunchToMultipleExitNodes(exitNodes []ExitNode, olmID stri
 			continue
 		}
 
-		serverAddr := host + ":21820"
+		serverAddr := net.JoinHostPort(host, "21820")
 		remoteAddr, err := net.ResolveUDPAddr("udp", serverAddr)
 		if err != nil {
 			logger.Error("Failed to resolve UDP address for %s: %v", exitNode.Endpoint, err)
@@ -442,7 +442,7 @@ func keepSendingUDPHolePunch(endpoint string, olmID string, sourcePort uint16, s
 		return
 	}
 
-	serverAddr := host + ":21820"
+	serverAddr := net.JoinHostPort(host, "21820")
 
 	// Create the UDP connection once and reuse it
 	localAddr := &net.UDPAddr{
@@ -613,7 +613,7 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 	// Set up peer monitoring
 	if peerMonitor != nil {
 		monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
-		monitorPeer := fmt.Sprintf("%s:%d", monitorAddress, siteConfig.ServerPort+1) // +1 for the monitor port
+		monitorPeer := net.JoinHostPort(monitorAddress, strconv.Itoa(int(siteConfig.ServerPort+1))) // +1 for the monitor port
 		logger.Debug("Setting up peer monitor for site %d at %s", siteConfig.SiteId, monitorPeer)
 
 		primaryRelay, err := resolveDomain(endpoint) // Using global endpoint variable
