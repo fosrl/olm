@@ -50,7 +50,7 @@ All CLI arguments can also be set via environment variables:
 -   `HOLEPUNCH`: Set to "true" to enable hole punching (equivalent to `--holepunch`)
 -   `CONFIG_FILE`: Set to the location of a JSON file to load secret values
 
-Example:
+Examples:
 
 ```bash
 olm \
@@ -58,6 +58,45 @@ olm \
 --secret h51mmlknrvrwv8s4r1i210azhumt6isgbpyavxodibx1k2d6 \
 --endpoint https://example.com
 ```
+
+You can also run it with Docker compose. For example, a service in your `docker-compose.yml` might look like this using environment vars (recommended):
+
+```yaml
+services:
+    olm:
+        image: fosrl/olm
+        container_name: olm
+        restart: unless-stopped
+        network_mode: host
+        devices:
+            - /dev/net/tun:/dev/net/tun
+        environment:
+            - PANGOLIN_ENDPOINT=https://example.com
+            - OLM_ID=31frd0uzbjvp721
+            - OLM_SECRET=h51mmlknrvrwv8s4r1i210azhumt6isgbpyavxodibx1k2d6
+```
+
+You can also pass the CLI args to the container:
+
+```yaml
+services:
+    olm:
+        image: fosrl/olm
+        container_name: olm
+        restart: unless-stopped
+        network_mode: host
+        devices:
+            - /dev/net/tun:/dev/net/tun
+        command:
+            - --id 31frd0uzbjvp721
+            - --secret h51mmlknrvrwv8s4r1i210azhumt6isgbpyavxodibx1k2d6
+            - --endpoint https://example.com
+```
+
+**Docker Configuration Notes:**
+
+- `network_mode: host` brings the olm network interface to the host system, allowing the WireGuard tunnel to function properly
+- `devices: - /dev/net/tun:/dev/net/tun` is required to give the container access to the TUN device for creating WireGuard interfaces
 
 ## Loading secrets from files
 
