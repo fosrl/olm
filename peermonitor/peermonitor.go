@@ -3,6 +3,7 @@ package peermonitor
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -204,12 +205,18 @@ func (pm *PeerMonitor) HandleFailover(siteID int, relayEndpoint string) {
 		return
 	}
 
+    // Check for IPv6 and format the endpoint correctly
+    formattedEndpoint := relayEndpoint
+    if strings.Contains(relayEndpoint, ":") {
+        formattedEndpoint = fmt.Sprintf("[%s]", relayEndpoint)
+    }
+
 	// Configure WireGuard to use the relay
 	wgConfig := fmt.Sprintf(`private_key=%s
 public_key=%s
 allowed_ip=%s/32
 endpoint=%s:21820
-persistent_keepalive_interval=1`, pm.privateKey, config.PublicKey, config.ServerIP, relayEndpoint)
+persistent_keepalive_interval=1`, pm.privateKey, config.PublicKey, config.ServerIP, formattedEndpoint) // Use the correctly formatted endpoint here
 
 	err := pm.device.IpcSet(wgConfig)
 	if err != nil {
