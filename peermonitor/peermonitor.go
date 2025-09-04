@@ -216,7 +216,7 @@ func (pm *PeerMonitor) HandleFailover(siteID int, relayEndpoint string) {
 public_key=%s
 allowed_ip=%s/32
 endpoint=%s:21820
-persistent_keepalive_interval=1`, pm.privateKey, config.PublicKey, config.ServerIP, formattedEndpoint) // Use the correctly formatted endpoint here
+persistent_keepalive_interval=1`, pm.privateKey, config.PublicKey, config.ServerIP, formattedEndpoint)
 
 	err := pm.device.IpcSet(wgConfig)
 	if err != nil {
