@@ -63,8 +63,15 @@ func main() {
 	}
 
 	// Handle service management commands on Windows
-	if runtime.GOOS == "windows" && len(os.Args) > 1 {
-		switch os.Args[1] {
+	if runtime.GOOS == "windows" {
+		var command string
+		if len(os.Args) > 1 {
+			command = os.Args[1]
+		} else {
+			command = "default"
+		}
+
+		switch command {
 		case "install":
 			err := installService()
 			if err != nil {
@@ -147,6 +154,7 @@ func main() {
 			fmt.Println("  stop        Stop the service")
 			fmt.Println("  status      Show service status")
 			fmt.Println("  debug       Run service in debug mode")
+			fmt.Println("  logs        Tail the service log file")
 			fmt.Println("\nFor console mode, run without arguments or with standard flags.")
 			return
 		default:
@@ -402,6 +410,22 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	// 	}
 	// }
 
+	// Create a new olm
+	olm, err := websocket.NewClient(
+		"olm",
+		id,     // CLI arg takes precedence
+		secret, // CLI arg takes precedence
+		endpoint,
+		pingInterval,
+		pingTimeout,
+	)
+	if err != nil {
+		logger.Fatal("Failed to create olm: %v", err)
+	}
+	endpoint = olm.GetConfig().Endpoint // Update endpoint from config
+	id = olm.GetConfig().ID             // Update ID from config
+	secret = olm.GetConfig().Secret     // Update secret from config
+
 	// wait until we have a client id and secret and endpoint
 	waitCount := 0
 	for id == "" || secret == "" || endpoint == "" {
@@ -438,21 +462,6 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	if err != nil {
 		logger.Fatal("Failed to generate private key: %v", err)
 	}
-
-	// Create a new olm
-	olm, err := websocket.NewClient(
-		"olm",
-		id,     // CLI arg takes precedence
-		secret, // CLI arg takes precedence
-		endpoint,
-		pingInterval,
-		pingTimeout,
-	)
-	if err != nil {
-		logger.Fatal("Failed to create olm: %v", err)
-	}
-	endpoint = olm.GetConfig().Endpoint // Update endpoint from config
-	id = olm.GetConfig().ID             // Update ID from config
 
 	// Create TUN device and network stack
 	var dev *device.Device
