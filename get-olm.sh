@@ -110,20 +110,35 @@ detect_platform() {
 
 # Get installation directory
 get_install_dir() {
-    if [ "$OS" = "windows" ]; then
+    local platform="$1"
+    
+    if [[ "$platform" == *"windows"* ]]; then
         echo "$HOME/bin"
     else
-        # Try to use a directory in PATH, fallback to ~/.local/bin
-        if echo "$PATH" | grep -q "/usr/local/bin"; then
-            if [ -w "/usr/local/bin" ] 2>/dev/null; then
-                echo "/usr/local/bin"
-            else
-                echo "$HOME/.local/bin"
-            fi
+        # For Unix-like systems, prioritize system-wide directories for sudo access
+        # Check in order of preference: /usr/local/bin, /usr/bin, ~/.local/bin
+        if [ -d "/usr/local/bin" ]; then
+            echo "/usr/local/bin"
+        elif [ -d "/usr/bin" ]; then
+            echo "/usr/bin"
         else
+            # Fallback to user directory if system directories don't exist
             echo "$HOME/.local/bin"
         fi
     fi
+}
+
+# Check if we need sudo for installation
+need_sudo() {
+    local install_dir="$1"
+    
+    # If installing to system directory and we don't have write permission, need sudo
+    if [[ "$install_dir" == "/usr/local/bin" || "$install_dir" == "/usr/bin" ]]; then
+        if [ ! -w "$install_dir" ] 2>/dev/null; then
+            return 0  # Need sudo
+        fi
+    fi
+    return 1  # Don't need sudo
 }
 
 # Download and install olm
@@ -155,22 +170,43 @@ install_olm() {
         exit 1
     fi
     
+    # Check if we need sudo for installation
+    local use_sudo=""
+    if need_sudo "$install_dir"; then
+        print_status "Administrator privileges required for system-wide installation"
+        if command -v sudo >/dev/null 2>&1; then
+            use_sudo="sudo"
+        else
+            print_error "sudo is required for system-wide installation but not available"
+            exit 1
+        fi
+    fi
+    
     # Create install directory if it doesn't exist
-    mkdir -p "$install_dir"
+    if [ -n "$use_sudo" ]; then
+        $use_sudo mkdir -p "$install_dir"
+    else
+        mkdir -p "$install_dir"
+    fi
     
     # Move binary to install directory
-    mv "$temp_file" "$final_path"
-    
-    # Make executable (not needed on Windows, but doesn't hurt)
-    chmod +x "$final_path"
+    if [ -n "$use_sudo" ]; then
+        $use_sudo mv "$temp_file" "$final_path"
+        $use_sudo chmod +x "$final_path"
+    else
+        mv "$temp_file" "$final_path"
+        chmod +x "$final_path"
+    fi
     
     print_status "olm installed to ${final_path}"
     
-    # Check if install directory is in PATH
-    if ! echo "$PATH" | grep -q "$install_dir"; then
-        print_warning "Install directory ${install_dir} is not in your PATH."
-        print_warning "Add it to your PATH by adding this line to your shell profile:"
-        print_warning "  export PATH=\"${install_dir}:\$PATH\""
+    # Check if install directory is in PATH (only warn for non-system directories)
+    if [[ "$install_dir" != "/usr/local/bin" && "$install_dir" != "/usr/bin" ]]; then
+        if ! echo "$PATH" | grep -q "$install_dir"; then
+            print_warning "Install directory ${install_dir} is not in your PATH."
+            print_warning "Add it to your PATH by adding this line to your shell profile:"
+            print_warning "  export PATH=\"${install_dir}:\$PATH\""
+        fi
     fi
 }
 
@@ -212,8 +248,13 @@ main() {
     print_status "Detected platform: ${PLATFORM}"
     
     # Get install directory
-    INSTALL_DIR=$(get_install_dir)
+    INSTALL_DIR=$(get_install_dir "$PLATFORM")
     print_status "Install directory: ${INSTALL_DIR}"
+    
+    # Inform user about system-wide installation
+    if [[ "$INSTALL_DIR" == "/usr/local/bin" || "$INSTALL_DIR" == "/usr/bin" ]]; then
+        print_status "Installing system-wide for sudo access"
+    fi
     
     # Install olm
     install_olm "$PLATFORM" "$INSTALL_DIR"
@@ -221,10 +262,13 @@ main() {
     # Verify installation
     if verify_installation "$INSTALL_DIR"; then
         print_status "olm is ready to use!"
+        if [[ "$INSTALL_DIR" == "/usr/local/bin" || "$INSTALL_DIR" == "/usr/bin" ]]; then
+            print_status "olm is installed system-wide and accessible via sudo"
+        fi
         if [[ "$PLATFORM" == *"windows"* ]]; then
             print_status "Run 'olm --help' to get started"
         else
-            print_status "Run 'olm --help' to get started"
+            print_status "Run 'olm --help' or 'sudo olm --help' to get started"
         fi
     else
         exit 1
