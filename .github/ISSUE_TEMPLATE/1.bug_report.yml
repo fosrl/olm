@@ -19,6 +19,7 @@ body:
               - Gerbil Version:
               - Traefik Version:
               - Newt Version:
+              - Olm Version: (if applicable)
       validations:
           required: true
 

@@ -31,23 +31,6 @@ body:
       validations:
           required: false
 
-    - type: checkboxes
-      attributes:
-          label: Scope
-          description: Which parts of the system does this feature affect?
-          options:
-              - label: Pangolin Core
-              - label: Gerbil
-              - label: Traefik Integration
-              - label: Newt
-              - label: Deployment Tooling
-              - label: Authentication
-              - label: UI/UX
-              - label: Advanced Networking
-              - label: Security
-              - label: Performance
-              - label: Other
-
     - type: textarea
       attributes:
           label: Additional Context
