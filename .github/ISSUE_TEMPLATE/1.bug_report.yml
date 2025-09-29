@@ -1,5 +1,5 @@
 name: Bug Report
-description: Create a bug report for the Pangolin
+description: Create a bug report
 labels: []
 body:
     - type: textarea
