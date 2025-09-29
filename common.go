@@ -402,10 +402,16 @@ func keepSendingUDPHolePunchToMultipleExitNodes(exitNodes []ExitNode, olmID stri
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 
+	timeout := time.NewTimer(15 * time.Second)
+	defer timeout.Stop()
+
 	for {
 		select {
 		case <-stopHolepunch:
 			logger.Info("Stopping UDP holepunch for all exit nodes")
+			return
+		case <-timeout.C:
+			logger.Info("UDP holepunch routine timed out after 15 seconds for all exit nodes")
 			return
 		case <-ticker.C:
 			// Send hole punch to all exit nodes
@@ -471,10 +477,16 @@ func keepSendingUDPHolePunch(endpoint string, olmID string, sourcePort uint16, s
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 
+	timeout := time.NewTimer(15 * time.Second)
+	defer timeout.Stop()
+
 	for {
 		select {
 		case <-stopHolepunch:
 			logger.Info("Stopping UDP holepunch")
+			return
+		case <-timeout.C:
+			logger.Info("UDP holepunch routine timed out after 15 seconds")
 			return
 		case <-ticker.C:
 			if err := sendUDPHolePunchWithConn(conn, remoteAddr, olmID, serverPubKey); err != nil {
