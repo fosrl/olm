@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/logger"
+	"github.com/fosrl/newt/updates"
 	"github.com/fosrl/newt/websocket"
 	"github.com/fosrl/olm/httpserver"
 	"github.com/fosrl/olm/peermonitor"
@@ -324,6 +325,10 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		os.Exit(0)
 	} else {
 		logger.Info("Olm version " + olmVersion)
+	}
+
+	if err := updates.CheckForUpdate("fosrl", "olm", olmVersion); err != nil {
+		logger.Debug("Failed to check for updates: %v", err)
 	}
 
 	// Log startup information
