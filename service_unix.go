@@ -48,3 +48,7 @@ func setupWindowsEventLog() {
 func watchLogFile(end bool) error {
 	return fmt.Errorf("watching log file is only available on Windows")
 }
+
+func showServiceConfig() {
+	fmt.Println("Service configuration is only available on Windows")
+}

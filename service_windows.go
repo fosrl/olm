@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -95,7 +96,7 @@ func (s *olmService) Execute(args []string, r <-chan svc.ChangeRequest, changes 
 	const cmdsAccepted = svc.AcceptStop | svc.AcceptShutdown
 	changes <- svc.Status{State: svc.StartPending}
 
-	s.elog.Info(1, "Service Execute called, starting main logic")
+	s.elog.Info(1, fmt.Sprintf("Service Execute called with args: %v", args))
 
 	// Load saved service arguments
 	savedArgs, err := loadServiceArgs()
@@ -104,7 +105,24 @@ func (s *olmService) Execute(args []string, r <-chan svc.ChangeRequest, changes 
 		// Continue with empty args if loading fails
 		savedArgs = []string{}
 	}
-	s.args = savedArgs
+
+	// Combine service start args with saved args, giving priority to service start args
+	finalArgs := []string{}
+	if len(args) > 0 {
+		// Skip the first arg which is typically the service name
+		if len(args) > 1 {
+			finalArgs = append(finalArgs, args[1:]...)
+		}
+		s.elog.Info(1, fmt.Sprintf("Using service start parameters: %v", finalArgs))
+	}
+
+	// If no service start parameters, use saved args
+	if len(finalArgs) == 0 && len(savedArgs) > 0 {
+		finalArgs = savedArgs
+		s.elog.Info(1, fmt.Sprintf("Using saved service args: %v", finalArgs))
+	}
+
+	s.args = finalArgs
 
 	// Start the main olm functionality
 	olmDone := make(chan struct{})
@@ -309,7 +327,7 @@ func removeService() error {
 }
 
 func startService(args []string) error {
-	// Save the service arguments before starting
+	// Save the service arguments as backup
 	if len(args) > 0 {
 		err := saveServiceArgs(args)
 		if err != nil {
@@ -329,7 +347,8 @@ func startService(args []string) error {
 	}
 	defer s.Close()
 
-	err = s.Start()
+	// Pass arguments directly to the service start call
+	err = s.Start(args...)
 	if err != nil {
 		return fmt.Errorf("failed to start service: %v", err)
 	}
@@ -379,16 +398,11 @@ func debugService(args []string) error {
 		}
 	}
 
-	// fmt.Printf("Starting service in debug mode...\n")
-
-	// Start the service
-	err := startService([]string{}) // Pass empty args since we already saved them
+	// Start the service with the provided arguments
+	err := startService(args)
 	if err != nil {
 		return fmt.Errorf("failed to start service: %v", err)
 	}
-
-	// fmt.Printf("Service started. Watching logs (Press Ctrl+C to stop watching)...\n")
-	// fmt.Printf("================================================================================\n")
 
 	// Watch the log file
 	return watchLogFile(true)
@@ -509,9 +523,87 @@ func getServiceStatus() (string, error) {
 	}
 }
 
+// showServiceConfig displays current saved service configuration
+func showServiceConfig() {
+	configPath := getServiceArgsPath()
+	fmt.Printf("Service configuration file: %s\n", configPath)
+
+	args, err := loadServiceArgs()
+	if err != nil {
+		fmt.Printf("No saved configuration found or error loading: %v\n", err)
+		return
+	}
+
+	if len(args) == 0 {
+		fmt.Println("No saved service arguments found")
+	} else {
+		fmt.Printf("Saved service arguments: %v\n", args)
+	}
+}
+
 func isWindowsService() bool {
 	isWindowsService, err := svc.IsWindowsService()
 	return err == nil && isWindowsService
+}
+
+// rotateLogFile handles daily log rotation
+func rotateLogFile(logDir string, logFile string) error {
+	// Get current log file info
+	info, err := os.Stat(logFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No current log file to rotate
+		}
+		return fmt.Errorf("failed to stat log file: %v", err)
+	}
+
+	// Check if log file is from today
+	now := time.Now()
+	fileTime := info.ModTime()
+
+	// If the log file is from today, no rotation needed
+	if now.Year() == fileTime.Year() && now.YearDay() == fileTime.YearDay() {
+		return nil
+	}
+
+	// Create rotated filename with date
+	rotatedName := fmt.Sprintf("olm-%s.log", fileTime.Format("2006-01-02"))
+	rotatedPath := filepath.Join(logDir, rotatedName)
+
+	// Rename current log file to dated filename
+	err = os.Rename(logFile, rotatedPath)
+	if err != nil {
+		return fmt.Errorf("failed to rotate log file: %v", err)
+	}
+
+	// Clean up old log files (keep last 30 days)
+	cleanupOldLogFiles(logDir, 30)
+
+	return nil
+}
+
+// cleanupOldLogFiles removes log files older than specified days
+func cleanupOldLogFiles(logDir string, daysToKeep int) {
+	cutoff := time.Now().AddDate(0, 0, -daysToKeep)
+
+	files, err := os.ReadDir(logDir)
+	if err != nil {
+		return
+	}
+
+	for _, file := range files {
+		if !file.IsDir() && strings.HasPrefix(file.Name(), "olm-") && strings.HasSuffix(file.Name(), ".log") {
+			filePath := filepath.Join(logDir, file.Name())
+			info, err := file.Info()
+			if err != nil {
+				continue
+			}
+
+			if info.ModTime().Before(cutoff) {
+				os.Remove(filePath)
+			}
+		}
+	}
 }
 
 func setupWindowsEventLog() {
@@ -524,6 +616,14 @@ func setupWindowsEventLog() {
 	}
 
 	logFile := filepath.Join(logDir, "olm.log")
+
+	// Rotate log file if needed
+	err = rotateLogFile(logDir, logFile)
+	if err != nil {
+		fmt.Printf("Failed to rotate log file: %v\n", err)
+		// Continue anyway to create new log file
+	}
+
 	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		fmt.Printf("Failed to open log file: %v\n", err)
