@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/logger"
+	"github.com/fosrl/newt/updates"
 	"github.com/fosrl/newt/websocket"
 	"github.com/fosrl/olm/httpserver"
 	"github.com/fosrl/olm/peermonitor"
@@ -144,16 +145,27 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "config":
+			if runtime.GOOS == "windows" {
+				showServiceConfig()
+			} else {
+				fmt.Println("Service configuration is only available on Windows")
+			}
+			return
 		case "help", "--help", "-h":
 			fmt.Println("Olm WireGuard VPN Client")
 			fmt.Println("\nWindows Service Management:")
 			fmt.Println("  install     Install the service")
 			fmt.Println("  remove      Remove the service")
-			fmt.Println("  start       Start the service")
+			fmt.Println("  start [args]   Start the service with optional arguments")
 			fmt.Println("  stop        Stop the service")
 			fmt.Println("  status      Show service status")
-			fmt.Println("  debug       Run service in debug mode")
+			fmt.Println("  debug [args]   Run service in debug mode with optional arguments")
 			fmt.Println("  logs        Tail the service log file")
+			fmt.Println("  config      Show current service configuration")
+			fmt.Println("\nExamples:")
+			fmt.Println("  olm start --enable-http --http-addr :9452")
+			fmt.Println("  olm debug --endpoint https://example.com --id myid --secret mysecret")
 			fmt.Println("\nFor console mode, run without arguments or with standard flags.")
 			return
 		default:
@@ -324,6 +336,10 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		os.Exit(0)
 	} else {
 		logger.Info("Olm version " + olmVersion)
+	}
+
+	if err := updates.CheckForUpdate("fosrl", "olm", olmVersion); err != nil {
+		logger.Debug("Failed to check for updates: %v", err)
 	}
 
 	// Log startup information
