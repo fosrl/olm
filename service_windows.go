@@ -70,12 +70,6 @@ func loadServiceArgs() ([]string, error) {
 		return nil, fmt.Errorf("failed to read service args: %v", err)
 	}
 
-	// delete the file after reading
-	err = os.Remove(argsPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to delete service args file: %v", err)
-	}
-
 	var args []string
 	err = json.Unmarshal(data, &args)
 	if err != nil {
