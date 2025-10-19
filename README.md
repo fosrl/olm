@@ -6,7 +6,7 @@ Olm is a [WireGuard](https://www.wireguard.com/) tunnel client designed to secur
 
 Olm is used with Pangolin and Newt as part of the larger system. See documentation below:
 
--   [Full Documentation](https://docs.fossorial.io)
+-   [Full Documentation](https://docs.pangolin.net)
 
 ## Key Functions
 
@@ -107,7 +107,7 @@ $ cat ~/.config/olm-client/config.json
 {
   "id": "spmzu8rbpzj1qq6",
   "secret": "f6v61mjutwme2kkydbw3fjo227zl60a2tsf5psw9r25hgae3",
-  "endpoint": "https://pangolin.fossorial.io",
+  "endpoint": "https://app.pangolin.net",
   "tlsClientCert": ""
 }
 ```
