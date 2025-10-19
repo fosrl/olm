@@ -4,7 +4,7 @@
 #define MyAppName "olm"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Fossorial Inc."
-#define MyAppURL "https://fossorial.io"
+#define MyAppURL "https://pangolin.net"
 #define MyAppExeName "olm.exe"
 
 [Setup]
