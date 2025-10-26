@@ -222,7 +222,6 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		id            = config.ID
 		secret        = config.Secret
 		mtu           = config.MTU
-		mtuInt        int
 		logLevel      = config.LogLevel
 		interfaceName = config.InterfaceName
 		enableHTTP    = config.EnableHTTP
@@ -324,15 +323,6 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	if err != nil {
 		logger.Fatal("Failed to create olm: %v", err)
 	}
-	// Update config with values from websocket client (which may have loaded from its config file)
-	config.UpdateFromWebsocket(
-		olm.GetConfig().ID,
-		olm.GetConfig().Secret,
-		olm.GetConfig().Endpoint,
-	)
-	endpoint = config.Endpoint
-	id = config.ID
-	secret = config.Secret
 
 	// wait until we have a client id and secret and endpoint
 	waitCount := 0
@@ -358,12 +348,6 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 			}
 			time.Sleep(1 * time.Second)
 		}
-	}
-
-	// parse the mtu string into an int
-	mtuInt, err = strconv.Atoi(mtu)
-	if err != nil {
-		logger.Fatal("Failed to parse MTU: %v", err)
 	}
 
 	privateKey, err = wgtypes.GeneratePrivateKey()
@@ -486,12 +470,12 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 				if err != nil {
 					return nil, err
 				}
-				return tun.CreateTUN(interfaceName, mtuInt)
+				return tun.CreateTUN(interfaceName, mtu)
 			}
 			if tunFdStr := os.Getenv(ENV_WG_TUN_FD); tunFdStr != "" {
-				return createTUNFromFD(tunFdStr, mtuInt)
+				return createTUNFromFD(tunFdStr, mtu)
 			}
-			return tun.CreateTUN(interfaceName, mtuInt)
+			return tun.CreateTUN(interfaceName, mtu)
 		}()
 
 		if err != nil {
