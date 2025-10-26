@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"time"
 )
 
@@ -18,7 +19,7 @@ type OlmConfig struct {
 	Secret   string `json:"secret"`
 
 	// Network settings
-	MTU           string `json:"mtu"`
+	MTU           int    `json:"mtu"`
 	DNS           string `json:"dns"`
 	InterfaceName string `json:"interface"`
 
@@ -58,7 +59,7 @@ const (
 // DefaultConfig returns a config with default values
 func DefaultConfig() *OlmConfig {
 	config := &OlmConfig{
-		MTU:           "1280",
+		MTU:           1280,
 		DNS:           "8.8.8.8",
 		LogLevel:      "INFO",
 		InterfaceName: "olm",
@@ -175,8 +176,12 @@ func loadConfigFromEnv(config *OlmConfig) {
 		config.sources["secret"] = string(SourceEnv)
 	}
 	if val := os.Getenv("MTU"); val != "" {
-		config.MTU = val
-		config.sources["mtu"] = string(SourceEnv)
+		if mtu, err := strconv.Atoi(val); err == nil {
+			config.MTU = mtu
+			config.sources["mtu"] = string(SourceEnv)
+		} else {
+			fmt.Printf("Invalid MTU value: %s, keeping current value\n", val)
+		}
 	}
 	if val := os.Getenv("DNS"); val != "" {
 		config.DNS = val
@@ -236,7 +241,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	serviceFlags.StringVar(&config.Endpoint, "endpoint", config.Endpoint, "Endpoint of your Pangolin server")
 	serviceFlags.StringVar(&config.ID, "id", config.ID, "Olm ID")
 	serviceFlags.StringVar(&config.Secret, "secret", config.Secret, "Olm secret")
-	serviceFlags.StringVar(&config.MTU, "mtu", config.MTU, "MTU to use")
+	serviceFlags.IntVar(&config.MTU, "mtu", config.MTU, "MTU to use")
 	serviceFlags.StringVar(&config.DNS, "dns", config.DNS, "DNS server to use")
 	serviceFlags.StringVar(&config.LogLevel, "log-level", config.LogLevel, "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
 	serviceFlags.StringVar(&config.InterfaceName, "interface", config.InterfaceName, "Name of the WireGuard interface")
@@ -264,7 +269,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	if config.Secret != origValues["secret"].(string) {
 		config.sources["secret"] = string(SourceCLI)
 	}
-	if config.MTU != origValues["mtu"].(string) {
+	if config.MTU != origValues["mtu"].(int) {
 		config.sources["mtu"] = string(SourceCLI)
 	}
 	if config.DNS != origValues["dns"].(string) {
@@ -343,7 +348,7 @@ func mergeConfigs(dest, src *OlmConfig) {
 		dest.Secret = src.Secret
 		dest.sources["secret"] = string(SourceFile)
 	}
-	if src.MTU != "" && src.MTU != "1280" {
+	if src.MTU != 0 && src.MTU != 1280 {
 		dest.MTU = src.MTU
 		dest.sources["mtu"] = string(SourceFile)
 	}
@@ -396,19 +401,6 @@ func SaveConfig(config *OlmConfig) error {
 	return os.WriteFile(configPath, data, 0644)
 }
 
-// UpdateFromWebsocket updates config with values received from websocket client
-func (c *OlmConfig) UpdateFromWebsocket(id, secret, endpoint string) {
-	if id != "" {
-		c.ID = id
-	}
-	if secret != "" {
-		c.Secret = secret
-	}
-	if endpoint != "" {
-		c.Endpoint = endpoint
-	}
-}
-
 // ShowConfig prints the configuration and the source of each value
 func (c *OlmConfig) ShowConfig() {
 	configPath := getOlmConfigPath()
@@ -456,7 +448,7 @@ func (c *OlmConfig) ShowConfig() {
 
 	// Network settings
 	fmt.Println("\nNetwork:")
-	fmt.Printf("  mtu          = %s [%s]\n", c.MTU, getSource("mtu"))
+	fmt.Printf("  mtu          = %d [%s]\n", c.MTU, getSource("mtu"))
 	fmt.Printf("  dns          = %s [%s]\n", c.DNS, getSource("dns"))
 	fmt.Printf("  interface    = %s [%s]\n", c.InterfaceName, getSource("interface"))
 
