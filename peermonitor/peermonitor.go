@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/logger"
-	"github.com/fosrl/newt/websocket"
+	"github.com/fosrl/olm/websocket"
 	"github.com/fosrl/olm/wgtester"
 	"golang.zx2c4.com/wireguard/device"
 )
@@ -205,11 +205,11 @@ func (pm *PeerMonitor) HandleFailover(siteID int, relayEndpoint string) {
 		return
 	}
 
-    // Check for IPv6 and format the endpoint correctly
-    formattedEndpoint := relayEndpoint
-    if strings.Contains(relayEndpoint, ":") {
-        formattedEndpoint = fmt.Sprintf("[%s]", relayEndpoint)
-    }
+	// Check for IPv6 and format the endpoint correctly
+	formattedEndpoint := relayEndpoint
+	if strings.Contains(relayEndpoint, ":") {
+		formattedEndpoint = fmt.Sprintf("[%s]", relayEndpoint)
+	}
 
 	// Configure WireGuard to use the relay
 	wgConfig := fmt.Sprintf(`private_key=%s
