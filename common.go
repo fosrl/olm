@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/logger"
-	"github.com/fosrl/newt/websocket"
 	"github.com/fosrl/olm/peermonitor"
+	"github.com/fosrl/olm/websocket"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/curve25519"

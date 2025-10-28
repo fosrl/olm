@@ -15,9 +15,9 @@ import (
 
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/updates"
-	"github.com/fosrl/newt/websocket"
 	"github.com/fosrl/olm/httpserver"
 	"github.com/fosrl/olm/peermonitor"
+	"github.com/fosrl/olm/websocket"
 
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
