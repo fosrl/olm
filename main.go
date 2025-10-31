@@ -204,10 +204,19 @@ func runOlmMain(ctx context.Context) {
 func runOlmMainWithArgs(ctx context.Context, args []string) {
 	// Load configuration from file, env vars, and CLI args
 	// Priority: CLI args > Env vars > Config file > Defaults
-	config, showVersion, showConfig, err := LoadConfig(args)
+	config, showVersion, showConfig, listProfiles, err := LoadConfig(args)
 	if err != nil {
 		fmt.Printf("Failed to load configuration: %v\n", err)
 		return
+	}
+
+	// handle --list-profiles flag
+	if listProfiles {
+		if err := ShowProfiles(); err != nil {
+			fmt.Printf("Failed to list profiles: %v\n", err)
+			return
+		}
+		os.Exit(0)
 	}
 
 	// Handle --show-config flag
