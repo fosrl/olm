@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -44,6 +45,9 @@ type OlmConfig struct {
 
 	// Source tracking (not in JSON)
 	sources map[string]string `json:"-"`
+	
+	// Profile tracking (not in JSON)
+	activeProfile string `json:"-"`
 }
 
 // ConfigSource tracks where each config value came from
@@ -54,6 +58,7 @@ const (
 	SourceFile    ConfigSource = "file"
 	SourceEnv     ConfigSource = "environment"
 	SourceCLI     ConfigSource = "cli"
+	SourceProfile ConfigSource = "profile"
 )
 
 // DefaultConfig returns a config with default values
@@ -69,6 +74,7 @@ func DefaultConfig() *OlmConfig {
 		PingTimeout:   "5s",
 		Holepunch:     false,
 		sources:       make(map[string]string),
+		activeProfile: "default",
 	}
 
 	// Track default sources
@@ -85,41 +91,121 @@ func DefaultConfig() *OlmConfig {
 	return config
 }
 
+// getOlmConfigDir returns the config directory path
+func getOlmConfigDir() string {
+	configDir := os.Getenv("CONFIG_DIR")
+	if configDir != "" {
+		return configDir
+	}
+
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "olm-client")
+	case "windows":
+		return filepath.Join(os.Getenv("PROGRAMDATA"), "olm", "olm-client")
+	default: // linux and others
+		return filepath.Join(os.Getenv("HOME"), ".config", "olm-client")
+	}
+}
+
 // getOlmConfigPath returns the path to the olm config file
-func getOlmConfigPath() string {
+// If profile is specified, returns config-{profile}.json
+func getOlmConfigPath(profile string) string {
 	configFile := os.Getenv("CONFIG_FILE")
 	if configFile != "" {
 		return configFile
 	}
 
-	var configDir string
-	switch runtime.GOOS {
-	case "darwin":
-		configDir = filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "olm-client")
-	case "windows":
-		configDir = filepath.Join(os.Getenv("PROGRAMDATA"), "olm", "olm-client")
-	default: // linux and others
-		configDir = filepath.Join(os.Getenv("HOME"), ".config", "olm-client")
-	}
-
+	configDir := getOlmConfigDir()
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		fmt.Printf("Warning: Failed to create config directory: %v\n", err)
 	}
 
+	// use profile-specific config file if profile is specified
+	if profile != "" && profile != "default" {
+		return filepath.Join(configDir, fmt.Sprintf("config-%s.json", profile))
+	}
+	
 	return filepath.Join(configDir, "config.json")
+}
+
+// list all available configuration profiles
+func ListProfiles() ([]string, error) {
+	configDir := getOlmConfigDir()
+	
+	entries, err := os.ReadDir(configDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{"default"}, nil
+		}
+		return nil, fmt.Errorf("failed to read config directory: %w", err)
+	}
+
+	profiles := []string{}
+	hasDefault := false
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		
+		name := entry.Name()
+		// Match config.json or config-*.json
+		if name == "config.json" {
+			hasDefault = true
+		} else if strings.HasPrefix(name, "config-") && strings.HasSuffix(name, ".json") {
+			// Extract profile name from config-{profile}.json
+			profileName := strings.TrimPrefix(name, "config-")
+			profileName = strings.TrimSuffix(profileName, ".json")
+			profiles = append(profiles, profileName)
+		}
+	}
+
+	if hasDefault {
+		profiles = append([]string{"default"}, profiles...)
+	} else if len(profiles) == 0 {
+		profiles = append(profiles, "default")
+	}
+
+	return profiles, nil
 }
 
 // LoadConfig loads configuration from file, env vars, and CLI args
 // Priority: CLI args > Env vars > Config file > Defaults
-// Returns: (config, showVersion, showConfig, error)
-func LoadConfig(args []string) (*OlmConfig, bool, bool, error) {
+// Returns: (config, showVersion, showConfig, listProfiles, error)
+func LoadConfig(args []string) (*OlmConfig, bool, bool, bool, error) {
+	// First pass: check for profile flag
+	profile := ""
+	for i, arg := range args {
+		if arg == "-profile" || arg == "--profile" {
+			if i+1 < len(args) {
+				profile = args[i+1]
+			}
+			break
+		}
+		if strings.HasPrefix(arg, "-profile=") {
+			profile = strings.TrimPrefix(arg, "-profile=")
+		}
+		if strings.HasPrefix(arg, "--profile=") {
+			profile = strings.TrimPrefix(arg, "--profile=")
+		}
+	}
+
+	// Check for profile in environment
+	if profile == "" {
+		profile = os.Getenv("OLM_PROFILE")
+	}
+
 	// Start with defaults
 	config := DefaultConfig()
+	if profile != "" {
+		config.activeProfile = profile
+	}
 
 	// Load from config file (if exists)
-	fileConfig, err := loadConfigFromFile()
+	fileConfig, err := loadConfigFromFile(profile)
 	if err != nil {
-		return nil, false, false, fmt.Errorf("failed to load config file: %w", err)
+		return nil, false, false, false, fmt.Errorf("failed to load config file: %w", err)
 	}
 	if fileConfig != nil {
 		mergeConfigs(config, fileConfig)
@@ -129,22 +215,22 @@ func LoadConfig(args []string) (*OlmConfig, bool, bool, error) {
 	loadConfigFromEnv(config)
 
 	// Override with CLI arguments
-	showVersion, showConfig, err := loadConfigFromCLI(config, args)
+	showVersion, showConfig, listProfiles, err := loadConfigFromCLI(config, args)
 	if err != nil {
-		return nil, false, false, err
+		return nil, false, false, false, err
 	}
 
 	// Parse duration strings
 	if err := config.parseDurations(); err != nil {
-		return nil, false, false, err
+		return nil, false, false, false, err
 	}
 
-	return config, showVersion, showConfig, nil
+	return config, showVersion, showConfig, listProfiles, nil
 }
 
 // loadConfigFromFile loads configuration from the JSON config file
-func loadConfigFromFile() (*OlmConfig, error) {
-	configPath := getOlmConfigPath()
+func loadConfigFromFile(profile string) (*OlmConfig, error) {
+	configPath := getOlmConfigPath(profile)
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -218,7 +304,7 @@ func loadConfigFromEnv(config *OlmConfig) {
 }
 
 // loadConfigFromCLI loads configuration from command-line arguments
-func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
+func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, bool, error) {
 	serviceFlags := flag.NewFlagSet("service", flag.ContinueOnError)
 
 	// Store original values to detect changes
@@ -238,6 +324,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	}
 
 	// Define flags
+	profileFlag := serviceFlags.String("profile", "", "Configuration profile to use (e.g., dev, prod, staging)")
 	serviceFlags.StringVar(&config.Endpoint, "endpoint", config.Endpoint, "Endpoint of your Pangolin server")
 	serviceFlags.StringVar(&config.ID, "id", config.ID, "Olm ID")
 	serviceFlags.StringVar(&config.Secret, "secret", config.Secret, "Olm secret")
@@ -253,10 +340,16 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 
 	version := serviceFlags.Bool("version", false, "Print the version")
 	showConfig := serviceFlags.Bool("show-config", false, "Show configuration sources and exit")
+	listProfiles := serviceFlags.Bool("list-profiles", false, "List available configuration profiles and exit")
 
 	// Parse the arguments
 	if err := serviceFlags.Parse(args); err != nil {
-		return false, false, err
+		return false, false, false, err
+	}
+
+	// update active profile if specified via CLI
+	if *profileFlag != "" {
+		config.activeProfile = *profileFlag
 	}
 
 	// Track which values were changed by CLI args
@@ -297,7 +390,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 		config.sources["holepunch"] = string(SourceCLI)
 	}
 
-	return *version, *showConfig, nil
+	return *version, *showConfig, *listProfiles, nil
 }
 
 // parseDurations parses the duration strings into time.Duration
@@ -393,7 +486,7 @@ func mergeConfigs(dest, src *OlmConfig) {
 
 // SaveConfig saves the current configuration to the config file
 func SaveConfig(config *OlmConfig) error {
-	configPath := getOlmConfigPath()
+	configPath := getOlmConfigPath(config.activeProfile)
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
@@ -403,9 +496,10 @@ func SaveConfig(config *OlmConfig) error {
 
 // ShowConfig prints the configuration and the source of each value
 func (c *OlmConfig) ShowConfig() {
-	configPath := getOlmConfigPath()
+	configPath := getOlmConfigPath(c.activeProfile)
 
 	fmt.Println("\n=== Olm Configuration ===\n")
+	fmt.Printf("Active Profile: %s\n", c.activeProfile)
 	fmt.Printf("Config File: %s\n", configPath)
 
 	// Check if config file exists
@@ -481,4 +575,45 @@ func (c *OlmConfig) ShowConfig() {
 	fmt.Println("  cli         = Provided as command-line argument")
 	fmt.Println("\nPriority: cli > environment > file > default")
 	fmt.Println()
+}
+
+// ShowProfiles displays all available configuration profiles
+func ShowProfiles() error {
+	profiles, err := ListProfiles()
+	if err != nil {
+		return err
+	}
+
+	configDir := getOlmConfigDir()
+	
+	fmt.Println("\n=== Available Configuration Profiles ===\n")
+	fmt.Printf("Config Directory: %s\n\n", configDir)
+
+	if len(profiles) == 0 {
+		fmt.Println("No profiles found.")
+		return nil
+	}
+
+	fmt.Println("Profiles:")
+	for _, profile := range profiles {
+		configPath := getOlmConfigPath(profile)
+		exists := "✗"
+		if _, err := os.Stat(configPath); err == nil {
+			exists = "✓"
+		}
+		
+		if profile == "default" {
+			fmt.Printf("  %s %s (default)\n", exists, profile)
+		} else {
+			fmt.Printf("  %s %s\n", exists, profile)
+		}
+	}
+
+	fmt.Println("\nUsage:")
+	fmt.Println("  Use a profile:     olm -profile=<name>")
+	fmt.Println("  Via environment:   export OLM_PROFILE=<name>")
+	fmt.Println("  Create profile:    Copy config.json to config-<name>.json")
+	fmt.Println()
+
+	return nil
 }
