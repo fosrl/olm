@@ -60,14 +60,55 @@ func main() {
 		return
 	}
 
-	// Handle service management commands on Windows
+	// On Windows, check what command we're running
 	if runtime.GOOS == "windows" {
+		// Determine if this is a service command or console command
 		var command string
 		if len(os.Args) > 1 {
 			command = os.Args[1]
 		} else {
-			command = "default"
+			command = ""
 		}
+
+		// will check for console-mode flags FIRST (before service commands)
+		// These flags should run directly in console mode and not as service
+		
+		if command == "--list-profiles" || command == "-list-profiles" {
+			if err := ShowProfiles(); err != nil {
+				fmt.Printf("Failed to list profiles: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+
+		if command == "--show-config" || command == "-show-config" {
+			config, _, _, _, err := LoadConfig(os.Args[1:])
+			if err != nil {
+				fmt.Printf("Failed to load configuration: %v\n", err)
+				os.Exit(1)
+			}
+			config.ShowConfig()
+			return
+		}
+
+		if command == "--version" || command == "-version" {
+			fmt.Println("Olm version version_replaceme")
+			return
+		}
+
+		if command == "--profile" || command == "-profile" ||
+			strings.HasPrefix(command, "--profile=") ||
+			strings.HasPrefix(command, "-profile=") {
+			// Run in console mode with profile
+			runOlmMain(context.Background())
+			return
+		}
+
+		if strings.HasPrefix(command, "--") || (strings.HasPrefix(command, "-") && len(command) > 1 && command[1] != '-') {
+			runOlmMain(context.Background())
+			return
+		}
+
 
 		switch command {
 		case "install":
@@ -144,30 +185,20 @@ func main() {
 			}
 			return
 		case "config":
-			if runtime.GOOS == "windows" {
-				showServiceConfig()
-			} else {
-				fmt.Println("Service configuration is only available on Windows")
-			}
+			showServiceConfig()
 			return
+
 		case "help", "--help", "-h":
-			fmt.Println("Olm WireGuard VPN Client")
-			fmt.Println("\nWindows Service Management:")
-			fmt.Println("  install     Install the service")
-			fmt.Println("  remove      Remove the service")
-			fmt.Println("  start [args]   Start the service with optional arguments")
-			fmt.Println("  stop        Stop the service")
-			fmt.Println("  status      Show service status")
-			fmt.Println("  debug [args]   Run service in debug mode with optional arguments")
-			fmt.Println("  logs        Tail the service log file")
-			fmt.Println("  config      Show current service configuration")
-			fmt.Println("\nExamples:")
-			fmt.Println("  olm start --enable-http --http-addr :9452")
-			fmt.Println("  olm debug --endpoint https://example.com --id myid --secret mysecret")
-			fmt.Println("\nFor console mode, run without arguments or with standard flags.")
+			printHelp()
 			return
+
+		case "":
+			// No arguments - run in console mode
+			runOlmMain(context.Background())
+			return
+
 		default:
-			// get the status and if it is Not Installed then install it first
+			// Unknown command - check if service is installed and run in debug mode
 			status, err := getServiceStatus()
 			if err != nil {
 				fmt.Printf("Failed to get service status: %v\n", err)
@@ -193,8 +224,50 @@ func main() {
 		}
 	}
 
-	// Run in console mode
+	// Run in console mode (non-Windows or no service command)
 	runOlmMain(context.Background())
+}
+
+func printHelp() {
+	fmt.Println("Olm WireGuard VPN Client")
+	fmt.Println("\n=== Windows Service Management ===")
+	fmt.Println("  install              Install the Windows service")
+	fmt.Println("  remove/uninstall     Remove the Windows service")
+	fmt.Println("  start [args]         Start the service with optional arguments")
+	fmt.Println("  stop                 Stop the service")
+	fmt.Println("  status               Show service status")
+	fmt.Println("  debug [args]         Run service in debug mode with optional arguments")
+	fmt.Println("  logs                 Tail the service log file")
+	fmt.Println("  config               Show current service configuration")
+	fmt.Println("\n=== Configuration & Profiles ===")
+	fmt.Println("  --list-profiles      List all available configuration profiles")
+	fmt.Println("  --show-config        Show current configuration and sources")
+	fmt.Println("  --profile=<name>     Use a specific configuration profile")
+	fmt.Println("  --version            Show version information")
+	fmt.Println("\n=== Console Mode Flags ===")
+	fmt.Println("  --endpoint <url>     Pangolin server endpoint")
+	fmt.Println("  --id <id>            Client ID")
+	fmt.Println("  --secret <secret>    Client secret")
+	fmt.Println("  --mtu <size>         MTU size (default: 1280)")
+	fmt.Println("  --dns <server>       DNS server (default: 8.8.8.8)")
+	fmt.Println("  --log-level <level>  Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
+	fmt.Println("  --interface <name>   Interface name (default: olm)")
+	fmt.Println("  --enable-http        Enable HTTP server")
+	fmt.Println("  --http-addr <addr>   HTTP server address (default: :9452)")
+	fmt.Println("  --holepunch          Enable hole punching")
+	fmt.Println("\n=== Examples ===")
+	fmt.Println("Service mode:")
+	fmt.Println("  olm install")
+	fmt.Println("  olm start --enable-http --http-addr :9452")
+	fmt.Println("  olm debug --endpoint https://example.com --id myid --secret mysecret")
+	fmt.Println("\nProfile mode:")
+	fmt.Println("  olm --list-profiles")
+	fmt.Println("  olm --profile=dev --show-config")
+	fmt.Println("  olm --profile=prod")
+	fmt.Println("  olm --profile=dev --log-level=DEBUG")
+	fmt.Println("\nConsole mode:")
+	fmt.Println("  olm --endpoint https://vpn.example.com --id myid --secret mysecret")
+	fmt.Println("  olm --profile=dev --id override-id")
 }
 
 func runOlmMain(ctx context.Context) {
