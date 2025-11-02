@@ -7,6 +7,7 @@ import (
 	"runtime"
 
 	"github.com/fosrl/newt/logger"
+	"github.com/fosrl/olm/olm"
 )
 
 func main() {
@@ -163,5 +164,5 @@ func main() {
 }
 
 func runOlmMain(ctx context.Context) {
-	olm(ctx, os.Args[1:])
+	olm.Olm(ctx, os.Args[1:])
 }

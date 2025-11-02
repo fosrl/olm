@@ -22,7 +22,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-func olm(ctx context.Context, args []string) {
+func Olm(ctx context.Context, args []string) {
 	// Load configuration from file, env vars, and CLI args
 	// Priority: CLI args > Env vars > Config file > Defaults
 	config, showVersion, showConfig, err := LoadConfig(args)
