@@ -1,4 +1,4 @@
-package olm
+package main
 
 import (
 	"encoding/json"
@@ -44,6 +44,8 @@ type OlmConfig struct {
 
 	// Source tracking (not in JSON)
 	sources map[string]string `json:"-"`
+
+	Version string
 }
 
 // ConfigSource tracks where each config value came from

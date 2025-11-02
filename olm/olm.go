@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/signal"
 	"runtime"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/fosrl/newt/logger"
@@ -22,21 +20,43 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-func Run(ctx context.Context, args []string) {
-	// Load configuration from file, env vars, and CLI args
-	// Priority: CLI args > Env vars > Config file > Defaults
-	config, showVersion, showConfig, err := LoadConfig(args)
-	if err != nil {
-		fmt.Printf("Failed to load configuration: %v\n", err)
-		return
-	}
+type Config struct {
+	// Connection settings
+	Endpoint string
+	ID       string
+	Secret   string
 
-	// Handle --show-config flag
-	if showConfig {
-		config.ShowConfig()
-		os.Exit(0)
-	}
+	// Network settings
+	MTU           int
+	DNS           string
+	InterfaceName string
 
+	// Logging
+	LogLevel string
+
+	// HTTP server
+	EnableHTTP bool
+	HTTPAddr   string
+
+	// Ping settings
+	PingInterval string
+	PingTimeout  string
+
+	// Advanced
+	Holepunch     bool
+	TlsClientCert string
+
+	// Parsed values (not in JSON)
+	PingIntervalDuration time.Duration
+	PingTimeoutDuration  time.Duration
+
+	// Source tracking (not in JSON)
+	sources map[string]string
+
+	Version string
+}
+
+func Run(ctx context.Context, config Config) {
 	// Extract commonly used values from config for convenience
 	var (
 		endpoint      = config.Endpoint
@@ -52,6 +72,11 @@ func Run(ctx context.Context, args []string) {
 		doHolepunch   = config.Holepunch
 		privateKey    wgtypes.Key
 		connected     bool
+		dev           *device.Device
+		wgData        WgData
+		holePunchData HolePunchData
+		uapiListener  net.Listener
+		tdev          tun.Device
 	)
 
 	stopHolepunch = make(chan struct{})
@@ -60,14 +85,7 @@ func Run(ctx context.Context, args []string) {
 	loggerLevel := parseLogLevel(logLevel)
 	logger.GetLogger().SetLevel(parseLogLevel(logLevel))
 
-	olmVersion := "version_replaceme"
-	if showVersion {
-		fmt.Println("Olm version " + olmVersion)
-		os.Exit(0)
-	}
-	logger.Info("Olm version " + olmVersion)
-
-	if err := updates.CheckForUpdate("fosrl", "olm", olmVersion); err != nil {
+	if err := updates.CheckForUpdate("fosrl", "olm", config.Version); err != nil {
 		logger.Debug("Failed to check for updates: %v", err)
 	}
 
@@ -83,7 +101,7 @@ func Run(ctx context.Context, args []string) {
 	var httpServer *httpserver.HTTPServer
 	if enableHTTP {
 		httpServer = httpserver.NewHTTPServer(httpAddr)
-		httpServer.SetVersion(olmVersion)
+		httpServer.SetVersion(config.Version)
 		if err := httpServer.Start(); err != nil {
 			logger.Fatal("Failed to start HTTP server: %v", err)
 		}
@@ -100,30 +118,6 @@ func Run(ctx context.Context, args []string) {
 			}
 		}()
 	}
-
-	// // Check if required parameters are missing and provide helpful guidance
-	// missingParams := []string{}
-	// if id == "" {
-	// 	missingParams = append(missingParams, "id (use -id flag or OLM_ID env var)")
-	// }
-	// if secret == "" {
-	// 	missingParams = append(missingParams, "secret (use -secret flag or OLM_SECRET env var)")
-	// }
-	// if endpoint == "" {
-	// 	missingParams = append(missingParams, "endpoint (use -endpoint flag or PANGOLIN_ENDPOINT env var)")
-	// }
-
-	// if len(missingParams) > 0 {
-	// 	logger.Error("Missing required parameters: %v", missingParams)
-	// 	logger.Error("Either provide them as command line flags or set as environment variables")
-	// 	fmt.Printf("ERROR: Missing required parameters: %v\n", missingParams)
-	// 	fmt.Printf("Please provide them as command line flags or set as environment variables\n")
-	// 	if !enableHTTP {
-	// 		logger.Error("HTTP server is disabled, cannot receive parameters via API")
-	// 		fmt.Printf("HTTP server is disabled, cannot receive parameters via API\n")
-	// 		return
-	// 	}
-	// }
 
 	// Create a new olm
 	olm, err := websocket.NewClient(
@@ -168,13 +162,6 @@ func Run(ctx context.Context, args []string) {
 	if err != nil {
 		logger.Fatal("Failed to generate private key: %v", err)
 	}
-
-	// Create TUN device and network stack
-	var dev *device.Device
-	var wgData WgData
-	var holePunchData HolePunchData
-	var uapiListener net.Listener
-	var tdev tun.Device
 
 	sourcePort, err := FindAvailableUDPPort(49152, 65535)
 	if err != nil {
@@ -665,14 +652,6 @@ func Run(ctx context.Context, args []string) {
 			httpServer.SetConnectionStatus(true)
 		}
 
-		// CRITICAL: Save our full config AFTER websocket saves its limited config
-		// This ensures all 13 fields are preserved, not just the 4 that websocket saves
-		if err := SaveConfig(config); err != nil {
-			logger.Error("Failed to save full olm config: %v", err)
-		} else {
-			logger.Debug("Saved full olm config with all options")
-		}
-
 		if connected {
 			logger.Debug("Already connected, skipping registration")
 			return nil
@@ -685,7 +664,7 @@ func Run(ctx context.Context, args []string) {
 		stopRegister = olm.SendMessageInterval("olm/wg/register", map[string]interface{}{
 			"publicKey":  publicKey.String(),
 			"relay":      !doHolepunch,
-			"olmVersion": olmVersion,
+			"olmVersion": config.Version,
 		}, 1*time.Second)
 
 		go keepSendingPing(olm)
@@ -704,13 +683,7 @@ func Run(ctx context.Context, args []string) {
 	}
 	defer olm.Close()
 
-	// Wait for interrupt signal or context cancellation
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
 	select {
-	case <-sigCh:
-		logger.Info("Received interrupt signal")
 	case <-ctx.Done():
 		logger.Info("Context cancelled")
 	}
@@ -740,7 +713,4 @@ func Run(ctx context.Context, args []string) {
 	if dev != nil {
 		dev.Close()
 	}
-
-	logger.Info("runOlmMain() exiting")
-	fmt.Printf("runOlmMain() exiting\n")
 }

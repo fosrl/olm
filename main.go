@@ -159,10 +159,54 @@ func main() {
 		logger.Init()
 	}
 
-	// Run in console mode
-	runOlmMain(context.Background())
-}
+	// Load configuration from file, env vars, and CLI args
+	// Priority: CLI args > Env vars > Config file > Defaults
+	config, showVersion, showConfig, err := LoadConfig(os.Args[1:])
+	if err != nil {
+		fmt.Printf("Failed to load configuration: %v\n", err)
+		return
+	}
 
-func runOlmMain(ctx context.Context) {
-	olm.Run(ctx, os.Args[1:])
+	// Handle --show-config flag
+	if showConfig {
+		config.ShowConfig()
+		os.Exit(0)
+	}
+
+	olmVersion := "version_replaceme"
+	if showVersion {
+		fmt.Println("Olm version " + olmVersion)
+		os.Exit(0)
+	}
+	logger.Info("Olm version " + olmVersion)
+
+	config.Version = olmVersion
+
+	if err := SaveConfig(config); err != nil {
+		logger.Error("Failed to save full olm config: %v", err)
+	} else {
+		logger.Debug("Saved full olm config with all options")
+	}
+
+	// Create a new olm.Config struct and copy values from the main config
+	olmConfig := olm.Config{
+		Endpoint:             config.Endpoint,
+		ID:                   config.ID,
+		Secret:               config.Secret,
+		MTU:                  config.MTU,
+		DNS:                  config.DNS,
+		InterfaceName:        config.InterfaceName,
+		LogLevel:             config.LogLevel,
+		EnableHTTP:           config.EnableHTTP,
+		HTTPAddr:             config.HTTPAddr,
+		PingInterval:         config.PingInterval,
+		PingTimeout:          config.PingTimeout,
+		Holepunch:            config.Holepunch,
+		TlsClientCert:        config.TlsClientCert,
+		PingIntervalDuration: config.PingIntervalDuration,
+		PingTimeoutDuration:  config.PingTimeoutDuration,
+		Version:              config.Version,
+	}
+
+	olm.Run(context.Background(), olmConfig)
 }
