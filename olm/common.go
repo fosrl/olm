@@ -1,4 +1,4 @@
-package main
+package olm
 
 import (
 	"encoding/base64"
@@ -127,6 +127,33 @@ type RelayPeerData struct {
 func (b *fixedPortBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	// Ignore the requested port and use our fixed port
 	return b.Bind.Open(b.port)
+}
+
+// Helper function to format endpoints correctly
+func formatEndpoint(endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
+	// Check if it's already a valid host:port that SplitHostPort can parse (e.g., [::1]:8080 or 1.2.3.4:8080)
+	_, _, err := net.SplitHostPort(endpoint)
+	if err == nil {
+		return endpoint // Already valid, no change needed
+	}
+
+	// If it failed, it might be our malformed "ipv6:port" string. Let's check and fix it.
+	lastColon := strings.LastIndex(endpoint, ":")
+	if lastColon > 0 { // Ensure there is a colon and it's not the first character
+		hostPart := endpoint[:lastColon]
+		// Check if the host part is a literal IPv6 address
+		if ip := net.ParseIP(hostPart); ip != nil && ip.To4() == nil {
+			// It is! Reformat it with brackets.
+			portPart := endpoint[lastColon+1:]
+			return fmt.Sprintf("[%s]:%s", hostPart, portPart)
+		}
+	}
+
+	// If it's not the specific malformed case, return it as is.
+	return endpoint
 }
 
 func NewFixedPortBind(port uint16) conn.Bind {

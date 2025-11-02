@@ -1,4 +1,4 @@
-package main
+package olm
 
 import (
 	"encoding/json"
