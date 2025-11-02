@@ -164,5 +164,5 @@ func main() {
 }
 
 func runOlmMain(ctx context.Context) {
-	olm.Olm(ctx, os.Args[1:])
+	olm.Run(ctx, os.Args[1:])
 }
