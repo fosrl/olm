@@ -26,12 +26,14 @@ type PeerStatus struct {
 	LastSeen  time.Time     `json:"lastSeen"`
 	Endpoint  string        `json:"endpoint,omitempty"`
 	IsRelay   bool          `json:"isRelay"`
+	PeerIP    string        `json:"peerAddress,omitempty"`
 }
 
 // StatusResponse is returned by the status endpoint
 type StatusResponse struct {
 	Status       string              `json:"status"`
 	Connected    bool                `json:"connected"`
+	Registered   bool                `json:"registered,omitempty"`
 	TunnelIP     string              `json:"tunnelIP,omitempty"`
 	Version      string              `json:"version,omitempty"`
 	PeerStatuses map[int]*PeerStatus `json:"peers,omitempty"`
@@ -49,6 +51,7 @@ type API struct {
 	peerStatuses   map[int]*PeerStatus
 	connectedAt    time.Time
 	isConnected    bool
+	isRegistered   bool
 	tunnelIP       string
 	version        string
 }
@@ -176,6 +179,12 @@ func (s *API) SetConnectionStatus(isConnected bool) {
 	}
 }
 
+func (s *API) SetRegistered(registered bool) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.isRegistered = registered
+}
+
 // SetTunnelIP sets the tunnel IP address
 func (s *API) SetTunnelIP(tunnelIP string) {
 	s.statusMu.Lock()
@@ -250,6 +259,7 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	resp := StatusResponse{
 		Connected:    s.isConnected,
+		Registered:   s.isRegistered,
 		TunnelIP:     s.tunnelIP,
 		Version:      s.version,
 		PeerStatuses: s.peerStatuses,
