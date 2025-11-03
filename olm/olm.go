@@ -58,6 +58,10 @@ type Config struct {
 }
 
 func Run(ctx context.Context, config Config) {
+	// Create a cancellable context for internal shutdown control
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// Extract commonly used values from config for convenience
 	var (
 		endpoint      = config.Endpoint
@@ -108,6 +112,14 @@ func Run(ctx context.Context, config Config) {
 		if err := apiServer.Start(); err != nil {
 			logger.Fatal("Failed to start HTTP server: %v", err)
 		}
+
+		// Listen for shutdown requests from the API
+		go func() {
+			<-apiServer.GetShutdownChannel()
+			logger.Info("Shutdown requested via API")
+			// Cancel the context to trigger graceful shutdown
+			cancel()
+		}()
 	}
 
 	// 	// Use a goroutine to handle connection requests
