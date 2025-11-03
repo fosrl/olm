@@ -405,6 +405,10 @@ func Run(ctx context.Context, config Config) {
 
 		peerMonitor.Start()
 
+		if apiServer != nil {
+			apiServer.SetRegistered(true)
+		}
+
 		connected = true
 
 		logger.Info("WireGuard device created.")
