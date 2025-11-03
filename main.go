@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/olm/olm"
@@ -197,8 +199,9 @@ func main() {
 		DNS:                  config.DNS,
 		InterfaceName:        config.InterfaceName,
 		LogLevel:             config.LogLevel,
-		EnableHTTP:           config.EnableHTTP,
+		EnableAPI:            config.EnableAPI,
 		HTTPAddr:             config.HTTPAddr,
+		SocketPath:           config.SocketPath,
 		PingInterval:         config.PingInterval,
 		PingTimeout:          config.PingTimeout,
 		Holepunch:            config.Holepunch,
@@ -208,5 +211,9 @@ func main() {
 		Version:              config.Version,
 	}
 
-	olm.Run(context.Background(), olmConfig)
+	// Create a context that will be cancelled on interrupt signals
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	olm.Run(ctx, olmConfig)
 }
