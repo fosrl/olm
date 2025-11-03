@@ -12,7 +12,7 @@ import (
 
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/updates"
-	"github.com/fosrl/olm/httpserver"
+	"github.com/fosrl/olm/api"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/websocket"
 	"golang.zx2c4.com/wireguard/device"
@@ -35,8 +35,9 @@ type Config struct {
 	LogLevel string
 
 	// HTTP server
-	EnableHTTP bool
+	EnableAPI  bool
 	HTTPAddr   string
+	SocketPath string
 
 	// Ping settings
 	PingInterval string
@@ -65,8 +66,6 @@ func Run(ctx context.Context, config Config) {
 		mtu           = config.MTU
 		logLevel      = config.LogLevel
 		interfaceName = config.InterfaceName
-		enableHTTP    = config.EnableHTTP
-		httpAddr      = config.HTTPAddr
 		pingInterval  = config.PingIntervalDuration
 		pingTimeout   = config.PingTimeoutDuration
 		doHolepunch   = config.Holepunch
@@ -92,32 +91,37 @@ func Run(ctx context.Context, config Config) {
 	// Log startup information
 	logger.Debug("Olm service starting...")
 	logger.Debug("Parameters: endpoint='%s', id='%s', secret='%s'", endpoint, id, secret)
-	logger.Debug("HTTP enabled: %v, HTTP addr: %s", enableHTTP, httpAddr)
 
 	if doHolepunch {
 		logger.Warn("Hole punching is enabled. This is EXPERIMENTAL and may not work in all environments.")
 	}
 
-	var httpServer *httpserver.HTTPServer
-	if enableHTTP {
-		httpServer = httpserver.NewHTTPServer(httpAddr)
-		httpServer.SetVersion(config.Version)
-		if err := httpServer.Start(); err != nil {
-			logger.Fatal("Failed to start HTTP server: %v", err)
+	var apiServer *api.API
+	if config.EnableAPI {
+		if config.HTTPAddr != "" {
+			apiServer = api.NewAPI(config.HTTPAddr)
+		} else if config.SocketPath != "" {
+			apiServer = api.NewAPISocket(config.SocketPath)
 		}
 
-		// Use a goroutine to handle connection requests
-		go func() {
-			for req := range httpServer.GetConnectionChannel() {
-				logger.Info("Received connection request via HTTP: id=%s, endpoint=%s", req.ID, req.Endpoint)
-
-				// Set the connection parameters
-				id = req.ID
-				secret = req.Secret
-				endpoint = req.Endpoint
-			}
-		}()
+		apiServer.SetVersion(config.Version)
+		if err := apiServer.Start(); err != nil {
+			logger.Fatal("Failed to start HTTP server: %v", err)
+		}
 	}
+
+	// 	// Use a goroutine to handle connection requests
+	// 	go func() {
+	// 		for req := range apiServer.GetConnectionChannel() {
+	// 			logger.Info("Received connection request via HTTP: id=%s, endpoint=%s", req.ID, req.Endpoint)
+
+	// 			// Set the connection parameters
+	// 			id = req.ID
+	// 			secret = req.Secret
+	// 			endpoint = req.Endpoint
+	// 		}
+	// 	}()
+	// }
 
 	// Create a new olm
 	olm, err := websocket.NewClient(
@@ -329,13 +333,13 @@ func Run(ctx context.Context, config Config) {
 		if err = ConfigureInterface(interfaceName, wgData); err != nil {
 			logger.Error("Failed to configure interface: %v", err)
 		}
-		if httpServer != nil {
-			httpServer.SetTunnelIP(wgData.TunnelIP)
+		if apiServer != nil {
+			apiServer.SetTunnelIP(wgData.TunnelIP)
 		}
 
 		peerMonitor = peermonitor.NewPeerMonitor(
 			func(siteID int, connected bool, rtt time.Duration) {
-				if httpServer != nil {
+				if apiServer != nil {
 					// Find the site config to get endpoint information
 					var endpoint string
 					var isRelay bool
@@ -348,7 +352,7 @@ func Run(ctx context.Context, config Config) {
 							break
 						}
 					}
-					httpServer.UpdatePeerStatus(siteID, connected, rtt, endpoint, isRelay)
+					apiServer.UpdatePeerStatus(siteID, connected, rtt, endpoint, isRelay)
 				}
 				if connected {
 					logger.Info("Peer %d is now connected (RTT: %v)", siteID, rtt)
@@ -364,8 +368,8 @@ func Run(ctx context.Context, config Config) {
 
 		for i := range wgData.Sites {
 			site := &wgData.Sites[i] // Use a pointer to modify the struct in the slice
-			if httpServer != nil {
-				httpServer.UpdatePeerStatus(site.SiteId, false, 0, site.Endpoint, false)
+			if apiServer != nil {
+				apiServer.UpdatePeerStatus(site.SiteId, false, 0, site.Endpoint, false)
 			}
 
 			// Format the endpoint before configuring the peer.
@@ -615,8 +619,8 @@ func Run(ctx context.Context, config Config) {
 		}
 
 		// Update HTTP server to mark this peer as using relay
-		if httpServer != nil {
-			httpServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.Endpoint, true)
+		if apiServer != nil {
+			apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.Endpoint, true)
 		}
 
 		peerMonitor.HandleFailover(relayData.SiteId, primaryRelay)
@@ -648,8 +652,8 @@ func Run(ctx context.Context, config Config) {
 	olm.OnConnect(func() error {
 		logger.Info("Websocket Connected")
 
-		if httpServer != nil {
-			httpServer.SetConnectionStatus(true)
+		if apiServer != nil {
+			apiServer.SetConnectionStatus(true)
 		}
 
 		if connected {
@@ -707,10 +711,20 @@ func Run(ctx context.Context, config Config) {
 		close(stopPing)
 	}
 
+	if peerMonitor != nil {
+		peerMonitor.Stop()
+	}
+
 	if uapiListener != nil {
 		uapiListener.Close()
 	}
 	if dev != nil {
 		dev.Close()
 	}
+
+	if apiServer != nil {
+		apiServer.Stop()
+	}
+
+	logger.Info("Olm service stopped")
 }

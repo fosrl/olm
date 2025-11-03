@@ -27,8 +27,9 @@ type OlmConfig struct {
 	LogLevel string `json:"logLevel"`
 
 	// HTTP server
-	EnableHTTP bool   `json:"enableHttp"`
+	EnableAPI  bool   `json:"enableApi"`
 	HTTPAddr   string `json:"httpAddr"`
+	SocketPath string `json:"socketPath"`
 
 	// Ping settings
 	PingInterval string `json:"pingInterval"`
@@ -60,13 +61,22 @@ const (
 
 // DefaultConfig returns a config with default values
 func DefaultConfig() *OlmConfig {
+	// Set OS-specific socket path
+	var socketPath string
+	switch runtime.GOOS {
+	case "windows":
+		socketPath = "olm"
+	default: // darwin, linux, and others
+		socketPath = "/var/run/olm.sock"
+	}
+
 	config := &OlmConfig{
 		MTU:           1280,
 		DNS:           "8.8.8.8",
 		LogLevel:      "INFO",
 		InterfaceName: "olm",
-		EnableHTTP:    false,
-		HTTPAddr:      ":9452",
+		EnableAPI:     false,
+		SocketPath:    socketPath,
 		PingInterval:  "3s",
 		PingTimeout:   "5s",
 		Holepunch:     false,
@@ -78,8 +88,9 @@ func DefaultConfig() *OlmConfig {
 	config.sources["dns"] = string(SourceDefault)
 	config.sources["logLevel"] = string(SourceDefault)
 	config.sources["interface"] = string(SourceDefault)
-	config.sources["enableHttp"] = string(SourceDefault)
+	config.sources["enableApi"] = string(SourceDefault)
 	config.sources["httpAddr"] = string(SourceDefault)
+	config.sources["socketPath"] = string(SourceDefault)
 	config.sources["pingInterval"] = string(SourceDefault)
 	config.sources["pingTimeout"] = string(SourceDefault)
 	config.sources["holepunch"] = string(SourceDefault)
@@ -209,9 +220,13 @@ func loadConfigFromEnv(config *OlmConfig) {
 		config.PingTimeout = val
 		config.sources["pingTimeout"] = string(SourceEnv)
 	}
-	if val := os.Getenv("ENABLE_HTTP"); val == "true" {
-		config.EnableHTTP = true
-		config.sources["enableHttp"] = string(SourceEnv)
+	if val := os.Getenv("ENABLE_API"); val == "true" {
+		config.EnableAPI = true
+		config.sources["enableApi"] = string(SourceEnv)
+	}
+	if val := os.Getenv("SOCKET_PATH"); val != "" {
+		config.SocketPath = val
+		config.sources["socketPath"] = string(SourceEnv)
 	}
 	if val := os.Getenv("HOLEPUNCH"); val == "true" {
 		config.Holepunch = true
@@ -233,9 +248,10 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 		"logLevel":     config.LogLevel,
 		"interface":    config.InterfaceName,
 		"httpAddr":     config.HTTPAddr,
+		"socketPath":   config.SocketPath,
 		"pingInterval": config.PingInterval,
 		"pingTimeout":  config.PingTimeout,
-		"enableHttp":   config.EnableHTTP,
+		"enableApi":    config.EnableAPI,
 		"holepunch":    config.Holepunch,
 	}
 
@@ -248,9 +264,10 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	serviceFlags.StringVar(&config.LogLevel, "log-level", config.LogLevel, "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
 	serviceFlags.StringVar(&config.InterfaceName, "interface", config.InterfaceName, "Name of the WireGuard interface")
 	serviceFlags.StringVar(&config.HTTPAddr, "http-addr", config.HTTPAddr, "HTTP server address (e.g., ':9452')")
+	serviceFlags.StringVar(&config.SocketPath, "socket-path", config.SocketPath, "Unix socket path (or named pipe on Windows)")
 	serviceFlags.StringVar(&config.PingInterval, "ping-interval", config.PingInterval, "Interval for pinging the server")
 	serviceFlags.StringVar(&config.PingTimeout, "ping-timeout", config.PingTimeout, "Timeout for each ping")
-	serviceFlags.BoolVar(&config.EnableHTTP, "enable-http", config.EnableHTTP, "Enable HTTP server for receiving connection requests")
+	serviceFlags.BoolVar(&config.EnableAPI, "enable-api", config.EnableAPI, "Enable API server for receiving connection requests")
 	serviceFlags.BoolVar(&config.Holepunch, "holepunch", config.Holepunch, "Enable hole punching")
 
 	version := serviceFlags.Bool("version", false, "Print the version")
@@ -286,14 +303,17 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	if config.HTTPAddr != origValues["httpAddr"].(string) {
 		config.sources["httpAddr"] = string(SourceCLI)
 	}
+	if config.SocketPath != origValues["socketPath"].(string) {
+		config.sources["socketPath"] = string(SourceCLI)
+	}
 	if config.PingInterval != origValues["pingInterval"].(string) {
 		config.sources["pingInterval"] = string(SourceCLI)
 	}
 	if config.PingTimeout != origValues["pingTimeout"].(string) {
 		config.sources["pingTimeout"] = string(SourceCLI)
 	}
-	if config.EnableHTTP != origValues["enableHttp"].(bool) {
-		config.sources["enableHttp"] = string(SourceCLI)
+	if config.EnableAPI != origValues["enableApi"].(bool) {
+		config.sources["enableApi"] = string(SourceCLI)
 	}
 	if config.Holepunch != origValues["holepunch"].(bool) {
 		config.sources["holepunch"] = string(SourceCLI)
@@ -370,6 +390,14 @@ func mergeConfigs(dest, src *OlmConfig) {
 		dest.HTTPAddr = src.HTTPAddr
 		dest.sources["httpAddr"] = string(SourceFile)
 	}
+	if src.SocketPath != "" {
+		// Check if it's not the default for any OS
+		isDefault := src.SocketPath == "/var/run/olm.sock" || src.SocketPath == "olm"
+		if !isDefault {
+			dest.SocketPath = src.SocketPath
+			dest.sources["socketPath"] = string(SourceFile)
+		}
+	}
 	if src.PingInterval != "" && src.PingInterval != "3s" {
 		dest.PingInterval = src.PingInterval
 		dest.sources["pingInterval"] = string(SourceFile)
@@ -383,9 +411,9 @@ func mergeConfigs(dest, src *OlmConfig) {
 		dest.sources["tlsClientCert"] = string(SourceFile)
 	}
 	// For booleans, we always take the source value if explicitly set
-	if src.EnableHTTP {
-		dest.EnableHTTP = src.EnableHTTP
-		dest.sources["enableHttp"] = string(SourceFile)
+	if src.EnableAPI {
+		dest.EnableAPI = src.EnableAPI
+		dest.sources["enableApi"] = string(SourceFile)
 	}
 	if src.Holepunch {
 		dest.Holepunch = src.Holepunch
@@ -458,10 +486,11 @@ func (c *OlmConfig) ShowConfig() {
 	fmt.Println("\nLogging:")
 	fmt.Printf("  log-level    = %s [%s]\n", c.LogLevel, getSource("logLevel"))
 
-	// HTTP server
-	fmt.Println("\nHTTP Server:")
-	fmt.Printf("  enable-http  = %v [%s]\n", c.EnableHTTP, getSource("enableHttp"))
+	// API server
+	fmt.Println("\nAPI Server:")
+	fmt.Printf("  enable-api   = %v [%s]\n", c.EnableAPI, getSource("enableApi"))
 	fmt.Printf("  http-addr    = %s [%s]\n", c.HTTPAddr, getSource("httpAddr"))
+	fmt.Printf("  socket-path  = %s [%s]\n", c.SocketPath, getSource("socketPath"))
 
 	// Timing
 	fmt.Println("\nTiming:")

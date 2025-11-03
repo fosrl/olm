@@ -1,8 +1,9 @@
-package httpserver
+package api
 
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -36,9 +37,11 @@ type StatusResponse struct {
 	PeerStatuses map[int]*PeerStatus `json:"peers,omitempty"`
 }
 
-// HTTPServer represents the HTTP server and its state
-type HTTPServer struct {
+// API represents the HTTP server and its state
+type API struct {
 	addr           string
+	socketPath     string
+	listener       net.Listener
 	server         *http.Server
 	connectionChan chan ConnectionRequest
 	statusMu       sync.RWMutex
@@ -49,9 +52,9 @@ type HTTPServer struct {
 	version        string
 }
 
-// NewHTTPServer creates a new HTTP server
-func NewHTTPServer(addr string) *HTTPServer {
-	s := &HTTPServer{
+// NewAPI creates a new HTTP server that listens on a TCP address
+func NewAPI(addr string) *API {
+	s := &API{
 		addr:           addr,
 		connectionChan: make(chan ConnectionRequest, 1),
 		peerStatuses:   make(map[int]*PeerStatus),
@@ -60,20 +63,46 @@ func NewHTTPServer(addr string) *HTTPServer {
 	return s
 }
 
+// NewAPISocket creates a new HTTP server that listens on a Unix socket or Windows named pipe
+func NewAPISocket(socketPath string) *API {
+	s := &API{
+		socketPath:     socketPath,
+		connectionChan: make(chan ConnectionRequest, 1),
+		peerStatuses:   make(map[int]*PeerStatus),
+	}
+
+	return s
+}
+
 // Start starts the HTTP server
-func (s *HTTPServer) Start() error {
+func (s *API) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", s.handleConnect)
 	mux.HandleFunc("/status", s.handleStatus)
 
 	s.server = &http.Server{
-		Addr:    s.addr,
 		Handler: mux,
 	}
 
-	logger.Info("Starting HTTP server on %s", s.addr)
+	var err error
+	if s.socketPath != "" {
+		// Use platform-specific socket listener
+		s.listener, err = createSocketListener(s.socketPath)
+		if err != nil {
+			return fmt.Errorf("failed to create socket listener: %w", err)
+		}
+		logger.Info("Starting HTTP server on socket %s", s.socketPath)
+	} else {
+		// Use TCP listener
+		s.listener, err = net.Listen("tcp", s.addr)
+		if err != nil {
+			return fmt.Errorf("failed to create TCP listener: %w", err)
+		}
+		logger.Info("Starting HTTP server on %s", s.addr)
+	}
+
 	go func() {
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.server.Serve(s.listener); err != nil && err != http.ErrServerClosed {
 			logger.Error("HTTP server error: %v", err)
 		}
 	}()
@@ -82,18 +111,29 @@ func (s *HTTPServer) Start() error {
 }
 
 // Stop stops the HTTP server
-func (s *HTTPServer) Stop() error {
-	logger.Info("Stopping HTTP server")
-	return s.server.Close()
+func (s *API) Stop() error {
+	logger.Info("Stopping api server")
+
+	// Close the server first, which will also close the listener gracefully
+	if s.server != nil {
+		s.server.Close()
+	}
+
+	// Clean up socket file if using Unix socket
+	if s.socketPath != "" {
+		cleanupSocket(s.socketPath)
+	}
+
+	return nil
 }
 
 // GetConnectionChannel returns the channel for receiving connection requests
-func (s *HTTPServer) GetConnectionChannel() <-chan ConnectionRequest {
+func (s *API) GetConnectionChannel() <-chan ConnectionRequest {
 	return s.connectionChan
 }
 
 // UpdatePeerStatus updates the status of a peer including endpoint and relay info
-func (s *HTTPServer) UpdatePeerStatus(siteID int, connected bool, rtt time.Duration, endpoint string, isRelay bool) {
+func (s *API) UpdatePeerStatus(siteID int, connected bool, rtt time.Duration, endpoint string, isRelay bool) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 
@@ -113,7 +153,7 @@ func (s *HTTPServer) UpdatePeerStatus(siteID int, connected bool, rtt time.Durat
 }
 
 // SetConnectionStatus sets the overall connection status
-func (s *HTTPServer) SetConnectionStatus(isConnected bool) {
+func (s *API) SetConnectionStatus(isConnected bool) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 
@@ -128,21 +168,21 @@ func (s *HTTPServer) SetConnectionStatus(isConnected bool) {
 }
 
 // SetTunnelIP sets the tunnel IP address
-func (s *HTTPServer) SetTunnelIP(tunnelIP string) {
+func (s *API) SetTunnelIP(tunnelIP string) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	s.tunnelIP = tunnelIP
 }
 
 // SetVersion sets the olm version
-func (s *HTTPServer) SetVersion(version string) {
+func (s *API) SetVersion(version string) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	s.version = version
 }
 
 // UpdatePeerRelayStatus updates only the relay status of a peer
-func (s *HTTPServer) UpdatePeerRelayStatus(siteID int, endpoint string, isRelay bool) {
+func (s *API) UpdatePeerRelayStatus(siteID int, endpoint string, isRelay bool) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 
@@ -159,7 +199,7 @@ func (s *HTTPServer) UpdatePeerRelayStatus(siteID int, endpoint string, isRelay 
 }
 
 // handleConnect handles the /connect endpoint
-func (s *HTTPServer) handleConnect(w http.ResponseWriter, r *http.Request) {
+func (s *API) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -190,7 +230,7 @@ func (s *HTTPServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleStatus handles the /status endpoint
-func (s *HTTPServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
