@@ -44,6 +44,7 @@ type API struct {
 	listener       net.Listener
 	server         *http.Server
 	connectionChan chan ConnectionRequest
+	shutdownChan   chan struct{}
 	statusMu       sync.RWMutex
 	peerStatuses   map[int]*PeerStatus
 	connectedAt    time.Time
@@ -57,6 +58,7 @@ func NewAPI(addr string) *API {
 	s := &API{
 		addr:           addr,
 		connectionChan: make(chan ConnectionRequest, 1),
+		shutdownChan:   make(chan struct{}, 1),
 		peerStatuses:   make(map[int]*PeerStatus),
 	}
 
@@ -68,6 +70,7 @@ func NewAPISocket(socketPath string) *API {
 	s := &API{
 		socketPath:     socketPath,
 		connectionChan: make(chan ConnectionRequest, 1),
+		shutdownChan:   make(chan struct{}, 1),
 		peerStatuses:   make(map[int]*PeerStatus),
 	}
 
@@ -79,6 +82,7 @@ func (s *API) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", s.handleConnect)
 	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/exit", s.handleExit)
 
 	s.server = &http.Server{
 		Handler: mux,
@@ -130,6 +134,11 @@ func (s *API) Stop() error {
 // GetConnectionChannel returns the channel for receiving connection requests
 func (s *API) GetConnectionChannel() <-chan ConnectionRequest {
 	return s.connectionChan
+}
+
+// GetShutdownChannel returns the channel for receiving shutdown requests
+func (s *API) GetShutdownChannel() <-chan struct{} {
+	return s.shutdownChan
 }
 
 // UpdatePeerStatus updates the status of a peer including endpoint and relay info
@@ -254,4 +263,29 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// handleExit handles the /exit endpoint
+func (s *API) handleExit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	logger.Info("Received exit request via API")
+
+	// Send shutdown signal
+	select {
+	case s.shutdownChan <- struct{}{}:
+		// Signal sent successfully
+	default:
+		// Channel already has a signal, don't block
+	}
+
+	// Return a success response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "shutdown initiated",
+	})
 }
