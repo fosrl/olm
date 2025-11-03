@@ -31,9 +31,8 @@ type PeerStatus struct {
 
 // StatusResponse is returned by the status endpoint
 type StatusResponse struct {
-	Status       string              `json:"status"`
 	Connected    bool                `json:"connected"`
-	Registered   bool                `json:"registered,omitempty"`
+	Registered   bool                `json:"registered"`
 	TunnelIP     string              `json:"tunnelIP,omitempty"`
 	Version      string              `json:"version,omitempty"`
 	PeerStatuses map[int]*PeerStatus `json:"peers,omitempty"`
@@ -263,12 +262,6 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		TunnelIP:     s.tunnelIP,
 		Version:      s.version,
 		PeerStatuses: s.peerStatuses,
-	}
-
-	if s.isConnected {
-		resp.Status = "connected"
-	} else {
-		resp.Status = "disconnected"
 	}
 
 	w.Header().Set("Content-Type", "application/json")
