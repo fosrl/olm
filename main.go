@@ -209,6 +209,7 @@ func main() {
 		PingIntervalDuration: config.PingIntervalDuration,
 		PingTimeoutDuration:  config.PingTimeoutDuration,
 		Version:              config.Version,
+		OrgID:                config.OrgID,
 	}
 
 	// Create a context that will be cancelled on interrupt signals
