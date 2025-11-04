@@ -40,6 +40,7 @@ type StatusResponse struct {
 	Registered   bool                `json:"registered"`
 	TunnelIP     string              `json:"tunnelIP,omitempty"`
 	Version      string              `json:"version,omitempty"`
+	OrgID        string              `json:"orgId,omitempty"`
 	PeerStatuses map[int]*PeerStatus `json:"peers,omitempty"`
 }
 
@@ -59,6 +60,7 @@ type API struct {
 	isRegistered   bool
 	tunnelIP       string
 	version        string
+	orgID          string
 }
 
 // NewAPI creates a new HTTP server that listens on a TCP address
@@ -212,6 +214,13 @@ func (s *API) SetVersion(version string) {
 	s.version = version
 }
 
+// SetOrgID sets the organization ID
+func (s *API) SetOrgID(orgID string) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.orgID = orgID
+}
+
 // UpdatePeerRelayStatus updates only the relay status of a peer
 func (s *API) UpdatePeerRelayStatus(siteID int, endpoint string, isRelay bool) {
 	s.statusMu.Lock()
@@ -275,6 +284,7 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Registered:   s.isRegistered,
 		TunnelIP:     s.tunnelIP,
 		Version:      s.version,
+		OrgID:        s.orgID,
 		PeerStatuses: s.peerStatuses,
 	}
 
@@ -341,7 +351,7 @@ func (s *API) handleSwitchOrg(w http.ResponseWriter, r *http.Request) {
 
 	// Return a success response
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
+	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "org switch request accepted",
 	})
