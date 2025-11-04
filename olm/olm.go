@@ -55,6 +55,7 @@ type Config struct {
 	sources map[string]string
 
 	Version string
+	OrgID   string
 }
 
 func Run(ctx context.Context, config Config) {
@@ -685,6 +686,7 @@ func Run(ctx context.Context, config Config) {
 			"publicKey":  publicKey.String(),
 			"relay":      !doHolepunch,
 			"olmVersion": config.Version,
+			"orgId":      config.OrgID,
 		}, 1*time.Second)
 
 		go keepSendingPing(olm)

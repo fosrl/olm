@@ -17,6 +17,7 @@ type OlmConfig struct {
 	Endpoint string `json:"endpoint"`
 	ID       string `json:"id"`
 	Secret   string `json:"secret"`
+	OrgID    string `json:"org"`
 
 	// Network settings
 	MTU           int    `json:"mtu"`
@@ -188,6 +189,10 @@ func loadConfigFromEnv(config *OlmConfig) {
 		config.Secret = val
 		config.sources["secret"] = string(SourceEnv)
 	}
+	if val := os.Getenv("ORG"); val != "" {
+		config.OrgID = val
+		config.sources["org"] = string(SourceEnv)
+	}
 	if val := os.Getenv("MTU"); val != "" {
 		if mtu, err := strconv.Atoi(val); err == nil {
 			config.MTU = mtu
@@ -243,6 +248,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 		"endpoint":     config.Endpoint,
 		"id":           config.ID,
 		"secret":       config.Secret,
+		"org":          config.OrgID,
 		"mtu":          config.MTU,
 		"dns":          config.DNS,
 		"logLevel":     config.LogLevel,
@@ -259,6 +265,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	serviceFlags.StringVar(&config.Endpoint, "endpoint", config.Endpoint, "Endpoint of your Pangolin server")
 	serviceFlags.StringVar(&config.ID, "id", config.ID, "Olm ID")
 	serviceFlags.StringVar(&config.Secret, "secret", config.Secret, "Olm secret")
+	serviceFlags.StringVar(&config.OrgID, "org", config.OrgID, "Organization ID")
 	serviceFlags.IntVar(&config.MTU, "mtu", config.MTU, "MTU to use")
 	serviceFlags.StringVar(&config.DNS, "dns", config.DNS, "DNS server to use")
 	serviceFlags.StringVar(&config.LogLevel, "log-level", config.LogLevel, "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
@@ -287,6 +294,9 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	}
 	if config.Secret != origValues["secret"].(string) {
 		config.sources["secret"] = string(SourceCLI)
+	}
+	if config.OrgID != origValues["org"].(string) {
+		config.sources["org"] = string(SourceCLI)
 	}
 	if config.MTU != origValues["mtu"].(int) {
 		config.sources["mtu"] = string(SourceCLI)
@@ -369,6 +379,10 @@ func mergeConfigs(dest, src *OlmConfig) {
 	if src.Secret != "" {
 		dest.Secret = src.Secret
 		dest.sources["secret"] = string(SourceFile)
+	}
+	if src.OrgID != "" {
+		dest.OrgID = src.OrgID
+		dest.sources["org"] = string(SourceFile)
 	}
 	if src.MTU != 0 && src.MTU != 1280 {
 		dest.MTU = src.MTU
@@ -475,6 +489,7 @@ func (c *OlmConfig) ShowConfig() {
 	fmt.Printf("  endpoint     = %s [%s]\n", formatValue("endpoint", c.Endpoint), getSource("endpoint"))
 	fmt.Printf("  id           = %s [%s]\n", formatValue("id", c.ID), getSource("id"))
 	fmt.Printf("  secret       = %s [%s]\n", formatValue("secret", c.Secret), getSource("secret"))
+	fmt.Printf("  org        = %s [%s]\n", formatValue("org", c.OrgID), getSource("org"))
 
 	// Network settings
 	fmt.Println("\nNetwork:")
