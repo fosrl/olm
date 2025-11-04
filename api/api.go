@@ -18,6 +18,11 @@ type ConnectionRequest struct {
 	Endpoint string `json:"endpoint"`
 }
 
+// SwitchOrgRequest defines the structure for switching organizations
+type SwitchOrgRequest struct {
+	OrgID string `json:"orgId"`
+}
+
 // PeerStatus represents the status of a peer connection
 type PeerStatus struct {
 	SiteID    int           `json:"siteId"`
@@ -45,6 +50,7 @@ type API struct {
 	listener       net.Listener
 	server         *http.Server
 	connectionChan chan ConnectionRequest
+	switchOrgChan  chan SwitchOrgRequest
 	shutdownChan   chan struct{}
 	statusMu       sync.RWMutex
 	peerStatuses   map[int]*PeerStatus
@@ -60,6 +66,7 @@ func NewAPI(addr string) *API {
 	s := &API{
 		addr:           addr,
 		connectionChan: make(chan ConnectionRequest, 1),
+		switchOrgChan:  make(chan SwitchOrgRequest, 1),
 		shutdownChan:   make(chan struct{}, 1),
 		peerStatuses:   make(map[int]*PeerStatus),
 	}
@@ -72,6 +79,7 @@ func NewAPISocket(socketPath string) *API {
 	s := &API{
 		socketPath:     socketPath,
 		connectionChan: make(chan ConnectionRequest, 1),
+		switchOrgChan:  make(chan SwitchOrgRequest, 1),
 		shutdownChan:   make(chan struct{}, 1),
 		peerStatuses:   make(map[int]*PeerStatus),
 	}
@@ -84,6 +92,7 @@ func (s *API) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", s.handleConnect)
 	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/switch-org", s.handleSwitchOrg)
 	mux.HandleFunc("/exit", s.handleExit)
 
 	s.server = &http.Server{
@@ -136,6 +145,11 @@ func (s *API) Stop() error {
 // GetConnectionChannel returns the channel for receiving connection requests
 func (s *API) GetConnectionChannel() <-chan ConnectionRequest {
 	return s.connectionChan
+}
+
+// GetSwitchOrgChannel returns the channel for receiving org switch requests
+func (s *API) GetSwitchOrgChannel() <-chan SwitchOrgRequest {
+	return s.switchOrgChan
 }
 
 // GetShutdownChannel returns the channel for receiving shutdown requests
@@ -290,5 +304,45 @@ func (s *API) handleExit(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "shutdown initiated",
+	})
+}
+
+// handleSwitchOrg handles the /switch-org endpoint
+func (s *API) handleSwitchOrg(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req SwitchOrgRequest
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Validate required fields
+	if req.OrgID == "" {
+		http.Error(w, "Missing required field: orgId must be provided", http.StatusBadRequest)
+		return
+	}
+
+	logger.Info("Received org switch request to orgId: %s", req.OrgID)
+
+	// Send the request to the main goroutine
+	select {
+	case s.switchOrgChan <- req:
+		// Signal sent successfully
+	default:
+		// Channel already has a pending request
+		http.Error(w, "Org switch already in progress", http.StatusConflict)
+		return
+	}
+
+	// Return a success response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "org switch request accepted",
 	})
 }

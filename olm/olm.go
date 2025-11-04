@@ -699,6 +699,77 @@ func Run(ctx context.Context, config Config) {
 		olmToken = token
 	})
 
+	// Listen for org switch requests from the API
+	if apiServer != nil {
+		go func() {
+			for req := range apiServer.GetSwitchOrgChannel() {
+				logger.Info("Processing org switch request to orgId: %s", req.OrgID)
+
+				// Update the config with the new orgId
+				config.OrgID = req.OrgID
+
+				// Mark as not connected to trigger re-registration
+				connected = false
+
+				// Stop registration if running
+				if stopRegister != nil {
+					stopRegister()
+					stopRegister = nil
+				}
+
+				// Stop hole punching
+				select {
+				case <-stopHolepunch:
+					// Already closed
+				default:
+					close(stopHolepunch)
+				}
+				stopHolepunch = make(chan struct{})
+
+				// Stop peer monitor
+				if peerMonitor != nil {
+					peerMonitor.Stop()
+					peerMonitor = nil
+				}
+
+				// Close the WireGuard device
+				if dev != nil {
+					logger.Info("Closing existing WireGuard device for org switch")
+					dev.Close()
+					dev = nil
+				}
+
+				// Close UAPI listener
+				if uapiListener != nil {
+					uapiListener.Close()
+					uapiListener = nil
+				}
+
+				// Close TUN device
+				if tdev != nil {
+					tdev.Close()
+					tdev = nil
+				}
+
+				// Clear peer statuses in API
+				if apiServer != nil {
+					apiServer.SetRegistered(false)
+					apiServer.SetTunnelIP("")
+				}
+
+				// Trigger re-registration with new orgId
+				logger.Info("Re-registering with new orgId: %s", config.OrgID)
+				publicKey := privateKey.PublicKey()
+				stopRegister = olm.SendMessageInterval("olm/wg/register", map[string]interface{}{
+					"publicKey":  publicKey.String(),
+					"relay":      !doHolepunch,
+					"olmVersion": config.Version,
+					"orgId":      config.OrgID,
+				}, 1*time.Second)
+			}
+		}()
+	}
+
 	// Connect to the WebSocket server
 	if err := olm.Connect(); err != nil {
 		logger.Fatal("Failed to connect to server: %v", err)
