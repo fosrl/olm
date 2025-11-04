@@ -110,6 +110,7 @@ func Run(ctx context.Context, config Config) {
 		}
 
 		apiServer.SetVersion(config.Version)
+		apiServer.SetOrgID(config.OrgID)
 		if err := apiServer.Start(); err != nil {
 			logger.Fatal("Failed to start HTTP server: %v", err)
 		}
@@ -755,6 +756,7 @@ func Run(ctx context.Context, config Config) {
 				if apiServer != nil {
 					apiServer.SetRegistered(false)
 					apiServer.SetTunnelIP("")
+					apiServer.SetOrgID(config.OrgID)
 				}
 
 				// Trigger re-registration with new orgId
