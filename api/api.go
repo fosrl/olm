@@ -13,9 +13,10 @@ import (
 
 // ConnectionRequest defines the structure for an incoming connection request
 type ConnectionRequest struct {
-	ID       string `json:"id"`
-	Secret   string `json:"secret"`
-	Endpoint string `json:"endpoint"`
+	ID        string `json:"id"`
+	Secret    string `json:"secret"`
+	Endpoint  string `json:"endpoint"`
+	UserToken string `json:"userToken,omitempty"`
 }
 
 // SwitchOrgRequest defines the structure for switching organizations
@@ -53,6 +54,7 @@ type API struct {
 	connectionChan chan ConnectionRequest
 	switchOrgChan  chan SwitchOrgRequest
 	shutdownChan   chan struct{}
+	disconnectChan chan struct{}
 	statusMu       sync.RWMutex
 	peerStatuses   map[int]*PeerStatus
 	connectedAt    time.Time
@@ -70,6 +72,7 @@ func NewAPI(addr string) *API {
 		connectionChan: make(chan ConnectionRequest, 1),
 		switchOrgChan:  make(chan SwitchOrgRequest, 1),
 		shutdownChan:   make(chan struct{}, 1),
+		disconnectChan: make(chan struct{}, 1),
 		peerStatuses:   make(map[int]*PeerStatus),
 	}
 
@@ -83,6 +86,7 @@ func NewAPISocket(socketPath string) *API {
 		connectionChan: make(chan ConnectionRequest, 1),
 		switchOrgChan:  make(chan SwitchOrgRequest, 1),
 		shutdownChan:   make(chan struct{}, 1),
+		disconnectChan: make(chan struct{}, 1),
 		peerStatuses:   make(map[int]*PeerStatus),
 	}
 
@@ -95,6 +99,7 @@ func (s *API) Start() error {
 	mux.HandleFunc("/connect", s.handleConnect)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/switch-org", s.handleSwitchOrg)
+	mux.HandleFunc("/disconnect", s.handleDisconnect)
 	mux.HandleFunc("/exit", s.handleExit)
 
 	s.server = &http.Server{
@@ -157,6 +162,11 @@ func (s *API) GetSwitchOrgChannel() <-chan SwitchOrgRequest {
 // GetShutdownChannel returns the channel for receiving shutdown requests
 func (s *API) GetShutdownChannel() <-chan struct{} {
 	return s.shutdownChan
+}
+
+// GetDisconnectChannel returns the channel for receiving disconnect requests
+func (s *API) GetDisconnectChannel() <-chan struct{} {
+	return s.disconnectChan
 }
 
 // UpdatePeerStatus updates the status of a peer including endpoint and relay info
@@ -354,5 +364,30 @@ func (s *API) handleSwitchOrg(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "org switch request accepted",
+	})
+}
+
+// handleDisconnect handles the /disconnect endpoint
+func (s *API) handleDisconnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	logger.Info("Received disconnect request via API")
+
+	// Send disconnect signal
+	select {
+	case s.disconnectChan <- struct{}{}:
+		// Signal sent successfully
+	default:
+		// Channel already has a signal, don't block
+	}
+
+	// Return a success response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "disconnect initiated",
 	})
 }
