@@ -255,6 +255,15 @@ func (s *API) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// if we are already connected, reject new connection requests
+	s.statusMu.RLock()
+	alreadyConnected := s.isConnected
+	s.statusMu.RUnlock()
+	if alreadyConnected {
+		http.Error(w, "Already connected to a server. Disconnect first before connecting again.", http.StatusConflict)
+		return
+	}
+
 	var req ConnectionRequest
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(&req); err != nil {
@@ -371,6 +380,15 @@ func (s *API) handleSwitchOrg(w http.ResponseWriter, r *http.Request) {
 func (s *API) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// if we are already disconnected, reject new disconnect requests
+	s.statusMu.RLock()
+	alreadyDisconnected := !s.isConnected
+	s.statusMu.RUnlock()
+	if alreadyDisconnected {
+		http.Error(w, "Not currently connected to a server.", http.StatusConflict)
 		return
 	}
 
