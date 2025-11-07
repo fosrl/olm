@@ -64,6 +64,7 @@ var (
 	apiServer     *api.API
 	olmClient     *websocket.Client
 	tunnelCancel  context.CancelFunc
+	tunnelRunning bool
 )
 
 func Run(ctx context.Context, config Config) {
@@ -132,6 +133,7 @@ func Run(ctx context.Context, config Config) {
 			// Start the tunnel process with the new credentials
 			if id != "" && secret != "" && endpoint != "" {
 				logger.Info("Starting tunnel with new credentials")
+				tunnelRunning = true
 				go TunnelProcess(ctx, config, id, secret, endpoint)
 			}
 
@@ -145,7 +147,7 @@ func Run(ctx context.Context, config Config) {
 
 		default:
 			// If we have credentials and no tunnel is running, start it
-			if id != "" && secret != "" && endpoint != "" && olmClient == nil {
+			if id != "" && secret != "" && endpoint != "" && !tunnelRunning {
 				logger.Info("Starting tunnel process with initial credentials")
 				go TunnelProcess(ctx, config, id, secret, endpoint)
 			} else if id == "" || secret == "" || endpoint == "" {
@@ -829,6 +831,7 @@ func StopTunnel() {
 
 	// Reset the connected state
 	connected = false
+	tunnelRunning = false
 
 	// Update API server status
 	apiServer.SetConnectionStatus(false)
