@@ -39,6 +39,7 @@ type Config struct {
 	Secret        string
 	Endpoint      string
 	TlsClientCert string // legacy PKCS12 file path
+	UserToken     string // optional user token for websocket authentication
 }
 
 type Client struct {
@@ -103,11 +104,12 @@ func (c *Client) OnTokenUpdate(callback func(token string)) {
 }
 
 // NewClient creates a new websocket client
-func NewClient(clientType string, ID, secret string, endpoint string, pingInterval time.Duration, pingTimeout time.Duration, opts ...ClientOption) (*Client, error) {
+func NewClient(ID, secret string, userToken string, endpoint string, pingInterval time.Duration, pingTimeout time.Duration, opts ...ClientOption) (*Client, error) {
 	config := &Config{
-		ID:       ID,
-		Secret:   secret,
-		Endpoint: endpoint,
+		ID:        ID,
+		Secret:    secret,
+		Endpoint:  endpoint,
+		UserToken: userToken,
 	}
 
 	client := &Client{
@@ -119,7 +121,7 @@ func NewClient(clientType string, ID, secret string, endpoint string, pingInterv
 		isConnected:       false,
 		pingInterval:      pingInterval,
 		pingTimeout:       pingTimeout,
-		clientType:        clientType,
+		clientType:        "olm",
 	}
 
 	// Apply options before loading config
@@ -263,17 +265,9 @@ func (c *Client) getToken() (string, error) {
 
 	var tokenData map[string]interface{}
 
-	// Get a new token
-	if c.clientType == "newt" {
-		tokenData = map[string]interface{}{
-			"newtId": c.config.ID,
-			"secret": c.config.Secret,
-		}
-	} else if c.clientType == "olm" {
-		tokenData = map[string]interface{}{
-			"olmId":  c.config.ID,
-			"secret": c.config.Secret,
-		}
+	tokenData = map[string]interface{}{
+		"olmId":  c.config.ID,
+		"secret": c.config.Secret,
 	}
 	jsonData, err := json.Marshal(tokenData)
 
@@ -384,6 +378,9 @@ func (c *Client) establishConnection() error {
 	q := u.Query()
 	q.Set("token", token)
 	q.Set("clientType", c.clientType)
+	if c.config.UserToken != "" {
+		q.Set("userToken", c.config.UserToken)
+	}
 	u.RawQuery = q.Encode()
 
 	// Connect to WebSocket

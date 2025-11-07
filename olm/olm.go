@@ -21,9 +21,10 @@ import (
 
 type Config struct {
 	// Connection settings
-	Endpoint string
-	ID       string
-	Secret   string
+	Endpoint  string
+	ID        string
+	Secret    string
+	UserToken string
 
 	// Network settings
 	MTU           int
@@ -104,9 +105,10 @@ func Run(ctx context.Context, config Config) {
 	}()
 
 	var (
-		id       = config.ID
-		secret   = config.Secret
-		endpoint = config.Endpoint
+		id        = config.ID
+		secret    = config.Secret
+		endpoint  = config.Endpoint
+		userToken = config.UserToken
 	)
 
 	// Main event loop that handles connect, disconnect, and reconnect
@@ -129,12 +131,13 @@ func Run(ctx context.Context, config Config) {
 			id = req.ID
 			secret = req.Secret
 			endpoint = req.Endpoint
+			userToken := req.UserToken
 
 			// Start the tunnel process with the new credentials
 			if id != "" && secret != "" && endpoint != "" {
 				logger.Info("Starting tunnel with new credentials")
 				tunnelRunning = true
-				go TunnelProcess(ctx, config, id, secret, endpoint)
+				go TunnelProcess(ctx, config, id, secret, userToken, endpoint)
 			}
 
 		case <-apiServer.GetDisconnectChannel():
@@ -144,13 +147,14 @@ func Run(ctx context.Context, config Config) {
 			id = ""
 			secret = ""
 			endpoint = ""
+			userToken = ""
 
 		default:
 			// If we have credentials and no tunnel is running, start it
 			if id != "" && secret != "" && endpoint != "" && !tunnelRunning {
 				logger.Info("Starting tunnel process with initial credentials")
 				tunnelRunning = true
-				go TunnelProcess(ctx, config, id, secret, endpoint)
+				go TunnelProcess(ctx, config, id, secret, userToken, endpoint)
 			} else if id == "" || secret == "" || endpoint == "" {
 				// If we don't have credentials, check if API is enabled
 				if !config.EnableAPI {
@@ -181,7 +185,7 @@ shutdown:
 	logger.Info("Olm service shutting down")
 }
 
-func TunnelProcess(ctx context.Context, config Config, id string, secret string, endpoint string) {
+func TunnelProcess(ctx context.Context, config Config, id string, secret string, userToken string, endpoint string) {
 	// Create a cancellable context for this tunnel process
 	tunnelCtx, cancel := context.WithCancel(ctx)
 	tunnelCancel = cancel
@@ -200,10 +204,10 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 
 	// Create a new olm client using the provided credentials
 	olm, err := websocket.NewClient(
-		"olm",
-		id,       // Use provided ID
-		secret,   // Use provided secret
-		endpoint, // Use provided endpoint
+		id,        // Use provided ID
+		secret,    // Use provided secret
+		userToken, // Use provided user token OPTIONAL
+		endpoint,  // Use provided endpoint
 		config.PingIntervalDuration,
 		config.PingTimeoutDuration,
 	)

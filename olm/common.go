@@ -562,6 +562,7 @@ func FindAvailableUDPPort(minPort, maxPort uint16) (uint16, error) {
 func sendPing(olm *websocket.Client) error {
 	err := olm.SendMessage("olm/ping", map[string]interface{}{
 		"timestamp": time.Now().Unix(),
+		"userToken": olm.GetConfig().UserToken,
 	})
 	if err != nil {
 		logger.Error("Failed to send ping message: %v", err)

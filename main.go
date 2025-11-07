@@ -195,6 +195,7 @@ func main() {
 		Endpoint:             config.Endpoint,
 		ID:                   config.ID,
 		Secret:               config.Secret,
+		UserToken:            config.UserToken,
 		MTU:                  config.MTU,
 		DNS:                  config.DNS,
 		InterfaceName:        config.InterfaceName,
