@@ -202,8 +202,6 @@ func main() {
 		EnableAPI:            config.EnableAPI,
 		HTTPAddr:             config.HTTPAddr,
 		SocketPath:           config.SocketPath,
-		PingInterval:         config.PingInterval,
-		PingTimeout:          config.PingTimeout,
 		Holepunch:            config.Holepunch,
 		TlsClientCert:        config.TlsClientCert,
 		PingIntervalDuration: config.PingIntervalDuration,

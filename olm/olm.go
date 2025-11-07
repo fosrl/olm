@@ -674,17 +674,10 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 	olm.RegisterHandler("olm/register/no-sites", func(msg websocket.WSMessage) {
 		logger.Info("Received no-sites message - no sites available for connection")
 
-		// if stopRegister != nil {
-		// 	stopRegister()
-		// 	stopRegister = nil
-		// }
-
-		// select {
-		// case <-stopHolepunch:
-		// 	// Channel already closed, do nothing
-		// default:
-		// 	close(stopHolepunch)
-		// }
+		if stopRegister != nil {
+			stopRegister()
+			stopRegister = nil
+		}
 
 		logger.Info("No sites available - stopped registration and holepunch processes")
 	})
@@ -706,18 +699,18 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 
 		publicKey := privateKey.PublicKey()
 
-		logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !config.Holepunch)
-
-		stopRegister = olm.SendMessageInterval("olm/wg/register", map[string]interface{}{
-			"publicKey":  publicKey.String(),
-			"relay":      !config.Holepunch,
-			"olmVersion": config.Version,
-			"orgId":      config.OrgID,
-		}, 1*time.Second)
+		if stopRegister == nil {
+			logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !config.Holepunch)
+			stopRegister = olm.SendMessageInterval("olm/wg/register", map[string]interface{}{
+				"publicKey":  publicKey.String(),
+				"relay":      !config.Holepunch,
+				"olmVersion": config.Version,
+				"orgId":      config.OrgID,
+			}, 1*time.Second)
+		}
 
 		go keepSendingPing(olm)
 
-		logger.Info("Sent registration message")
 		return nil
 	})
 
@@ -769,18 +762,22 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 }
 
 func Stop() {
-	select {
-	case <-stopHolepunch:
-		// Channel already closed, do nothing
-	default:
-		close(stopHolepunch)
+	if stopHolepunch != nil {
+		select {
+		case <-stopHolepunch:
+			// Channel already closed, do nothing
+		default:
+			close(stopHolepunch)
+		}
 	}
 
-	select {
-	case <-stopPing:
-		// Channel already closed
-	default:
-		close(stopPing)
+	if stopPing != nil {
+		select {
+		case <-stopPing:
+			// Channel already closed
+		default:
+			close(stopPing)
+		}
 	}
 
 	if stopRegister != nil {
