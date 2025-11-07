@@ -149,6 +149,7 @@ func Run(ctx context.Context, config Config) {
 			// If we have credentials and no tunnel is running, start it
 			if id != "" && secret != "" && endpoint != "" && !tunnelRunning {
 				logger.Info("Starting tunnel process with initial credentials")
+				tunnelRunning = true
 				go TunnelProcess(ctx, config, id, secret, endpoint)
 			} else if id == "" || secret == "" || endpoint == "" {
 				// If we don't have credentials, check if API is enabled
