@@ -50,8 +50,9 @@ type Config struct {
 	// Source tracking (not in JSON)
 	sources map[string]string
 
-	Version string
-	OrgID   string
+	Version              string
+	OrgID                string
+	DoNotCreateNewClient bool
 }
 
 var (
@@ -709,10 +710,11 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 		if stopRegister == nil {
 			logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !config.Holepunch)
 			stopRegister = olm.SendMessageInterval("olm/wg/register", map[string]interface{}{
-				"publicKey":  publicKey.String(),
-				"relay":      !config.Holepunch,
-				"olmVersion": config.Version,
-				"orgId":      config.OrgID,
+				"publicKey":            publicKey.String(),
+				"relay":                !config.Holepunch,
+				"olmVersion":           config.Version,
+				"orgId":                config.OrgID,
+				"doNotCreateNewClient": config.DoNotCreateNewClient,
 			}, 1*time.Second)
 		}
 
