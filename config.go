@@ -14,10 +14,11 @@ import (
 // OlmConfig holds all configuration options for the Olm client
 type OlmConfig struct {
 	// Connection settings
-	Endpoint string `json:"endpoint"`
-	ID       string `json:"id"`
-	Secret   string `json:"secret"`
-	OrgID    string `json:"org"`
+	Endpoint  string `json:"endpoint"`
+	ID        string `json:"id"`
+	Secret    string `json:"secret"`
+	OrgID     string `json:"org"`
+	UserToken string `json:"userToken"`
 
 	// Network settings
 	MTU           int    `json:"mtu"`
@@ -193,6 +194,10 @@ func loadConfigFromEnv(config *OlmConfig) {
 		config.OrgID = val
 		config.sources["org"] = string(SourceEnv)
 	}
+	if val := os.Getenv("USER_TOKEN"); val != "" {
+		config.UserToken = val
+		config.sources["userToken"] = string(SourceEnv)
+	}
 	if val := os.Getenv("MTU"); val != "" {
 		if mtu, err := strconv.Atoi(val); err == nil {
 			config.MTU = mtu
@@ -249,6 +254,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 		"id":           config.ID,
 		"secret":       config.Secret,
 		"org":          config.OrgID,
+		"userToken":    config.UserToken,
 		"mtu":          config.MTU,
 		"dns":          config.DNS,
 		"logLevel":     config.LogLevel,
@@ -266,6 +272,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	serviceFlags.StringVar(&config.ID, "id", config.ID, "Olm ID")
 	serviceFlags.StringVar(&config.Secret, "secret", config.Secret, "Olm secret")
 	serviceFlags.StringVar(&config.OrgID, "org", config.OrgID, "Organization ID")
+	serviceFlags.StringVar(&config.UserToken, "user-token", config.UserToken, "User token (optional)")
 	serviceFlags.IntVar(&config.MTU, "mtu", config.MTU, "MTU to use")
 	serviceFlags.StringVar(&config.DNS, "dns", config.DNS, "DNS server to use")
 	serviceFlags.StringVar(&config.LogLevel, "log-level", config.LogLevel, "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
@@ -297,6 +304,9 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	}
 	if config.OrgID != origValues["org"].(string) {
 		config.sources["org"] = string(SourceCLI)
+	}
+	if config.UserToken != origValues["userToken"].(string) {
+		config.sources["userToken"] = string(SourceCLI)
 	}
 	if config.MTU != origValues["mtu"].(int) {
 		config.sources["mtu"] = string(SourceCLI)
@@ -383,6 +393,10 @@ func mergeConfigs(dest, src *OlmConfig) {
 	if src.OrgID != "" {
 		dest.OrgID = src.OrgID
 		dest.sources["org"] = string(SourceFile)
+	}
+	if src.UserToken != "" {
+		dest.UserToken = src.UserToken
+		dest.sources["userToken"] = string(SourceFile)
 	}
 	if src.MTU != 0 && src.MTU != 1280 {
 		dest.MTU = src.MTU
@@ -489,7 +503,8 @@ func (c *OlmConfig) ShowConfig() {
 	fmt.Printf("  endpoint     = %s [%s]\n", formatValue("endpoint", c.Endpoint), getSource("endpoint"))
 	fmt.Printf("  id           = %s [%s]\n", formatValue("id", c.ID), getSource("id"))
 	fmt.Printf("  secret       = %s [%s]\n", formatValue("secret", c.Secret), getSource("secret"))
-	fmt.Printf("  org        = %s [%s]\n", formatValue("org", c.OrgID), getSource("org"))
+	fmt.Printf("  org          = %s [%s]\n", formatValue("org", c.OrgID), getSource("org"))
+	fmt.Printf("  user-token   = %s [%s]\n", formatValue("userToken", c.UserToken), getSource("userToken"))
 
 	// Network settings
 	fmt.Println("\nNetwork:")
