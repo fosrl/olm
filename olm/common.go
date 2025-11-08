@@ -14,13 +14,13 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/logger"
+	"github.com/fosrl/olm/bind"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/websocket"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/exp/rand"
-	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -82,11 +82,6 @@ const (
 	ENV_WG_PROCESS_FOREGROUND = "WG_PROCESS_FOREGROUND"
 )
 
-type fixedPortBind struct {
-	port uint16
-	conn.Bind
-}
-
 // PeerAction represents a request to add, update, or remove a peer
 type PeerAction struct {
 	Action   string     `json:"action"`   // "add", "update", or "remove"
@@ -124,11 +119,6 @@ type RelayPeerData struct {
 	PublicKey string `json:"publicKey"`
 }
 
-func (b *fixedPortBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
-	// Ignore the requested port and use our fixed port
-	return b.Bind.Open(b.port)
-}
-
 // Helper function to format endpoints correctly
 func formatEndpoint(endpoint string) string {
 	if endpoint == "" {
@@ -154,13 +144,6 @@ func formatEndpoint(endpoint string) string {
 
 	// If it's not the specific malformed case, return it as is.
 	return endpoint
-}
-
-func NewFixedPortBind(port uint16) conn.Bind {
-	return &fixedPortBind{
-		port: port,
-		Bind: conn.NewDefaultBind(),
-	}
 }
 
 func fixKey(key string) string {
@@ -521,6 +504,196 @@ func keepSendingUDPHolePunch(endpoint string, olmID string, sourcePort uint16, s
 			}
 		}
 	}
+}
+
+// keepSendingUDPHolePunchToMultipleExitNodesWithSharedBind sends hole punch packets using the shared bind
+func keepSendingUDPHolePunchToMultipleExitNodesWithSharedBind(exitNodes []ExitNode, olmID string, sharedBind *bind.SharedBind) {
+	if len(exitNodes) == 0 {
+		logger.Warn("No exit nodes provided for hole punching")
+		return
+	}
+
+	// Check if hole punching is already running
+	if holePunchRunning {
+		logger.Debug("UDP hole punch already running, skipping new request")
+		return
+	}
+
+	// Set the flag to indicate hole punching is running
+	holePunchRunning = true
+	defer func() {
+		holePunchRunning = false
+		logger.Info("UDP hole punch goroutine ended")
+	}()
+
+	logger.Info("Starting UDP hole punch to %d exit nodes with shared bind", len(exitNodes))
+	defer logger.Info("UDP hole punch goroutine ended for all exit nodes")
+
+	// Resolve all endpoints upfront
+	type resolvedExitNode struct {
+		remoteAddr   *net.UDPAddr
+		publicKey    string
+		endpointName string
+	}
+
+	var resolvedNodes []resolvedExitNode
+	for _, exitNode := range exitNodes {
+		host, err := resolveDomain(exitNode.Endpoint)
+		if err != nil {
+			logger.Error("Failed to resolve endpoint %s: %v", exitNode.Endpoint, err)
+			continue
+		}
+
+		serverAddr := net.JoinHostPort(host, "21820")
+		remoteAddr, err := net.ResolveUDPAddr("udp", serverAddr)
+		if err != nil {
+			logger.Error("Failed to resolve UDP address for %s: %v", exitNode.Endpoint, err)
+			continue
+		}
+
+		resolvedNodes = append(resolvedNodes, resolvedExitNode{
+			remoteAddr:   remoteAddr,
+			publicKey:    exitNode.PublicKey,
+			endpointName: exitNode.Endpoint,
+		})
+		logger.Info("Resolved exit node: %s -> %s", exitNode.Endpoint, remoteAddr.String())
+	}
+
+	if len(resolvedNodes) == 0 {
+		logger.Error("No exit nodes could be resolved")
+		return
+	}
+
+	// Send initial hole punch to all exit nodes
+	for _, node := range resolvedNodes {
+		if err := sendUDPHolePunchWithBind(sharedBind, node.remoteAddr, olmID, node.publicKey); err != nil {
+			logger.Error("Failed to send initial UDP hole punch to %s: %v", node.endpointName, err)
+		}
+	}
+
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	timeout := time.NewTimer(15 * time.Second)
+	defer timeout.Stop()
+
+	for {
+		select {
+		case <-stopHolepunch:
+			logger.Info("Stopping UDP holepunch for all exit nodes")
+			return
+		case <-timeout.C:
+			logger.Info("UDP holepunch routine timed out after 15 seconds for all exit nodes")
+			return
+		case <-ticker.C:
+			// Send hole punch to all exit nodes
+			for _, node := range resolvedNodes {
+				if err := sendUDPHolePunchWithBind(sharedBind, node.remoteAddr, olmID, node.publicKey); err != nil {
+					logger.Error("Failed to send UDP hole punch to %s: %v", node.endpointName, err)
+				}
+			}
+		}
+	}
+}
+
+// keepSendingUDPHolePunchWithSharedBind sends hole punch packets to a single endpoint using shared bind
+func keepSendingUDPHolePunchWithSharedBind(endpoint string, olmID string, sharedBind *bind.SharedBind, serverPubKey string) {
+	// Check if hole punching is already running
+	if holePunchRunning {
+		logger.Debug("UDP hole punch already running, skipping new request")
+		return
+	}
+
+	// Set the flag to indicate hole punching is running
+	holePunchRunning = true
+	defer func() {
+		holePunchRunning = false
+		logger.Info("UDP hole punch goroutine ended")
+	}()
+
+	logger.Info("Starting UDP hole punch to %s with shared bind", endpoint)
+	defer logger.Info("UDP hole punch goroutine ended for %s", endpoint)
+
+	host, err := resolveDomain(endpoint)
+	if err != nil {
+		logger.Error("Failed to resolve domain %s: %v", endpoint, err)
+		return
+	}
+
+	serverAddr := net.JoinHostPort(host, "21820")
+
+	remoteAddr, err := net.ResolveUDPAddr("udp", serverAddr)
+	if err != nil {
+		logger.Error("Failed to resolve UDP address %s: %v", serverAddr, err)
+		return
+	}
+
+	// Execute once immediately before starting the loop
+	if err := sendUDPHolePunchWithBind(sharedBind, remoteAddr, olmID, serverPubKey); err != nil {
+		logger.Error("Failed to send initial UDP hole punch: %v", err)
+	}
+
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	timeout := time.NewTimer(15 * time.Second)
+	defer timeout.Stop()
+
+	for {
+		select {
+		case <-stopHolepunch:
+			logger.Info("Stopping UDP holepunch")
+			return
+		case <-timeout.C:
+			logger.Info("UDP holepunch routine timed out after 15 seconds")
+			return
+		case <-ticker.C:
+			if err := sendUDPHolePunchWithBind(sharedBind, remoteAddr, olmID, serverPubKey); err != nil {
+				logger.Error("Failed to send UDP hole punch: %v", err)
+			}
+		}
+	}
+}
+
+// sendUDPHolePunchWithBind sends an encrypted hole punch packet using the shared bind
+func sendUDPHolePunchWithBind(sharedBind *bind.SharedBind, remoteAddr *net.UDPAddr, olmID string, serverPubKey string) error {
+	if serverPubKey == "" || olmToken == "" {
+		return fmt.Errorf("server public key or OLM token is empty")
+	}
+
+	payload := struct {
+		OlmID string `json:"olmId"`
+		Token string `json:"token"`
+	}{
+		OlmID: olmID,
+		Token: olmToken,
+	}
+
+	// Convert payload to JSON
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	// Encrypt the payload using the server's WireGuard public key
+	encryptedPayload, err := encryptPayload(payloadBytes, serverPubKey)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt payload: %w", err)
+	}
+
+	jsonData, err := json.Marshal(encryptedPayload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal encrypted payload: %w", err)
+	}
+
+	_, err = sharedBind.WriteToUDP(jsonData, remoteAddr)
+	if err != nil {
+		return fmt.Errorf("failed to write to UDP: %w", err)
+	}
+
+	logger.Debug("Sent UDP hole punch to %s: %s", remoteAddr.String(), string(jsonData))
+
+	return nil
 }
 
 func FindAvailableUDPPort(minPort, maxPort uint16) (uint16, error) {
