@@ -12,6 +12,7 @@ import (
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/updates"
 	"github.com/fosrl/olm/api"
+	"github.com/fosrl/olm/bind"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/websocket"
 	"golang.zx2c4.com/wireguard/device"
@@ -67,6 +68,7 @@ var (
 	olmClient     *websocket.Client
 	tunnelCancel  context.CancelFunc
 	tunnelRunning bool
+	sharedBind    *bind.SharedBind
 )
 
 func Run(ctx context.Context, config Config) {
@@ -226,10 +228,36 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 		return
 	}
 
-	sourcePort, err := FindAvailableUDPPort(49152, 65535)
-	if err != nil {
-		logger.Error("Error finding available port: %v", err)
-		return
+	// Create shared UDP socket for both holepunch and WireGuard
+	if sharedBind == nil {
+		sourcePort, err := FindAvailableUDPPort(49152, 65535)
+		if err != nil {
+			logger.Error("Error finding available port: %v", err)
+			return
+		}
+
+		localAddr := &net.UDPAddr{
+			Port: int(sourcePort),
+			IP:   net.IPv4zero,
+		}
+
+		udpConn, err := net.ListenUDP("udp", localAddr)
+		if err != nil {
+			logger.Error("Failed to create shared UDP socket: %v", err)
+			return
+		}
+
+		sharedBind, err = bind.New(udpConn)
+		if err != nil {
+			logger.Error("Failed to create shared bind: %v", err)
+			udpConn.Close()
+			return
+		}
+
+		// Add a reference for the hole punch senders (creator already has one reference for WireGuard)
+		sharedBind.AddRef()
+
+		logger.Info("Created shared UDP socket on port %d (refcount: %d)", sourcePort, sharedBind.GetRefCount())
 	}
 
 	olm.RegisterHandler("olm/wg/holepunch/all", func(msg websocket.WSMessage) {
@@ -251,7 +279,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 
 		// Start a single hole punch goroutine for all exit nodes
 		logger.Info("Starting hole punch for %d exit nodes", len(holePunchData.ExitNodes))
-		go keepSendingUDPHolePunchToMultipleExitNodes(holePunchData.ExitNodes, id, sourcePort)
+		go keepSendingUDPHolePunchToMultipleExitNodesWithSharedBind(holePunchData.ExitNodes, id, sharedBind)
 	})
 
 	olm.RegisterHandler("olm/wg/holepunch", func(msg websocket.WSMessage) {
@@ -289,7 +317,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 
 		// Start hole punching for each exit node
 		logger.Info("Starting hole punch for exit node: %s with public key: %s", legacyHolePunchData.Endpoint, legacyHolePunchData.ServerPubKey)
-		go keepSendingUDPHolePunch(legacyHolePunchData.Endpoint, id, sourcePort, legacyHolePunchData.ServerPubKey)
+		go keepSendingUDPHolePunchWithSharedBind(legacyHolePunchData.Endpoint, id, sharedBind, legacyHolePunchData.ServerPubKey)
 	})
 
 	olm.RegisterHandler("olm/wg/connect", func(msg websocket.WSMessage) {
@@ -305,7 +333,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 			stopRegister = nil
 		}
 
-		close(stopHolepunch)
+		// close(stopHolepunch)
 
 		// wait 10 milliseconds to ensure the previous connection is closed
 		logger.Debug("Waiting 500 milliseconds to ensure previous connection is closed")
@@ -367,7 +395,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 			return
 		}
 
-		dev = device.NewDevice(tdev, NewFixedPortBind(uint16(sourcePort)), device.NewLogger(mapToWireGuardLogLevel(loggerLevel), "wireguard: "))
+		dev = device.NewDevice(tdev, sharedBind, device.NewLogger(mapToWireGuardLogLevel(loggerLevel), "wireguard: "))
 
 		uapiListener, err = uapiListen(interfaceName, fileUAPI)
 		if err != nil {
@@ -804,13 +832,22 @@ func Stop() {
 		uapiListener = nil
 	}
 	if dev != nil {
-		dev.Close()
+		dev.Close() // This will call sharedBind.Close() which releases WireGuard's reference
 		dev = nil
 	}
 	// Close TUN device
 	if tdev != nil {
 		tdev.Close()
 		tdev = nil
+	}
+
+	// Release the hole punch reference to the shared bind
+	if sharedBind != nil {
+		// Release hole punch reference (WireGuard already released its reference via dev.Close())
+		logger.Debug("Releasing shared bind (refcount before release: %d)", sharedBind.GetRefCount())
+		sharedBind.Release()
+		sharedBind = nil
+		logger.Info("Released shared UDP bind")
 	}
 
 	logger.Info("Olm service stopped")
