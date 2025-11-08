@@ -13,6 +13,7 @@ import (
 	"github.com/fosrl/newt/updates"
 	"github.com/fosrl/olm/api"
 	"github.com/fosrl/olm/bind"
+	"github.com/fosrl/olm/holepunch"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/websocket"
 	"golang.zx2c4.com/wireguard/device"
@@ -57,18 +58,19 @@ type Config struct {
 }
 
 var (
-	privateKey    wgtypes.Key
-	connected     bool
-	dev           *device.Device
-	wgData        WgData
-	holePunchData HolePunchData
-	uapiListener  net.Listener
-	tdev          tun.Device
-	apiServer     *api.API
-	olmClient     *websocket.Client
-	tunnelCancel  context.CancelFunc
-	tunnelRunning bool
-	sharedBind    *bind.SharedBind
+	privateKey       wgtypes.Key
+	connected        bool
+	dev              *device.Device
+	wgData           WgData
+	holePunchData    HolePunchData
+	uapiListener     net.Listener
+	tdev             tun.Device
+	apiServer        *api.API
+	olmClient        *websocket.Client
+	tunnelCancel     context.CancelFunc
+	tunnelRunning    bool
+	sharedBind       *bind.SharedBind
+	holePunchManager *holepunch.Manager
 )
 
 func Run(ctx context.Context, config Config) {
@@ -197,7 +199,6 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 	}()
 
 	// Recreate channels for this tunnel session
-	stopHolepunch = make(chan struct{})
 	stopPing = make(chan struct{})
 
 	var (
@@ -260,6 +261,11 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 		logger.Info("Created shared UDP socket on port %d (refcount: %d)", sourcePort, sharedBind.GetRefCount())
 	}
 
+	// Create the holepunch manager
+	if holePunchManager == nil {
+		holePunchManager = holepunch.NewManager(sharedBind, id, ResolveDomain)
+	}
+
 	olm.RegisterHandler("olm/wg/holepunch/all", func(msg websocket.WSMessage) {
 		logger.Debug("Received message: %v", msg.Data)
 
@@ -274,12 +280,20 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 			return
 		}
 
-		// Create a new stopHolepunch channel for the new set of goroutines
-		stopHolepunch = make(chan struct{})
+		// Convert HolePunchData.ExitNodes to holepunch.ExitNode slice
+		exitNodes := make([]holepunch.ExitNode, len(holePunchData.ExitNodes))
+		for i, node := range holePunchData.ExitNodes {
+			exitNodes[i] = holepunch.ExitNode{
+				Endpoint:  node.Endpoint,
+				PublicKey: node.PublicKey,
+			}
+		}
 
-		// Start a single hole punch goroutine for all exit nodes
-		logger.Info("Starting hole punch for %d exit nodes", len(holePunchData.ExitNodes))
-		go keepSendingUDPHolePunchToMultipleExitNodesWithSharedBind(holePunchData.ExitNodes, id, sharedBind)
+		// Start hole punching using the manager
+		logger.Info("Starting hole punch for %d exit nodes", len(exitNodes))
+		if err := holePunchManager.StartMultipleExitNodes(exitNodes); err != nil {
+			logger.Warn("Failed to start hole punch: %v", err)
+		}
 	})
 
 	olm.RegisterHandler("olm/wg/holepunch", func(msg websocket.WSMessage) {
@@ -304,20 +318,16 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 			return
 		}
 
-		// Stop any existing hole punch goroutines by closing the current channel
-		select {
-		case <-stopHolepunch:
-			// Channel already closed
-		default:
-			close(stopHolepunch)
+		// Stop any existing hole punch operations
+		if holePunchManager != nil {
+			holePunchManager.Stop()
 		}
 
-		// Create a new stopHolepunch channel for the new set of goroutines
-		stopHolepunch = make(chan struct{})
-
-		// Start hole punching for each exit node
+		// Start hole punching for the exit node
 		logger.Info("Starting hole punch for exit node: %s with public key: %s", legacyHolePunchData.Endpoint, legacyHolePunchData.ServerPubKey)
-		go keepSendingUDPHolePunchWithSharedBind(legacyHolePunchData.Endpoint, id, sharedBind, legacyHolePunchData.ServerPubKey)
+		if err := holePunchManager.StartSingleEndpoint(legacyHolePunchData.Endpoint, legacyHolePunchData.ServerPubKey); err != nil {
+			logger.Warn("Failed to start hole punch: %v", err)
+		}
 	})
 
 	olm.RegisterHandler("olm/wg/connect", func(msg websocket.WSMessage) {
@@ -407,6 +417,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 			for {
 				conn, err := uapiListener.Accept()
 				if err != nil {
+
 					return
 				}
 				go dev.IpcHandle(conn)
@@ -696,7 +707,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 			return
 		}
 
-		primaryRelay, err := resolveDomain(relayData.Endpoint)
+		primaryRelay, err := ResolveDomain(relayData.Endpoint)
 		if err != nil {
 			logger.Warn("Failed to resolve primary relay endpoint: %v", err)
 		}
@@ -752,7 +763,9 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 	})
 
 	olm.OnTokenUpdate(func(token string) {
-		olmToken = token
+		if holePunchManager != nil {
+			holePunchManager.SetToken(token)
+		}
 	})
 
 	// Connect to the WebSocket server
@@ -780,7 +793,6 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 			apiServer.SetTunnelIP("")
 			apiServer.SetOrgID(config.OrgID)
 
-			stopHolepunch = make(chan struct{})
 			// Trigger re-registration with new orgId
 			logger.Info("Re-registering with new orgId: %s", config.OrgID)
 			publicKey := privateKey.PublicKey()
@@ -799,13 +811,9 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 }
 
 func Stop() {
-	if stopHolepunch != nil {
-		select {
-		case <-stopHolepunch:
-			// Channel already closed, do nothing
-		default:
-			close(stopHolepunch)
-		}
+	// Stop hole punch manager
+	if holePunchManager != nil {
+		holePunchManager.Stop()
 	}
 
 	if stopPing != nil {
