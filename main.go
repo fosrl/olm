@@ -153,6 +153,15 @@ func main() {
 		}
 	}
 
+	// Create a context that will be cancelled on interrupt signals
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Run in console mode
+	runOlmMainWithArgs(ctx, os.Args[1:])
+}
+
+func runOlmMainWithArgs(ctx context.Context, args []string) {
 	// Setup Windows event logging if on Windows
 	if runtime.GOOS != "windows" {
 		setupWindowsEventLog()
@@ -211,10 +220,6 @@ func main() {
 		OrgID:                config.OrgID,
 		// DoNotCreateNewClient: config.DoNotCreateNewClient,
 	}
-
-	// Create a context that will be cancelled on interrupt signals
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	olm.Run(ctx, olmConfig)
 }
