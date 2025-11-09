@@ -749,11 +749,11 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 		if stopRegister == nil {
 			logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !config.Holepunch)
 			stopRegister = olm.SendMessageInterval("olm/wg/register", map[string]interface{}{
-				"publicKey":            publicKey.String(),
-				"relay":                !config.Holepunch,
-				"olmVersion":           config.Version,
-				"orgId":                config.OrgID,
-				"doNotCreateNewClient": config.DoNotCreateNewClient,
+				"publicKey":  publicKey.String(),
+				"relay":      !config.Holepunch,
+				"olmVersion": config.Version,
+				"orgId":      config.OrgID,
+				// "doNotCreateNewClient": config.DoNotCreateNewClient,
 			}, 1*time.Second)
 		}
 
