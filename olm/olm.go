@@ -52,9 +52,9 @@ type Config struct {
 	// Source tracking (not in JSON)
 	sources map[string]string
 
-	Version              string
-	OrgID                string
-	DoNotCreateNewClient bool
+	Version string
+	OrgID   string
+	// DoNotCreateNewClient bool
 }
 
 var (
@@ -342,8 +342,6 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 			stopRegister()
 			stopRegister = nil
 		}
-
-		// close(stopHolepunch)
 
 		// wait 10 milliseconds to ensure the previous connection is closed
 		logger.Debug("Waiting 500 milliseconds to ensure previous connection is closed")
