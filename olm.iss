@@ -57,13 +57,13 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 ; The 'Path' variable is located under 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'.
 ; ValueType: expandsz allows for environment variables (like %ProgramFiles%) in the path.
 ; ValueData: "{olddata};{app}" appends the current application directory to the existing PATH.
-; Flags: uninsdeletevalue ensures the entry is removed upon uninstallation.
-; Check: IsWin64 ensures this is applied on 64-bit systems, which matches ArchitecturesAllowed.
+; Note: Removal during uninstallation is handled by CurUninstallStepChanged procedure in [Code] section.
+; Check: NeedsAddPath ensures this is applied only if the path is not already present.
 [Registry]
 ; Add the application's installation directory to the system PATH.
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
     ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; \
-    Flags: uninsdeletevalue; Check: NeedsAddPath(ExpandConstant('{app}'))
+    Check: NeedsAddPath(ExpandConstant('{app}'))
 
 [Code]
 function NeedsAddPath(Path: string): boolean;
@@ -85,4 +85,75 @@ begin
     Result := False
   else
     Result := True;
+end;
+
+procedure RemovePathEntry(PathToRemove: string);
+var
+  OrigPath: string;
+  NewPath: string;
+  P: Integer;
+  UpperOrigPath: string;
+  UpperPathToRemove: string;
+begin
+  if not RegQueryStringValue(HKEY_LOCAL_MACHINE,
+    'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
+    'Path', OrigPath)
+  then begin
+    // Path variable doesn't exist, nothing to remove
+    exit;
+  end;
+
+  // Prepare for case-insensitive search
+  UpperOrigPath := ';' + UpperCase(OrigPath) + ';';
+  UpperPathToRemove := ';' + UpperCase(PathToRemove) + ';';
+  
+  // Check if the path exists in PATH
+  P := Pos(UpperPathToRemove, UpperOrigPath);
+  if P = 0 then
+  begin
+    // Path not found, nothing to remove
+    exit;
+  end;
+
+  // Remove the path entry from OrigPath
+  // We need to handle the actual string with proper casing
+  NewPath := ';' + OrigPath + ';';
+  
+  // Find and remove the entry (case-insensitive search but preserve original casing in other entries)
+  // We search for the pattern in the upper-case version but remove from the original
+  Delete(NewPath, P, Length(PathToRemove) + 1); // +1 for the semicolon
+  
+  // Clean up: remove leading and trailing semicolons, and reduce multiple semicolons to one
+  while (Length(NewPath) > 0) and (NewPath[1] = ';') do
+    Delete(NewPath, 1, 1);
+  while (Length(NewPath) > 0) and (NewPath[Length(NewPath)] = ';') do
+    Delete(NewPath, Length(NewPath), 1);
+  
+  // Replace multiple semicolons with single semicolon
+  while Pos(';;', NewPath) > 0 do
+    StringChangeEx(NewPath, ';;', ';', True);
+  
+  // Write the new PATH back to the registry
+  if RegWriteExpandStringValue(HKEY_LOCAL_MACHINE,
+    'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
+    'Path', NewPath)
+  then
+    Log('Successfully removed path entry: ' + PathToRemove)
+  else
+    Log('Failed to write modified PATH to registry');
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  AppPath: string;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    // Get the application installation path
+    AppPath := ExpandConstant('{app}');
+    Log('Removing PATH entry for: ' + AppPath);
+    
+    // Remove only our path entry from the system PATH
+    RemovePathEntry(AppPath);
+  end;
 end;
