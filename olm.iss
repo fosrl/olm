@@ -91,9 +91,8 @@ procedure RemovePathEntry(PathToRemove: string);
 var
   OrigPath: string;
   NewPath: string;
-  P: Integer;
-  UpperOrigPath: string;
-  UpperPathToRemove: string;
+  PathList: TStringList;
+  I: Integer;
 begin
   if not RegQueryStringValue(HKEY_LOCAL_MACHINE,
     'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
@@ -103,44 +102,38 @@ begin
     exit;
   end;
 
-  // Prepare for case-insensitive search
-  UpperOrigPath := ';' + UpperCase(OrigPath) + ';';
-  UpperPathToRemove := ';' + UpperCase(PathToRemove) + ';';
-  
-  // Check if the path exists in PATH
-  P := Pos(UpperPathToRemove, UpperOrigPath);
-  if P = 0 then
-  begin
-    // Path not found, nothing to remove
-    exit;
+  // Create a string list to parse the PATH entries
+  PathList := TStringList.Create;
+  try
+    // Split the PATH by semicolons
+    PathList.Delimiter := ';';
+    PathList.StrictDelimiter := True;
+    PathList.DelimitedText := OrigPath;
+    
+    // Find and remove the matching entry (case-insensitive)
+    for I := PathList.Count - 1 downto 0 do
+    begin
+      if CompareText(Trim(PathList[I]), Trim(PathToRemove)) = 0 then
+      begin
+        Log('Found and removing PATH entry: ' + PathList[I]);
+        PathList.Delete(I);
+      end;
+    end;
+    
+    // Reconstruct the PATH
+    NewPath := PathList.DelimitedText;
+    
+    // Write the new PATH back to the registry
+    if RegWriteExpandStringValue(HKEY_LOCAL_MACHINE,
+      'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
+      'Path', NewPath)
+    then
+      Log('Successfully removed path entry: ' + PathToRemove)
+    else
+      Log('Failed to write modified PATH to registry');
+  finally
+    PathList.Free;
   end;
-
-  // Remove the path entry from OrigPath
-  // We need to handle the actual string with proper casing
-  NewPath := ';' + OrigPath + ';';
-  
-  // Find and remove the entry (case-insensitive search but preserve original casing in other entries)
-  // We search for the pattern in the upper-case version but remove from the original
-  Delete(NewPath, P, Length(PathToRemove) + 1); // +1 for the semicolon
-  
-  // Clean up: remove leading and trailing semicolons, and reduce multiple semicolons to one
-  while (Length(NewPath) > 0) and (NewPath[1] = ';') do
-    Delete(NewPath, 1, 1);
-  while (Length(NewPath) > 0) and (NewPath[Length(NewPath)] = ';') do
-    Delete(NewPath, Length(NewPath), 1);
-  
-  // Replace multiple semicolons with single semicolon
-  while Pos(';;', NewPath) > 0 do
-    StringChangeEx(NewPath, ';;', ';', True);
-  
-  // Write the new PATH back to the registry
-  if RegWriteExpandStringValue(HKEY_LOCAL_MACHINE,
-    'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
-    'Path', NewPath)
-  then
-    Log('Successfully removed path entry: ' + PathToRemove)
-  else
-    Log('Failed to write modified PATH to registry');
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
