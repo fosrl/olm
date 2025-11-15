@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/logger"
+	"github.com/fosrl/newt/util"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/websocket"
 	"github.com/vishvananda/netlink"
-	"golang.org/x/exp/rand"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -156,23 +156,6 @@ func fixKey(key string) string {
 	return hex.EncodeToString(decoded)
 }
 
-func parseLogLevel(level string) logger.LogLevel {
-	switch strings.ToUpper(level) {
-	case "DEBUG":
-		return logger.DEBUG
-	case "INFO":
-		return logger.INFO
-	case "WARN":
-		return logger.WARN
-	case "ERROR":
-		return logger.ERROR
-	case "FATAL":
-		return logger.FATAL
-	default:
-		return logger.INFO // default to INFO if invalid level provided
-	}
-}
-
 func mapToWireGuardLogLevel(level logger.LogLevel) int {
 	switch level {
 	case logger.DEBUG:
@@ -186,89 +169,6 @@ func mapToWireGuardLogLevel(level logger.LogLevel) int {
 	default:
 		return device.LogLevelSilent
 	}
-}
-
-func ResolveDomain(domain string) (string, error) {
-	// First handle any protocol prefix
-	domain = strings.TrimPrefix(strings.TrimPrefix(domain, "https://"), "http://")
-
-	// if there are any trailing slashes, remove them
-	domain = strings.TrimSuffix(domain, "/")
-
-	// Now split host and port
-	host, port, err := net.SplitHostPort(domain)
-	if err != nil {
-		// No port found, use the domain as is
-		host = domain
-		port = ""
-	}
-
-	// Lookup IP addresses
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return "", fmt.Errorf("DNS lookup failed: %v", err)
-	}
-
-	if len(ips) == 0 {
-		return "", fmt.Errorf("no IP addresses found for domain %s", host)
-	}
-
-	// Get the first IPv4 address if available
-	var ipAddr string
-	for _, ip := range ips {
-		if ipv4 := ip.To4(); ipv4 != nil {
-			ipAddr = ipv4.String()
-			break
-		}
-	}
-
-	// If no IPv4 found, use the first IP (might be IPv6)
-	if ipAddr == "" {
-		ipAddr = ips[0].String()
-	}
-
-	// Add port back if it existed
-	if port != "" {
-		ipAddr = net.JoinHostPort(ipAddr, port)
-	}
-
-	return ipAddr, nil
-}
-
-func FindAvailableUDPPort(minPort, maxPort uint16) (uint16, error) {
-	if maxPort < minPort {
-		return 0, fmt.Errorf("invalid port range: min=%d, max=%d", minPort, maxPort)
-	}
-
-	// Create a slice of all ports in the range
-	portRange := make([]uint16, maxPort-minPort+1)
-	for i := range portRange {
-		portRange[i] = minPort + uint16(i)
-	}
-
-	// Fisher-Yates shuffle to randomize the port order
-	rand.Seed(uint64(time.Now().UnixNano()))
-	for i := len(portRange) - 1; i > 0; i-- {
-		j := rand.Intn(i + 1)
-		portRange[i], portRange[j] = portRange[j], portRange[i]
-	}
-
-	// Try each port in the randomized order
-	for _, port := range portRange {
-		addr := &net.UDPAddr{
-			IP:   net.ParseIP("127.0.0.1"),
-			Port: int(port),
-		}
-		conn, err := net.ListenUDP("udp", addr)
-		if err != nil {
-			continue // Port is in use or there was an error, try next port
-		}
-		_ = conn.SetDeadline(time.Now())
-		conn.Close()
-		return port, nil
-	}
-
-	return 0, fmt.Errorf("no available UDP ports found in range %d-%d", minPort, maxPort)
 }
 
 func sendPing(olm *websocket.Client) error {
@@ -311,7 +211,7 @@ func keepSendingPing(olm *websocket.Client) {
 
 // ConfigurePeer sets up or updates a peer within the WireGuard device
 func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes.Key, endpoint string) error {
-	siteHost, err := ResolveDomain(siteConfig.Endpoint)
+	siteHost, err := util.ResolveDomain(siteConfig.Endpoint)
 	if err != nil {
 		return fmt.Errorf("failed to resolve endpoint for site %d: %v", siteConfig.SiteId, err)
 	}
@@ -368,7 +268,7 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 		monitorPeer := net.JoinHostPort(monitorAddress, strconv.Itoa(int(siteConfig.ServerPort+1))) // +1 for the monitor port
 		logger.Debug("Setting up peer monitor for site %d at %s", siteConfig.SiteId, monitorPeer)
 
-		primaryRelay, err := ResolveDomain(endpoint) // Using global endpoint variable
+		primaryRelay, err := util.ResolveDomain(endpoint) // Using global endpoint variable
 		if err != nil {
 			logger.Warn("Failed to resolve primary relay endpoint: %v", err)
 		}
