@@ -9,11 +9,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/fosrl/newt/bind"
+	"github.com/fosrl/newt/holepunch"
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/updates"
+	"github.com/fosrl/newt/util"
 	"github.com/fosrl/olm/api"
-	"github.com/fosrl/olm/bind"
-	"github.com/fosrl/olm/holepunch"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/websocket"
 	"golang.zx2c4.com/wireguard/device"
@@ -78,7 +79,7 @@ func Run(ctx context.Context, config Config) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	logger.GetLogger().SetLevel(parseLogLevel(config.LogLevel))
+	logger.GetLogger().SetLevel(util.ParseLogLevel(config.LogLevel))
 
 	if err := updates.CheckForUpdate("fosrl", "olm", config.Version); err != nil {
 		logger.Debug("Failed to check for updates: %v", err)
@@ -203,7 +204,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 
 	var (
 		interfaceName = config.InterfaceName
-		loggerLevel   = parseLogLevel(config.LogLevel)
+		loggerLevel   = util.ParseLogLevel(config.LogLevel)
 	)
 
 	// Create a new olm client using the provided credentials
@@ -231,7 +232,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 
 	// Create shared UDP socket for both holepunch and WireGuard
 	if sharedBind == nil {
-		sourcePort, err := FindAvailableUDPPort(49152, 65535)
+		sourcePort, err := util.FindAvailableUDPPort(49152, 65535)
 		if err != nil {
 			logger.Error("Error finding available port: %v", err)
 			return
@@ -263,7 +264,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 
 	// Create the holepunch manager
 	if holePunchManager == nil {
-		holePunchManager = holepunch.NewManager(sharedBind, id, ResolveDomain)
+		holePunchManager = holepunch.NewManager(sharedBind, id, "olm")
 	}
 
 	olm.RegisterHandler("olm/wg/holepunch/all", func(msg websocket.WSMessage) {
@@ -705,7 +706,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 			return
 		}
 
-		primaryRelay, err := ResolveDomain(relayData.Endpoint)
+		primaryRelay, err := util.ResolveDomain(relayData.Endpoint)
 		if err != nil {
 			logger.Warn("Failed to resolve primary relay endpoint: %v", err)
 		}
