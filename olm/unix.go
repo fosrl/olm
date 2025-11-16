@@ -5,25 +5,19 @@ package olm
 import (
 	"net"
 	"os"
-	"strconv"
 
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/ipc"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-func createTUNFromFD(tunFdStr string, mtuInt int) (tun.Device, error) {
-	fd, err := strconv.ParseUint(tunFdStr, 10, 32)
+func createTUNFromFD(tunFd uint32, mtuInt int) (tun.Device, error) {
+	err := unix.SetNonblock(int(tunFd), true)
 	if err != nil {
 		return nil, err
 	}
 
-	err = unix.SetNonblock(int(fd), true)
-	if err != nil {
-		return nil, err
-	}
-
-	file := os.NewFile(uintptr(fd), "")
+	file := os.NewFile(uintptr(tunFd), "")
 	return tun.CreateTUNFromFile(file, mtuInt)
 }
 func uapiOpen(interfaceName string) (*os.File, error) {

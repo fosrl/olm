@@ -56,6 +56,8 @@ type Config struct {
 	Version string
 	OrgID   string
 	// DoNotCreateNewClient bool
+
+	FileDescriptorTun uint32
 }
 
 var (
@@ -366,15 +368,15 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 		}
 
 		tdev, err = func() (tun.Device, error) {
-			if runtime.GOOS == "darwin" {
+			if config.FileDescriptorTun != 0 {
+				return createTUNFromFD(config.FileDescriptorTun, config.MTU)
+			}
+			if runtime.GOOS == "darwin" { // this is if we dont pass a fd
 				interfaceName, err := findUnusedUTUN()
 				if err != nil {
 					return nil, err
 				}
 				return tun.CreateTUN(interfaceName, config.MTU)
-			}
-			if tunFdStr := os.Getenv(ENV_WG_TUN_FD); tunFdStr != "" {
-				return createTUNFromFD(tunFdStr, config.MTU)
 			}
 			return tun.CreateTUN(interfaceName, config.MTU)
 		}()
