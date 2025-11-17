@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"os"
 	"runtime"
-	"strconv"
 	"time"
 
 	"github.com/fosrl/newt/bind"
@@ -15,6 +13,7 @@ import (
 	"github.com/fosrl/newt/updates"
 	"github.com/fosrl/newt/util"
 	"github.com/fosrl/olm/api"
+	"github.com/fosrl/olm/network"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/websocket"
 	"golang.zx2c4.com/wireguard/device"
@@ -57,7 +56,8 @@ type Config struct {
 	OrgID   string
 	// DoNotCreateNewClient bool
 
-	FileDescriptorTun uint32
+	FileDescriptorTun  uint32
+	FileDescriptorUAPI uint32
 }
 
 var (
@@ -82,6 +82,7 @@ func Run(ctx context.Context, config Config) {
 	defer cancel()
 
 	logger.GetLogger().SetLevel(util.ParseLogLevel(config.LogLevel))
+	network.SetMTU(config.MTU)
 
 	if err := updates.CheckForUpdate("fosrl", "olm", config.Version); err != nil {
 		logger.Debug("Failed to check for updates: %v", err)
@@ -371,14 +372,14 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 			if config.FileDescriptorTun != 0 {
 				return createTUNFromFD(config.FileDescriptorTun, config.MTU)
 			}
+			var ifName = interfaceName
 			if runtime.GOOS == "darwin" { // this is if we dont pass a fd
-				interfaceName, err := findUnusedUTUN()
+				ifName, err = findUnusedUTUN()
 				if err != nil {
 					return nil, err
 				}
-				return tun.CreateTUN(interfaceName, config.MTU)
 			}
-			return tun.CreateTUN(interfaceName, config.MTU)
+			return tun.CreateTUN(ifName, config.MTU)
 		}()
 
 		if err != nil {
@@ -386,45 +387,47 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 			return
 		}
 
-		if realInterfaceName, err2 := tdev.Name(); err2 == nil {
-			interfaceName = realInterfaceName
-		}
-
-		fileUAPI, err := func() (*os.File, error) {
-			if uapiFdStr := os.Getenv(ENV_WG_UAPI_FD); uapiFdStr != "" {
-				fd, err := strconv.ParseUint(uapiFdStr, 10, 32)
-				if err != nil {
-					return nil, err
-				}
-				return os.NewFile(uintptr(fd), ""), nil
+		if config.FileDescriptorTun == 0 {
+			if realInterfaceName, err2 := tdev.Name(); err2 == nil {
+				interfaceName = realInterfaceName
 			}
-			return uapiOpen(interfaceName)
-		}()
-		if err != nil {
-			logger.Error("UAPI listen error: %v", err)
-			os.Exit(1)
-			return
 		}
 
-		dev = device.NewDevice(tdev, sharedBind, device.NewLogger(mapToWireGuardLogLevel(loggerLevel), "wireguard: "))
+		// fileUAPI, err := func() (*os.File, error) {
+		// 	if config.FileDescriptorUAPI != 0 {
+		// 		fd, err := strconv.ParseUint(fmt.Sprintf("%d", config.FileDescriptorUAPI), 10, 32)
+		// 		if err != nil {
+		// 			return nil, fmt.Errorf("invalid UAPI file descriptor: %v", err)
+		// 		}
+		// 		return os.NewFile(uintptr(fd), ""), nil
+		// 	}
+		// 	return uapiOpen(interfaceName)
+		// }()
+		// if err != nil {
+		// 	logger.Error("UAPI listen error: %v", err)
+		// 	os.Exit(1)
+		// 	return
+		// }
 
-		uapiListener, err = uapiListen(interfaceName, fileUAPI)
-		if err != nil {
-			logger.Error("Failed to listen on uapi socket: %v", err)
-			os.Exit(1)
-		}
+		dev = device.NewDevice(tdev, sharedBind, device.NewLogger(util.MapToWireGuardLogLevel(loggerLevel), "wireguard: "))
 
-		go func() {
-			for {
-				conn, err := uapiListener.Accept()
-				if err != nil {
+		// uapiListener, err = uapiListen(interfaceName, fileUAPI)
+		// if err != nil {
+		// 	logger.Error("Failed to listen on uapi socket: %v", err)
+		// 	os.Exit(1)
+		// }
 
-					return
-				}
-				go dev.IpcHandle(conn)
-			}
-		}()
-		logger.Info("UAPI listener started")
+		// go func() {
+		// 	for {
+		// 		conn, err := uapiListener.Accept()
+		// 		if err != nil {
+
+		// 			return
+		// 		}
+		// 		go dev.IpcHandle(conn)
+		// 	}
+		// }()
+		// logger.Info("UAPI listener started")
 
 		if err = dev.Up(); err != nil {
 			logger.Error("Failed to bring up WireGuard device: %v", err)
@@ -432,7 +435,6 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 		if err = ConfigureInterface(interfaceName, wgData); err != nil {
 			logger.Error("Failed to configure interface: %v", err)
 		}
-		apiServer.SetTunnelIP(wgData.TunnelIP)
 
 		peerMonitor = peermonitor.NewPeerMonitor(
 			func(siteID int, connected bool, rtt time.Duration) {
@@ -476,10 +478,10 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 				logger.Error("Failed to add route for peer: %v", err)
 				return
 			}
-			if err := addRoutesForRemoteSubnets(site.RemoteSubnets, interfaceName); err != nil {
-				logger.Error("Failed to add routes for remote subnets: %v", err)
-				return
-			}
+			// if err := addRoutesForRemoteSubnets(site.RemoteSubnets, interfaceName); err != nil {
+			// 	logger.Error("Failed to add routes for remote subnets: %v", err)
+			// 	return
+			// }
 
 			logger.Info("Configured peer %s", site.PublicKey)
 		}
@@ -671,7 +673,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 			}
 
 			// Remove route for the peer
-			err = removeRouteForServerIP(peerToRemove.ServerIP)
+			err = removeRouteForServerIP(peerToRemove.ServerIP, interfaceName)
 			if err != nil {
 				logger.Error("Failed to remove route for peer: %v", err)
 				return
