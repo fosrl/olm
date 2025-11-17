@@ -74,6 +74,9 @@ var (
 	tunnelRunning    bool
 	sharedBind       *bind.SharedBind
 	holePunchManager *holepunch.Manager
+	peerMonitor      *peermonitor.PeerMonitor
+	stopRegister     func()
+	stopPing         chan struct{}
 )
 
 func Run(ctx context.Context, config Config) {
@@ -432,6 +435,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 		if err = dev.Up(); err != nil {
 			logger.Error("Failed to bring up WireGuard device: %v", err)
 		}
+
 		if err = ConfigureInterface(interfaceName, wgData); err != nil {
 			logger.Error("Failed to configure interface: %v", err)
 		}
