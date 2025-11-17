@@ -1,8 +1,6 @@
 package olm
 
 import (
-	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"os/exec"
@@ -142,20 +140,6 @@ func formatEndpoint(endpoint string) string {
 	return endpoint
 }
 
-func fixKey(key string) string {
-	// Remove any whitespace
-	key = strings.TrimSpace(key)
-
-	// Decode from base64
-	decoded, err := base64.StdEncoding.DecodeString(key)
-	if err != nil {
-		logger.Fatal("Error decoding base64")
-	}
-
-	// Convert to hex
-	return hex.EncodeToString(decoded)
-}
-
 func mapToWireGuardLogLevel(level logger.LogLevel) int {
 	switch level {
 	case logger.DEBUG:
@@ -243,8 +227,8 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 
 	// Construct WireGuard config for this peer
 	var configBuilder strings.Builder
-	configBuilder.WriteString(fmt.Sprintf("private_key=%s\n", fixKey(privateKey.String())))
-	configBuilder.WriteString(fmt.Sprintf("public_key=%s\n", fixKey(siteConfig.PublicKey)))
+	configBuilder.WriteString(fmt.Sprintf("private_key=%s\n", util.FixKey(privateKey.String())))
+	configBuilder.WriteString(fmt.Sprintf("public_key=%s\n", util.FixKey(siteConfig.PublicKey)))
 
 	// Add each allowed IP separately
 	for _, allowedIP := range allowedIPs {
@@ -275,7 +259,7 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 
 		wgConfig := &peermonitor.WireGuardConfig{
 			SiteID:       siteConfig.SiteId,
-			PublicKey:    fixKey(siteConfig.PublicKey),
+			PublicKey:    util.FixKey(siteConfig.PublicKey),
 			ServerIP:     strings.Split(siteConfig.ServerIP, "/")[0],
 			Endpoint:     siteConfig.Endpoint,
 			PrimaryRelay: primaryRelay,
@@ -296,7 +280,7 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 func RemovePeer(dev *device.Device, siteId int, publicKey string) error {
 	// Construct WireGuard config to remove the peer
 	var configBuilder strings.Builder
-	configBuilder.WriteString(fmt.Sprintf("public_key=%s\n", fixKey(publicKey)))
+	configBuilder.WriteString(fmt.Sprintf("public_key=%s\n", util.FixKey(publicKey)))
 	configBuilder.WriteString("remove=true\n")
 
 	config := configBuilder.String()

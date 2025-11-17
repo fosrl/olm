@@ -455,7 +455,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 					logger.Warn("Peer %d is disconnected", siteID)
 				}
 			},
-			fixKey(privateKey.String()),
+			util.FixKey(privateKey.String()),
 			olm,
 			dev,
 			config.Holepunch,
