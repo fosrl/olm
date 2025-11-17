@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/logger"
+	"github.com/fosrl/olm/network"
 	"github.com/fosrl/olm/websocket"
 )
 
@@ -73,4 +74,12 @@ func keepSendingPing(olm *websocket.Client) {
 			}
 		}
 	}
+}
+
+func GetNetworkSettingsJSON() (string, error) {
+	return network.GetJSON()
+}
+
+func GetNetworkSettingsIncrementor() int {
+	return network.GetIncrementor()
 }
