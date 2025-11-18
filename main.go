@@ -167,7 +167,7 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		setupWindowsEventLog()
 	} else {
 		// Initialize logger for non-Windows platforms
-		logger.Init()
+		logger.Init(nil)
 	}
 
 	// Load configuration from file, env vars, and CLI args
