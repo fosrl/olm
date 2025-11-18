@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/fosrl/newt/logger"
+	"github.com/fosrl/newt/updates"
 	"github.com/fosrl/olm/olm"
 )
 
@@ -197,6 +198,10 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		logger.Error("Failed to save full olm config: %v", err)
 	} else {
 		logger.Debug("Saved full olm config with all options")
+	}
+
+	if err := updates.CheckForUpdate("fosrl", "olm", config.Version); err != nil {
+		logger.Debug("Failed to check for updates: %v", err)
 	}
 
 	// Create a new olm.Config struct and copy values from the main config
