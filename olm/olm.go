@@ -478,10 +478,10 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 				logger.Error("Failed to configure peer: %v", err)
 				return
 			}
-			if err := addRouteForServerIP(site.ServerIP, interfaceName); err != nil {
-				logger.Error("Failed to add route for peer: %v", err)
-				return
-			}
+			// if err := addRouteForServerIP(site.ServerIP, interfaceName); err != nil {
+			// 	logger.Error("Failed to add route for peer: %v", err)
+			// 	return
+			// }
 			if err := addRoutesForRemoteSubnets(site.RemoteSubnets, interfaceName); err != nil {
 				logger.Error("Failed to add routes for remote subnets: %v", err)
 				return
