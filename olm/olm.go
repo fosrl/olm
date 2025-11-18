@@ -210,7 +210,6 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 
 	var (
 		interfaceName = config.InterfaceName
-		loggerLevel   = util.ParseLogLevel(config.LogLevel)
 	)
 
 	// Create a new olm client using the provided credentials
@@ -412,7 +411,8 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 		// 	return
 		// }
 
-		dev = device.NewDevice(tdev, sharedBind, device.NewLogger(util.MapToWireGuardLogLevel(loggerLevel), "wireguard: "))
+		wgLogger := logger.GetLogger().GetWireGuardLogger("wireguard: ")
+		dev = device.NewDevice(tdev, sharedBind, (*device.Logger)(wgLogger))
 
 		// uapiListener, err = uapiListen(interfaceName, fileUAPI)
 		// if err != nil {
