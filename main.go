@@ -226,5 +226,5 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		// DoNotCreateNewClient: config.DoNotCreateNewClient,
 	}
 
-	olm.Run(ctx, olmConfig)
+	olm.Init(ctx, olmConfig)
 }

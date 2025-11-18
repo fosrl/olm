@@ -78,7 +78,7 @@ var (
 	stopPing         chan struct{}
 )
 
-func Run(ctx context.Context, config Config) {
+func Init(ctx context.Context, config Config) {
 	// Create a cancellable context for internal shutdown control
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -144,7 +144,7 @@ func Run(ctx context.Context, config Config) {
 			if id != "" && secret != "" && endpoint != "" {
 				logger.Info("Starting tunnel with new credentials")
 				tunnelRunning = true
-				go TunnelProcess(ctx, config, id, secret, userToken, endpoint)
+				go StartTunnel(ctx, config, id, secret, userToken, endpoint)
 			}
 
 		case <-apiServer.GetDisconnectChannel():
@@ -161,7 +161,7 @@ func Run(ctx context.Context, config Config) {
 			if id != "" && secret != "" && endpoint != "" && !tunnelRunning {
 				logger.Info("Starting tunnel process with initial credentials")
 				tunnelRunning = true
-				go TunnelProcess(ctx, config, id, secret, userToken, endpoint)
+				go StartTunnel(ctx, config, id, secret, userToken, endpoint)
 			} else if id == "" || secret == "" || endpoint == "" {
 				// If we don't have credentials, check if API is enabled
 				if !config.EnableAPI {
@@ -187,12 +187,12 @@ func Run(ctx context.Context, config Config) {
 	}
 
 shutdown:
-	Stop()
+	Close()
 	apiServer.Stop()
 	logger.Info("Olm service shutting down")
 }
 
-func TunnelProcess(ctx context.Context, config Config, id string, secret string, userToken string, endpoint string) {
+func StartTunnel(ctx context.Context, config Config, id string, secret string, userToken string, endpoint string) {
 	// Create a cancellable context for this tunnel process
 	tunnelCtx, cancel := context.WithCancel(ctx)
 	tunnelCancel = cancel
@@ -788,7 +788,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 			// Mark as not connected to trigger re-registration
 			connected = false
 
-			Stop()
+			Close()
 
 			// Clear peer statuses in API
 			apiServer.SetRegistered(false)
@@ -812,7 +812,7 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 	logger.Info("Tunnel process context cancelled, cleaning up")
 }
 
-func Stop() {
+func Close() {
 	// Stop hole punch manager
 	if holePunchManager != nil {
 		holePunchManager.Stop()
@@ -881,7 +881,7 @@ func StopTunnel() {
 		olmClient = nil
 	}
 
-	Stop()
+	Close()
 
 	// Reset the connected state
 	connected = false
@@ -891,6 +891,8 @@ func StopTunnel() {
 	apiServer.SetConnectionStatus(false)
 	apiServer.SetRegistered(false)
 	apiServer.SetTunnelIP("")
+
+	network.ClearNetworkSettings()
 
 	logger.Info("Tunnel process stopped")
 }
