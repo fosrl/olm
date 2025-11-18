@@ -18,12 +18,21 @@ func createTUNFromFD(tunFd uint32, mtuInt int) (tun.Device, error) {
 		logger.Error("Unable to dup tun fd: %v", err)
 		return nil, err
 	}
+
 	err = unix.SetNonblock(dupTunFd, true)
 	if err != nil {
+		unix.Close(dupTunFd)
 		return nil, err
 	}
 
-	return tun.CreateTUNFromFile(os.NewFile(uintptr(dupTunFd), "/dev/tun"), mtuInt)
+	file := os.NewFile(uintptr(dupTunFd), "/dev/tun")
+	device, err := tun.CreateTUNFromFile(file, mtuInt)
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+
+	return device, nil
 }
 
 func uapiOpen(interfaceName string) (*os.File, error) {
