@@ -16,17 +16,19 @@ import (
 
 // ConfigureInterface configures a network interface with an IP address and brings it up
 func ConfigureInterface(interfaceName string, wgData WgData) error {
-	var ipAddr string = wgData.TunnelIP
+	logger.Info("The tunnel IP is: %s", wgData.TunnelIP)
 
 	// Parse the IP address and network
-	ip, ipNet, err := net.ParseCIDR(ipAddr)
+	ip, ipNet, err := net.ParseCIDR(wgData.TunnelIP)
 	if err != nil {
 		return fmt.Errorf("invalid IP address: %v", err)
 	}
 
 	// Convert CIDR mask to dotted decimal format (e.g., 255.255.255.0)
 	mask := net.IP(ipNet.Mask).String()
-	destinationAddress := ipNet.IP.String()
+	destinationAddress := ip.String()
+
+	logger.Debug("The destination address is: %s", destinationAddress)
 
 	// network.SetTunnelRemoteAddress() // what does this do?
 	network.SetIPv4Settings([]string{destinationAddress}, []string{mask})
