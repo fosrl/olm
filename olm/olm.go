@@ -10,7 +10,6 @@ import (
 	"github.com/fosrl/newt/bind"
 	"github.com/fosrl/newt/holepunch"
 	"github.com/fosrl/newt/logger"
-	"github.com/fosrl/newt/updates"
 	"github.com/fosrl/newt/util"
 	"github.com/fosrl/olm/api"
 	"github.com/fosrl/olm/network"
@@ -86,10 +85,6 @@ func Run(ctx context.Context, config Config) {
 
 	logger.GetLogger().SetLevel(util.ParseLogLevel(config.LogLevel))
 	network.SetMTU(config.MTU)
-
-	if err := updates.CheckForUpdate("fosrl", "olm", config.Version); err != nil {
-		logger.Debug("Failed to check for updates: %v", err)
-	}
 
 	if config.Holepunch {
 		logger.Warn("Hole punching is enabled. This is EXPERIMENTAL and may not work in all environments.")
@@ -478,10 +473,10 @@ func TunnelProcess(ctx context.Context, config Config, id string, secret string,
 				logger.Error("Failed to configure peer: %v", err)
 				return
 			}
-			// if err := addRouteForServerIP(site.ServerIP, interfaceName); err != nil {
-			// 	logger.Error("Failed to add route for peer: %v", err)
-			// 	return
-			// }
+			if err := addRouteForServerIP(site.ServerIP, interfaceName); err != nil {
+				logger.Error("Failed to add route for peer: %v", err)
+				return
+			}
 			if err := addRoutesForRemoteSubnets(site.RemoteSubnets, interfaceName); err != nil {
 				logger.Error("Failed to add routes for remote subnets: %v", err)
 				return
