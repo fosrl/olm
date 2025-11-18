@@ -15,7 +15,7 @@ import (
 )
 
 // ConfigureInterface configures a network interface with an IP address and brings it up
-func ConfigureInterface(interfaceName string, wgData WgData) error {
+func ConfigureInterface(interfaceName string, wgData WgData, mtu int) error {
 	logger.Info("The tunnel IP is: %s", wgData.TunnelIP)
 
 	// Parse the IP address and network
@@ -32,6 +32,7 @@ func ConfigureInterface(interfaceName string, wgData WgData) error {
 
 	// network.SetTunnelRemoteAddress() // what does this do?
 	network.SetIPv4Settings([]string{destinationAddress}, []string{mask})
+	network.SetMTU(mtu)
 	apiServer.SetTunnelIP(destinationAddress)
 
 	if interfaceName == "" {
