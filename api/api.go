@@ -13,10 +13,18 @@ import (
 
 // ConnectionRequest defines the structure for an incoming connection request
 type ConnectionRequest struct {
-	ID        string `json:"id"`
-	Secret    string `json:"secret"`
-	Endpoint  string `json:"endpoint"`
-	UserToken string `json:"userToken,omitempty"`
+	ID            string `json:"id"`
+	Secret        string `json:"secret"`
+	Endpoint      string `json:"endpoint"`
+	UserToken     string `json:"userToken,omitempty"`
+	MTU           int    `json:"mtu,omitempty"`
+	DNS           string `json:"dns,omitempty"`
+	InterfaceName string `json:"interfaceName,omitempty"`
+	Holepunch     bool   `json:"holepunch,omitempty"`
+	TlsClientCert string `json:"tlsClientCert,omitempty"`
+	PingInterval  string `json:"pingInterval,omitempty"`
+	PingTimeout   string `json:"pingTimeout,omitempty"`
+	OrgID         string `json:"orgId,omitempty"`
 }
 
 // SwitchOrgRequest defines the structure for switching organizations
@@ -47,33 +55,29 @@ type StatusResponse struct {
 
 // API represents the HTTP server and its state
 type API struct {
-	addr           string
-	socketPath     string
-	listener       net.Listener
-	server         *http.Server
-	connectionChan chan ConnectionRequest
-	switchOrgChan  chan SwitchOrgRequest
-	shutdownChan   chan struct{}
-	disconnectChan chan struct{}
-	statusMu       sync.RWMutex
-	peerStatuses   map[int]*PeerStatus
-	connectedAt    time.Time
-	isConnected    bool
-	isRegistered   bool
-	tunnelIP       string
-	version        string
-	orgID          string
+	addr         string
+	socketPath   string
+	listener     net.Listener
+	server       *http.Server
+	onConnect    func(ConnectionRequest) error
+	onSwitchOrg  func(SwitchOrgRequest) error
+	onDisconnect func() error
+	onExit       func() error
+	statusMu     sync.RWMutex
+	peerStatuses map[int]*PeerStatus
+	connectedAt  time.Time
+	isConnected  bool
+	isRegistered bool
+	tunnelIP     string
+	version      string
+	orgID        string
 }
 
 // NewAPI creates a new HTTP server that listens on a TCP address
 func NewAPI(addr string) *API {
 	s := &API{
-		addr:           addr,
-		connectionChan: make(chan ConnectionRequest, 1),
-		switchOrgChan:  make(chan SwitchOrgRequest, 1),
-		shutdownChan:   make(chan struct{}, 1),
-		disconnectChan: make(chan struct{}, 1),
-		peerStatuses:   make(map[int]*PeerStatus),
+		addr:         addr,
+		peerStatuses: make(map[int]*PeerStatus),
 	}
 
 	return s
@@ -82,15 +86,24 @@ func NewAPI(addr string) *API {
 // NewAPISocket creates a new HTTP server that listens on a Unix socket or Windows named pipe
 func NewAPISocket(socketPath string) *API {
 	s := &API{
-		socketPath:     socketPath,
-		connectionChan: make(chan ConnectionRequest, 1),
-		switchOrgChan:  make(chan SwitchOrgRequest, 1),
-		shutdownChan:   make(chan struct{}, 1),
-		disconnectChan: make(chan struct{}, 1),
-		peerStatuses:   make(map[int]*PeerStatus),
+		socketPath:   socketPath,
+		peerStatuses: make(map[int]*PeerStatus),
 	}
 
 	return s
+}
+
+// SetHandlers sets the callback functions for handling API requests
+func (s *API) SetHandlers(
+	onConnect func(ConnectionRequest) error,
+	onSwitchOrg func(SwitchOrgRequest) error,
+	onDisconnect func() error,
+	onExit func() error,
+) {
+	s.onConnect = onConnect
+	s.onSwitchOrg = onSwitchOrg
+	s.onDisconnect = onDisconnect
+	s.onExit = onExit
 }
 
 // Start starts the HTTP server
@@ -147,26 +160,6 @@ func (s *API) Stop() error {
 	}
 
 	return nil
-}
-
-// GetConnectionChannel returns the channel for receiving connection requests
-func (s *API) GetConnectionChannel() <-chan ConnectionRequest {
-	return s.connectionChan
-}
-
-// GetSwitchOrgChannel returns the channel for receiving org switch requests
-func (s *API) GetSwitchOrgChannel() <-chan SwitchOrgRequest {
-	return s.switchOrgChan
-}
-
-// GetShutdownChannel returns the channel for receiving shutdown requests
-func (s *API) GetShutdownChannel() <-chan struct{} {
-	return s.shutdownChan
-}
-
-// GetDisconnectChannel returns the channel for receiving disconnect requests
-func (s *API) GetDisconnectChannel() <-chan struct{} {
-	return s.disconnectChan
 }
 
 // UpdatePeerStatus updates the status of a peer including endpoint and relay info
@@ -277,8 +270,13 @@ func (s *API) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send the request to the main goroutine
-	s.connectionChan <- req
+	// Call the connect handler if set
+	if s.onConnect != nil {
+		if err := s.onConnect(req); err != nil {
+			http.Error(w, fmt.Sprintf("Connection failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
 
 	// Return a success response
 	w.Header().Set("Content-Type", "application/json")
@@ -320,12 +318,12 @@ func (s *API) handleExit(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info("Received exit request via API")
 
-	// Send shutdown signal
-	select {
-	case s.shutdownChan <- struct{}{}:
-		// Signal sent successfully
-	default:
-		// Channel already has a signal, don't block
+	// Call the exit handler if set
+	if s.onExit != nil {
+		if err := s.onExit(); err != nil {
+			http.Error(w, fmt.Sprintf("Exit failed: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Return a success response
@@ -358,14 +356,12 @@ func (s *API) handleSwitchOrg(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info("Received org switch request to orgId: %s", req.OrgID)
 
-	// Send the request to the main goroutine
-	select {
-	case s.switchOrgChan <- req:
-		// Signal sent successfully
-	default:
-		// Channel already has a pending request
-		http.Error(w, "Org switch already in progress", http.StatusConflict)
-		return
+	// Call the switch org handler if set
+	if s.onSwitchOrg != nil {
+		if err := s.onSwitchOrg(req); err != nil {
+			http.Error(w, fmt.Sprintf("Org switch failed: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Return a success response
@@ -394,12 +390,12 @@ func (s *API) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info("Received disconnect request via API")
 
-	// Send disconnect signal
-	select {
-	case s.disconnectChan <- struct{}{}:
-		// Signal sent successfully
-	default:
-		// Channel already has a signal, don't block
+	// Call the disconnect handler if set
+	if s.onDisconnect != nil {
+		if err := s.onDisconnect(); err != nil {
+			http.Error(w, fmt.Sprintf("Disconnect failed: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Return a success response

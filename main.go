@@ -205,26 +205,41 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	}
 
 	// Create a new olm.Config struct and copy values from the main config
-	olmConfig := olm.Config{
-		Endpoint:             config.Endpoint,
-		ID:                   config.ID,
-		Secret:               config.Secret,
-		UserToken:            config.UserToken,
-		MTU:                  config.MTU,
-		DNS:                  config.DNS,
-		InterfaceName:        config.InterfaceName,
-		LogLevel:             config.LogLevel,
-		EnableAPI:            config.EnableAPI,
-		HTTPAddr:             config.HTTPAddr,
-		SocketPath:           config.SocketPath,
-		Holepunch:            config.Holepunch,
-		TlsClientCert:        config.TlsClientCert,
-		PingIntervalDuration: config.PingIntervalDuration,
-		PingTimeoutDuration:  config.PingTimeoutDuration,
-		Version:              config.Version,
-		OrgID:                config.OrgID,
-		// DoNotCreateNewClient: config.DoNotCreateNewClient,
+	olmConfig := olm.GlobalConfig{
+		LogLevel:   config.LogLevel,
+		EnableAPI:  config.EnableAPI,
+		HTTPAddr:   config.HTTPAddr,
+		SocketPath: config.SocketPath,
+		Version:    config.Version,
 	}
 
 	olm.Init(ctx, olmConfig)
+
+	if config.ID != "" && config.Secret != "" && config.Endpoint != "" {
+		tunnelConfig := olm.TunnelConfig{
+			Endpoint:             config.Endpoint,
+			ID:                   config.ID,
+			Secret:               config.Secret,
+			UserToken:            config.UserToken,
+			MTU:                  config.MTU,
+			DNS:                  config.DNS,
+			InterfaceName:        config.InterfaceName,
+			Holepunch:            config.Holepunch,
+			TlsClientCert:        config.TlsClientCert,
+			PingIntervalDuration: config.PingIntervalDuration,
+			PingTimeoutDuration:  config.PingTimeoutDuration,
+			OrgID:                config.OrgID,
+		}
+		go olm.StartTunnel(tunnelConfig)
+	} else {
+		logger.Info("Incomplete tunnel configuration, not starting tunnel")
+	}
+
+	// Wait for context cancellation (from signals or API shutdown)
+	<-ctx.Done()
+	logger.Info("Shutdown signal received, cleaning up...")
+
+	// Clean up resources
+	olm.Close()
+	logger.Info("Shutdown complete")
 }
