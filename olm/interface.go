@@ -16,10 +16,6 @@ import (
 
 // ConfigureInterface configures a network interface with an IP address and brings it up
 func ConfigureInterface(interfaceName string, wgData WgData) error {
-	if interfaceName == "" {
-		return nil
-	}
-
 	var ipAddr string = wgData.TunnelIP
 
 	// Parse the IP address and network
