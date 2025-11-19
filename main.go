@@ -214,6 +214,9 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 	}
 
 	olm.Init(ctx, olmConfig)
+	if err := olm.StartApi(); err != nil {
+		logger.Fatal("Failed to start API server: %v", err)
+	}
 
 	if config.ID != "" && config.Secret != "" && config.Endpoint != "" {
 		tunnelConfig := olm.TunnelConfig{
