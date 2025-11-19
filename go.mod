@@ -6,7 +6,7 @@ require (
 	github.com/fosrl/newt v0.0.0-20250929233849-71c5bf7e65f7
 	github.com/gorilla/websocket v1.5.3
 	github.com/vishvananda/netlink v1.3.1
-	golang.org/x/crypto v0.44.0
+	golang.org/x/crypto v0.45.0
 	golang.org/x/exp v0.0.0-20250718183923-645b1fa84792
 	golang.org/x/sys v0.38.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
@@ -16,7 +16,7 @@ require (
 
 require (
 	github.com/vishvananda/netns v0.0.5 // indirect
-	golang.org/x/net v0.46.0 // indirect
+	golang.org/x/net v0.47.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	gvisor.dev/gvisor v0.0.0-20250718192347-d7830d968c56 // indirect
 )
