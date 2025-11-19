@@ -114,6 +114,7 @@ func (s *API) Start() error {
 	mux.HandleFunc("/switch-org", s.handleSwitchOrg)
 	mux.HandleFunc("/disconnect", s.handleDisconnect)
 	mux.HandleFunc("/exit", s.handleExit)
+	mux.HandleFunc("/health", s.handleHealth)
 
 	s.server = &http.Server{
 		Handler: mux,
@@ -307,6 +308,20 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// handleHealth handles the /health endpoint
+func (s *API) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "ok",
+	})
 }
 
 // handleExit handles the /exit endpoint

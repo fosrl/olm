@@ -101,10 +101,6 @@ func Init(ctx context.Context, config GlobalConfig) {
 
 	apiServer.SetVersion(config.Version)
 
-	if err := apiServer.Start(); err != nil {
-		logger.Fatal("Failed to start HTTP server: %v", err)
-	}
-
 	// Set up API handlers
 	apiServer.SetHandlers(
 		// onConnect
@@ -906,4 +902,24 @@ func StopTunnel() {
 	network.ClearNetworkSettings()
 
 	logger.Info("Tunnel process stopped")
+}
+
+func StopApi() error {
+	if apiServer != nil {
+		err := apiServer.Stop()
+		if err != nil {
+			return fmt.Errorf("failed to stop API server: %w", err)
+		}
+	}
+	return nil
+}
+
+func StartApi() error {
+	if apiServer != nil {
+		err := apiServer.Start()
+		if err != nil {
+			return fmt.Errorf("failed to start API server: %w", err)
+		}
+	}
+	return nil
 }
