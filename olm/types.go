@@ -6,12 +6,12 @@ type WgData struct {
 }
 
 type SiteConfig struct {
-	SiteId        int    `json:"siteId"`
-	Endpoint      string `json:"endpoint"`
-	PublicKey     string `json:"publicKey"`
-	ServerIP      string `json:"serverIP"`
-	ServerPort    uint16 `json:"serverPort"`
-	RemoteSubnets string `json:"remoteSubnets,omitempty"` // optional, comma-separated list of subnets that this site can access
+	SiteId        int      `json:"siteId"`
+	Endpoint      string   `json:"endpoint"`
+	PublicKey     string   `json:"publicKey"`
+	ServerIP      string   `json:"serverIP"`
+	ServerPort    uint16   `json:"serverPort"`
+	RemoteSubnets []string `json:"remoteSubnets,omitempty"` // optional, array of subnets that this site can access
 }
 
 type HolePunchMessage struct {
@@ -41,22 +41,22 @@ type PeerAction struct {
 
 // UpdatePeerData represents the data needed to update a peer
 type UpdatePeerData struct {
-	SiteId        int    `json:"siteId"`
-	Endpoint      string `json:"endpoint"`
-	PublicKey     string `json:"publicKey"`
-	ServerIP      string `json:"serverIP"`
-	ServerPort    uint16 `json:"serverPort"`
-	RemoteSubnets string `json:"remoteSubnets,omitempty"` // optional, comma-separated list of subnets that this site can access
+	SiteId        int      `json:"siteId"`
+	Endpoint      string   `json:"endpoint,omitempty"`
+	PublicKey     string   `json:"publicKey,omitempty"`
+	ServerIP      string   `json:"serverIP,omitempty"`
+	ServerPort    uint16   `json:"serverPort,omitempty"`
+	RemoteSubnets []string `json:"remoteSubnets,omitempty"` // optional, array of subnets that this site can access
 }
 
 // AddPeerData represents the data needed to add a peer
 type AddPeerData struct {
-	SiteId        int    `json:"siteId"`
-	Endpoint      string `json:"endpoint"`
-	PublicKey     string `json:"publicKey"`
-	ServerIP      string `json:"serverIP"`
-	ServerPort    uint16 `json:"serverPort"`
-	RemoteSubnets string `json:"remoteSubnets,omitempty"` // optional, comma-separated list of subnets that this site can access
+	SiteId        int      `json:"siteId"`
+	Endpoint      string   `json:"endpoint"`
+	PublicKey     string   `json:"publicKey"`
+	ServerIP      string   `json:"serverIP"`
+	ServerPort    uint16   `json:"serverPort"`
+	RemoteSubnets []string `json:"remoteSubnets,omitempty"` // optional, array of subnets that this site can access
 }
 
 // RemovePeerData represents the data needed to remove a peer

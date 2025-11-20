@@ -543,71 +543,86 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		// Convert to SiteConfig
-		siteConfig := SiteConfig{
-			SiteId:        updateData.SiteId,
-			Endpoint:      updateData.Endpoint,
-			PublicKey:     updateData.PublicKey,
-			ServerIP:      updateData.ServerIP,
-			ServerPort:    updateData.ServerPort,
-			RemoteSubnets: updateData.RemoteSubnets,
+		// Update the peer in WireGuard
+		if dev == nil {
+			logger.Error("WireGuard device not initialized")
+			return
 		}
 
-		// Update the peer in WireGuard
-		if dev != nil {
-			// Find the existing peer to get old data
-			var oldRemoteSubnets string
-			var oldPublicKey string
-			for _, site := range wgData.Sites {
-				if site.SiteId == updateData.SiteId {
-					oldRemoteSubnets = site.RemoteSubnets
-					oldPublicKey = site.PublicKey
-					break
-				}
+		// Find the existing peer to merge updates with
+		var existingPeer *SiteConfig
+		var peerIndex int
+		for i, site := range wgData.Sites {
+			if site.SiteId == updateData.SiteId {
+				existingPeer = &wgData.Sites[i]
+				peerIndex = i
+				break
 			}
+		}
 
-			// If the public key has changed, remove the old peer first
-			if oldPublicKey != "" && oldPublicKey != updateData.PublicKey {
-				logger.Info("Public key changed for site %d, removing old peer with key %s", updateData.SiteId, oldPublicKey)
-				if err := RemovePeer(dev, updateData.SiteId, oldPublicKey); err != nil {
-					logger.Error("Failed to remove old peer: %v", err)
-					return
-				}
-			}
+		if existingPeer == nil {
+			logger.Error("Peer with site ID %d not found", updateData.SiteId)
+			return
+		}
 
-			// Format the endpoint before updating the peer.
-			siteConfig.Endpoint = formatEndpoint(siteConfig.Endpoint)
+		// Store old values for comparison
+		oldRemoteSubnets := existingPeer.RemoteSubnets
+		oldPublicKey := existingPeer.PublicKey
 
-			if err := ConfigurePeer(dev, siteConfig, privateKey, endpoint); err != nil {
-				logger.Error("Failed to update peer: %v", err)
+		// Create updated site config by merging with existing data
+		// Only update fields that are provided (non-empty/non-zero)
+		siteConfig := *existingPeer // Start with existing data
+
+		if updateData.Endpoint != "" {
+			siteConfig.Endpoint = updateData.Endpoint
+		}
+		if updateData.PublicKey != "" {
+			siteConfig.PublicKey = updateData.PublicKey
+		}
+		if updateData.ServerIP != "" {
+			siteConfig.ServerIP = updateData.ServerIP
+		}
+		if updateData.ServerPort != 0 {
+			siteConfig.ServerPort = updateData.ServerPort
+		}
+		if updateData.RemoteSubnets != nil {
+			siteConfig.RemoteSubnets = updateData.RemoteSubnets
+		}
+
+		// If the public key has changed, remove the old peer first
+		if siteConfig.PublicKey != oldPublicKey {
+			logger.Info("Public key changed for site %d, removing old peer with key %s", updateData.SiteId, oldPublicKey)
+			if err := RemovePeer(dev, updateData.SiteId, oldPublicKey); err != nil {
+				logger.Error("Failed to remove old peer: %v", err)
 				return
 			}
-
-			// Remove old remote subnet routes if they changed
-			if oldRemoteSubnets != siteConfig.RemoteSubnets {
-				if err := removeRoutesForRemoteSubnets(oldRemoteSubnets); err != nil {
-					logger.Error("Failed to remove old remote subnet routes: %v", err)
-					// Continue anyway to add new routes
-				}
-
-				// Add new remote subnet routes
-				if err := addRoutesForRemoteSubnets(siteConfig.RemoteSubnets, interfaceName); err != nil {
-					logger.Error("Failed to add new remote subnet routes: %v", err)
-					return
-				}
-			}
-
-			// Update successful
-			logger.Info("Successfully updated peer for site %d", updateData.SiteId)
-			for i := range wgData.Sites {
-				if wgData.Sites[i].SiteId == updateData.SiteId {
-					wgData.Sites[i] = siteConfig
-					break
-				}
-			}
-		} else {
-			logger.Error("WireGuard device not initialized")
 		}
+
+		// Format the endpoint before updating the peer.
+		siteConfig.Endpoint = formatEndpoint(siteConfig.Endpoint)
+
+		if err := ConfigurePeer(dev, siteConfig, privateKey, endpoint); err != nil {
+			logger.Error("Failed to update peer: %v", err)
+			return
+		}
+
+		// Handle remote subnet route changes
+		if !stringSlicesEqual(oldRemoteSubnets, siteConfig.RemoteSubnets) {
+			if err := removeRoutesForRemoteSubnets(oldRemoteSubnets); err != nil {
+				logger.Error("Failed to remove old remote subnet routes: %v", err)
+				// Continue anyway to add new routes
+			}
+
+			// Add new remote subnet routes
+			if err := addRoutesForRemoteSubnets(siteConfig.RemoteSubnets, interfaceName); err != nil {
+				logger.Error("Failed to add new remote subnet routes: %v", err)
+				return
+			}
+		}
+
+		// Update successful
+		logger.Info("Successfully updated peer for site %d", updateData.SiteId)
+		wgData.Sites[peerIndex] = siteConfig
 	})
 
 	// Handler for adding a new peer
@@ -637,31 +652,31 @@ func StartTunnel(config TunnelConfig) {
 		}
 
 		// Add the peer to WireGuard
-		if dev != nil {
-			// Format the endpoint before adding the new peer.
-			siteConfig.Endpoint = formatEndpoint(siteConfig.Endpoint)
-
-			if err := ConfigurePeer(dev, siteConfig, privateKey, endpoint); err != nil {
-				logger.Error("Failed to add peer: %v", err)
-				return
-			}
-			if err := addRouteForServerIP(siteConfig.ServerIP, interfaceName); err != nil {
-				logger.Error("Failed to add route for new peer: %v", err)
-				return
-			}
-			if err := addRoutesForRemoteSubnets(siteConfig.RemoteSubnets, interfaceName); err != nil {
-				logger.Error("Failed to add routes for remote subnets: %v", err)
-				return
-			}
-
-			// Add successful
-			logger.Info("Successfully added peer for site %d", addData.SiteId)
-
-			// Update WgData with the new peer
-			wgData.Sites = append(wgData.Sites, siteConfig)
-		} else {
+		if dev == nil {
 			logger.Error("WireGuard device not initialized")
+			return
 		}
+		// Format the endpoint before adding the new peer.
+		siteConfig.Endpoint = formatEndpoint(siteConfig.Endpoint)
+
+		if err := ConfigurePeer(dev, siteConfig, privateKey, endpoint); err != nil {
+			logger.Error("Failed to add peer: %v", err)
+			return
+		}
+		if err := addRouteForServerIP(siteConfig.ServerIP, interfaceName); err != nil {
+			logger.Error("Failed to add route for new peer: %v", err)
+			return
+		}
+		if err := addRoutesForRemoteSubnets(siteConfig.RemoteSubnets, interfaceName); err != nil {
+			logger.Error("Failed to add routes for remote subnets: %v", err)
+			return
+		}
+
+		// Add successful
+		logger.Info("Successfully added peer for site %d", addData.SiteId)
+
+		// Update WgData with the new peer
+		wgData.Sites = append(wgData.Sites, siteConfig)
 	})
 
 	// Handler for removing a peer

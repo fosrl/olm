@@ -268,15 +268,14 @@ func removeRouteForNetworkConfig(destination string) error {
 	return nil
 }
 
-// addRoutesForRemoteSubnets adds routes for each comma-separated CIDR in RemoteSubnets
-func addRoutesForRemoteSubnets(remoteSubnets, interfaceName string) error {
-	if remoteSubnets == "" {
+// addRoutesForRemoteSubnets adds routes for each subnet in RemoteSubnets
+func addRoutesForRemoteSubnets(remoteSubnets []string, interfaceName string) error {
+	if len(remoteSubnets) == 0 {
 		return nil
 	}
 
-	// Split remote subnets by comma and add routes for each one
-	subnets := strings.Split(remoteSubnets, ",")
-	for _, subnet := range subnets {
+	// Add routes for each subnet
+	for _, subnet := range remoteSubnets {
 		subnet = strings.TrimSpace(subnet)
 		if subnet == "" {
 			continue
@@ -314,15 +313,14 @@ func addRoutesForRemoteSubnets(remoteSubnets, interfaceName string) error {
 	return nil
 }
 
-// removeRoutesForRemoteSubnets removes routes for each comma-separated CIDR in RemoteSubnets
-func removeRoutesForRemoteSubnets(remoteSubnets string) error {
-	if remoteSubnets == "" {
+// removeRoutesForRemoteSubnets removes routes for each subnet in RemoteSubnets
+func removeRoutesForRemoteSubnets(remoteSubnets []string) error {
+	if len(remoteSubnets) == 0 {
 		return nil
 	}
 
-	// Split remote subnets by comma and remove routes for each one
-	subnets := strings.Split(remoteSubnets, ",")
-	for _, subnet := range subnets {
+	// Remove routes for each subnet
+	for _, subnet := range remoteSubnets {
 		subnet = strings.TrimSpace(subnet)
 		if subnet == "" {
 			continue
