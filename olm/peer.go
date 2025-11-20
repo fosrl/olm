@@ -34,10 +34,9 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 	allowedIPs = append(allowedIPs, allowedIpStr)
 
 	// If we have anything in remoteSubnets, add those as well
-	if siteConfig.RemoteSubnets != "" {
-		// Split remote subnets by comma and add each one
-		remoteSubnets := strings.Split(siteConfig.RemoteSubnets, ",")
-		for _, subnet := range remoteSubnets {
+	if len(siteConfig.RemoteSubnets) > 0 {
+		// Add each remote subnet
+		for _, subnet := range siteConfig.RemoteSubnets {
 			subnet = strings.TrimSpace(subnet)
 			if subnet != "" {
 				allowedIPs = append(allowedIPs, subnet)
