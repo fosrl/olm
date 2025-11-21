@@ -42,8 +42,6 @@ type DNSProxy struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
-
-	mutex sync.RWMutex
 }
 
 // NewDNSProxy creates a new DNS proxy
@@ -264,6 +262,10 @@ func (p *DNSProxy) queryUpstream(server string, query []byte, timeout time.Durat
 func (p *DNSProxy) runPacketSender() {
 	defer p.wg.Done()
 
+	// MessageTransportHeaderSize is the offset used by WireGuard device
+	// for reading/writing packets to the TUN interface
+	const offset = 16
+
 	for {
 		select {
 		case <-p.ctx.Done():
@@ -279,20 +281,32 @@ func (p *DNSProxy) runPacketSender() {
 			continue
 		}
 
-		// Convert packet to bytes
-		view := pkt.ToView()
-		packetData := view.AsSlice()
+		// Extract packet data as slices
+		slices := pkt.AsSlices()
+		if len(slices) > 0 {
+			// Flatten all slices into a single packet buffer
+			var totalSize int
+			for _, slice := range slices {
+				totalSize += len(slice)
+			}
 
-		// Make a copy and write directly back to the TUN device
-		// This bypasses WireGuard - the packet goes straight back to the host
-		buf := make([]byte, len(packetData))
-		copy(buf, packetData)
+			// Allocate buffer with offset space for WireGuard transport header
+			// The first 'offset' bytes are reserved for the transport header
+			buf := make([]byte, offset+totalSize)
 
-		// Write packet back to TUN device
-		bufs := [][]byte{buf}
-		_, err := p.tunDevice.Write(bufs, 0)
-		if err != nil {
-			logger.Error("Failed to write DNS response to TUN: %v", err)
+			// Copy packet data after the offset
+			pos := offset
+			for _, slice := range slices {
+				copy(buf[pos:], slice)
+				pos += len(slice)
+			}
+
+			// Write packet to TUN device
+			// offset=16 indicates packet data starts at position 16 in the buffer
+			_, err := p.tunDevice.Write([][]byte{buf}, offset)
+			if err != nil {
+				logger.Error("Failed to write DNS response to TUN: %v", err)
+			}
 		}
 
 		pkt.DecRef()
