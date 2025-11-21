@@ -1,0 +1,111 @@
+package olm
+
+// This file demonstrates how to add additional virtual services using the FilteredDevice infrastructure
+// Copy and modify this template to add new services
+
+import (
+	"context"
+	"net/netip"
+	"sync"
+
+	"github.com/fosrl/newt/logger"
+	"golang.zx2c4.com/wireguard/tun"
+)
+
+// Example: Simple echo server on 10.30.30.50:7777
+
+const (
+	EchoProxyIP   = "10.30.30.50"
+	EchoProxyPort = 7777
+)
+
+// EchoProxy implements a simple echo server
+type EchoProxy struct {
+	proxyIP   netip.Addr
+	tunDevice tun.Device
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+}
+
+// NewEchoProxy creates a new echo proxy instance
+func NewEchoProxy(tunDevice tun.Device) (*EchoProxy, error) {
+	proxyIP := netip.MustParseAddr(EchoProxyIP)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	return &EchoProxy{
+		proxyIP:   proxyIP,
+		tunDevice: tunDevice,
+		ctx:       ctx,
+		cancel:    cancel,
+	}, nil
+}
+
+// Start registers the proxy with the filter
+func (e *EchoProxy) Start(filter *FilteredDevice) error {
+	filter.AddRule(e.proxyIP, e.handlePacket)
+	logger.Info("Echo proxy started on %s:%d", EchoProxyIP, EchoProxyPort)
+	return nil
+}
+
+// Stop unregisters the proxy
+func (e *EchoProxy) Stop(filter *FilteredDevice) {
+	if filter != nil {
+		filter.RemoveRule(e.proxyIP)
+	}
+	e.cancel()
+	e.wg.Wait()
+	logger.Info("Echo proxy stopped")
+}
+
+// handlePacket processes packets destined for the echo server
+func (e *EchoProxy) handlePacket(packet []byte) bool {
+	// Quick validation
+	if len(packet) < 20 {
+		return false
+	}
+
+	// Check protocol (UDP)
+	proto, ok := GetProtocol(packet)
+	if !ok || proto != 17 {
+		return false
+	}
+
+	// Check port
+	port, ok := GetDestPort(packet)
+	if !ok || port != EchoProxyPort {
+		return false
+	}
+
+	// For a real implementation, you would:
+	// 1. Parse the UDP packet
+	// 2. Extract the payload
+	// 3. Create a response packet with swapped src/dest
+	// 4. Write response back to TUN device
+
+	logger.Debug("Echo proxy received packet (would echo back)")
+
+	// Return true to drop packet from normal WireGuard path
+	return true
+}
+
+// Example integration in olm.go:
+//
+// var echoProxy *EchoProxy
+//
+// // During tunnel setup (after creating filteredDev):
+// echoProxy, err = NewEchoProxy(tdev)
+// if err != nil {
+//     logger.Error("Failed to create echo proxy: %v", err)
+//     return
+// }
+// if err := echoProxy.Start(filteredDev); err != nil {
+//     logger.Error("Failed to start echo proxy: %v", err)
+//     return
+// }
+//
+// // During tunnel teardown:
+// if echoProxy != nil {
+//     echoProxy.Stop(filteredDev)
+//     echoProxy = nil
+// }
