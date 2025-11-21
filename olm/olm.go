@@ -435,11 +435,13 @@ func StartTunnel(config TunnelConfig) {
 		dnsProxy, err = dns.NewDNSProxy(tdev, config.MTU)
 		if err != nil {
 			logger.Error("Failed to create DNS proxy: %v", err)
-			return
 		}
 		if err := dnsProxy.Start(middleDev); err != nil {
 			logger.Error("Failed to start DNS proxy: %v", err)
-			return
+		}
+		ip := net.ParseIP("192.168.1.100")
+		if dnsProxy.AddDNSRecord("example.com", ip); err != nil {
+			logger.Error("Failed to add DNS record: %v", err)
 		}
 
 		// fileUAPI, err := func() (*os.File, error) {
