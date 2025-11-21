@@ -713,34 +713,215 @@ func StartTunnel(config TunnelConfig) {
 		}
 
 		// Remove the peer from WireGuard
-		if dev != nil {
-			if err := RemovePeer(dev, removeData.SiteId, peerToRemove.PublicKey); err != nil {
-				logger.Error("Failed to remove peer: %v", err)
-				// Send error response if needed
-				return
-			}
-
-			// Remove route for the peer
-			err = removeRouteForServerIP(peerToRemove.ServerIP, interfaceName)
-			if err != nil {
-				logger.Error("Failed to remove route for peer: %v", err)
-				return
-			}
-
-			// Remove routes for remote subnets
-			if err := removeRoutesForRemoteSubnets(peerToRemove.RemoteSubnets); err != nil {
-				logger.Error("Failed to remove routes for remote subnets: %v", err)
-				return
-			}
-
-			// Remove successful
-			logger.Info("Successfully removed peer for site %d", removeData.SiteId)
-
-			// Update WgData to remove the peer
-			wgData.Sites = newSites
-		} else {
+		if dev == nil {
 			logger.Error("WireGuard device not initialized")
+			return
 		}
+		if err := RemovePeer(dev, removeData.SiteId, peerToRemove.PublicKey); err != nil {
+			logger.Error("Failed to remove peer: %v", err)
+			// Send error response if needed
+			return
+		}
+
+		// Remove route for the peer
+		err = removeRouteForServerIP(peerToRemove.ServerIP, interfaceName)
+		if err != nil {
+			logger.Error("Failed to remove route for peer: %v", err)
+			return
+		}
+
+		// Remove routes for remote subnets
+		if err := removeRoutesForRemoteSubnets(peerToRemove.RemoteSubnets); err != nil {
+			logger.Error("Failed to remove routes for remote subnets: %v", err)
+			return
+		}
+
+		// Remove successful
+		logger.Info("Successfully removed peer for site %d", removeData.SiteId)
+
+		// Update WgData to remove the peer
+		wgData.Sites = newSites
+	})
+
+	// Handler for adding remote subnets to a peer
+	olm.RegisterHandler("olm/wg/peer/add-remote-subnets", func(msg websocket.WSMessage) {
+		logger.Debug("Received add-remote-subnets message: %v", msg.Data)
+
+		jsonData, err := json.Marshal(msg.Data)
+		if err != nil {
+			logger.Error("Error marshaling data: %v", err)
+			return
+		}
+
+		var addSubnetsData AddRemoteSubnetsData
+		if err := json.Unmarshal(jsonData, &addSubnetsData); err != nil {
+			logger.Error("Error unmarshaling add-remote-subnets data: %v", err)
+			return
+		}
+
+		// Find the peer to update
+		var peerIndex = -1
+		for i, site := range wgData.Sites {
+			if site.SiteId == addSubnetsData.SiteId {
+				peerIndex = i
+				break
+			}
+		}
+
+		if peerIndex == -1 {
+			logger.Error("Peer with site ID %d not found", addSubnetsData.SiteId)
+			return
+		}
+
+		// Add new subnets to the peer's remote subnets (avoiding duplicates)
+		existingSubnets := make(map[string]bool)
+		for _, subnet := range wgData.Sites[peerIndex].RemoteSubnets {
+			existingSubnets[subnet] = true
+		}
+
+		var newSubnets []string
+		for _, subnet := range addSubnetsData.RemoteSubnets {
+			if !existingSubnets[subnet] {
+				newSubnets = append(newSubnets, subnet)
+				wgData.Sites[peerIndex].RemoteSubnets = append(wgData.Sites[peerIndex].RemoteSubnets, subnet)
+			}
+		}
+
+		if len(newSubnets) == 0 {
+			logger.Info("No new subnets to add for site %d (all already exist)", addSubnetsData.SiteId)
+			return
+		}
+
+		// Add routes for the new subnets
+		if err := addRoutesForRemoteSubnets(newSubnets, interfaceName); err != nil {
+			logger.Error("Failed to add routes for new remote subnets: %v", err)
+			return
+		}
+
+		logger.Info("Successfully added %d remote subnet(s) to peer %d", len(newSubnets), addSubnetsData.SiteId)
+	})
+
+	// Handler for removing remote subnets from a peer
+	olm.RegisterHandler("olm/wg/peer/remove-remote-subnets", func(msg websocket.WSMessage) {
+		logger.Debug("Received remove-remote-subnets message: %v", msg.Data)
+
+		jsonData, err := json.Marshal(msg.Data)
+		if err != nil {
+			logger.Error("Error marshaling data: %v", err)
+			return
+		}
+
+		var removeSubnetsData RemoveRemoteSubnetsData
+		if err := json.Unmarshal(jsonData, &removeSubnetsData); err != nil {
+			logger.Error("Error unmarshaling remove-remote-subnets data: %v", err)
+			return
+		}
+
+		// Find the peer to update
+		var peerIndex = -1
+		for i, site := range wgData.Sites {
+			if site.SiteId == removeSubnetsData.SiteId {
+				peerIndex = i
+				break
+			}
+		}
+
+		if peerIndex == -1 {
+			logger.Error("Peer with site ID %d not found", removeSubnetsData.SiteId)
+			return
+		}
+
+		// Create a map of subnets to remove for quick lookup
+		subnetsToRemove := make(map[string]bool)
+		for _, subnet := range removeSubnetsData.RemoteSubnets {
+			subnetsToRemove[subnet] = true
+		}
+
+		// Filter out the subnets to remove
+		var updatedSubnets []string
+		var removedSubnets []string
+		for _, subnet := range wgData.Sites[peerIndex].RemoteSubnets {
+			if subnetsToRemove[subnet] {
+				removedSubnets = append(removedSubnets, subnet)
+			} else {
+				updatedSubnets = append(updatedSubnets, subnet)
+			}
+		}
+
+		if len(removedSubnets) == 0 {
+			logger.Info("No subnets to remove for site %d (none matched)", removeSubnetsData.SiteId)
+			return
+		}
+
+		// Remove routes for the removed subnets
+		if err := removeRoutesForRemoteSubnets(removedSubnets); err != nil {
+			logger.Error("Failed to remove routes for remote subnets: %v", err)
+			return
+		}
+
+		// Update the peer's remote subnets
+		wgData.Sites[peerIndex].RemoteSubnets = updatedSubnets
+
+		logger.Info("Successfully removed %d remote subnet(s) from peer %d", len(removedSubnets), removeSubnetsData.SiteId)
+	})
+
+	// Handler for updating remote subnets of a peer (remove old, add new in one operation)
+	olm.RegisterHandler("olm/wg/peer/update-remote-subnets", func(msg websocket.WSMessage) {
+		logger.Debug("Received update-remote-subnets message: %v", msg.Data)
+
+		jsonData, err := json.Marshal(msg.Data)
+		if err != nil {
+			logger.Error("Error marshaling data: %v", err)
+			return
+		}
+
+		var updateSubnetsData UpdateRemoteSubnetsData
+		if err := json.Unmarshal(jsonData, &updateSubnetsData); err != nil {
+			logger.Error("Error unmarshaling update-remote-subnets data: %v", err)
+			return
+		}
+
+		// Find the peer to update
+		var peerIndex = -1
+		for i, site := range wgData.Sites {
+			if site.SiteId == updateSubnetsData.SiteId {
+				peerIndex = i
+				break
+			}
+		}
+
+		if peerIndex == -1 {
+			logger.Error("Peer with site ID %d not found", updateSubnetsData.SiteId)
+			return
+		}
+
+		// First, remove routes for old subnets
+		if len(updateSubnetsData.OldRemoteSubnets) > 0 {
+			if err := removeRoutesForRemoteSubnets(updateSubnetsData.OldRemoteSubnets); err != nil {
+				logger.Error("Failed to remove routes for old remote subnets: %v", err)
+				return
+			}
+			logger.Info("Removed %d old remote subnet(s) from peer %d", len(updateSubnetsData.OldRemoteSubnets), updateSubnetsData.SiteId)
+		}
+
+		// Then, add routes for new subnets
+		if len(updateSubnetsData.NewRemoteSubnets) > 0 {
+			if err := addRoutesForRemoteSubnets(updateSubnetsData.NewRemoteSubnets, interfaceName); err != nil {
+				logger.Error("Failed to add routes for new remote subnets: %v", err)
+				// Attempt to rollback by re-adding old routes
+				if rollbackErr := addRoutesForRemoteSubnets(updateSubnetsData.OldRemoteSubnets, interfaceName); rollbackErr != nil {
+					logger.Error("Failed to rollback old routes: %v", rollbackErr)
+				}
+				return
+			}
+			logger.Info("Added %d new remote subnet(s) to peer %d", len(updateSubnetsData.NewRemoteSubnets), updateSubnetsData.SiteId)
+		}
+
+		// Finally, update the peer's remote subnets in wgData
+		wgData.Sites[peerIndex].RemoteSubnets = updateSubnetsData.NewRemoteSubnets
+
+		logger.Info("Successfully updated remote subnets for peer %d (removed %d, added %d)",
+			updateSubnetsData.SiteId, len(updateSubnetsData.OldRemoteSubnets), len(updateSubnetsData.NewRemoteSubnets))
 	})
 
 	olm.RegisterHandler("olm/wg/peer/relay", func(msg websocket.WSMessage) {
