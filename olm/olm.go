@@ -13,6 +13,8 @@ import (
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/util"
 	"github.com/fosrl/olm/api"
+	middleDevice "github.com/fosrl/olm/device"
+	"github.com/fosrl/olm/dns"
 	"github.com/fosrl/olm/network"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/websocket"
@@ -70,8 +72,8 @@ var (
 	holePunchData    HolePunchData
 	uapiListener     net.Listener
 	tdev             tun.Device
-	filteredDev      *FilteredDevice
-	dnsProxy         *DNSProxy
+	middleDev        *middleDevice.MiddleDevice
+	dnsProxy         *dns.DNSProxy
 	apiServer        *api.API
 	olmClient        *websocket.Client
 	tunnelCancel     context.CancelFunc
@@ -427,15 +429,15 @@ func StartTunnel(config TunnelConfig) {
 		}
 
 		// Wrap TUN device with packet filter for DNS proxy
-		filteredDev = NewFilteredDevice(tdev)
+		middleDev = middleDevice.NewMiddleDevice(tdev)
 
 		// Create and start DNS proxy
-		dnsProxy, err = NewDNSProxy(tdev, config.MTU)
+		dnsProxy, err = dns.NewDNSProxy(tdev, config.MTU)
 		if err != nil {
 			logger.Error("Failed to create DNS proxy: %v", err)
 			return
 		}
-		if err := dnsProxy.Start(filteredDev); err != nil {
+		if err := dnsProxy.Start(middleDev); err != nil {
 			logger.Error("Failed to start DNS proxy: %v", err)
 			return
 		}
@@ -458,7 +460,7 @@ func StartTunnel(config TunnelConfig) {
 
 		wgLogger := logger.GetLogger().GetWireGuardLogger("wireguard: ")
 		// Use filtered device instead of raw TUN device
-		dev = device.NewDevice(filteredDev, sharedBind, (*device.Logger)(wgLogger))
+		dev = device.NewDevice(middleDev, sharedBind, (*device.Logger)(wgLogger))
 
 		// uapiListener, err = uapiListen(interfaceName, fileUAPI)
 		// if err != nil {
@@ -1067,13 +1069,13 @@ func Close() {
 
 	// Stop DNS proxy
 	if dnsProxy != nil {
-		dnsProxy.Stop(filteredDev)
+		dnsProxy.Stop(middleDev)
 		dnsProxy = nil
 	}
 
 	// Clear filtered device
-	if filteredDev != nil {
-		filteredDev = nil
+	if middleDev != nil {
+		middleDev = nil
 	}
 
 	// Close TUN device

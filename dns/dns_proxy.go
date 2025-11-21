@@ -1,4 +1,4 @@
-package olm
+package dns
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/logger"
+	"github.com/fosrl/newt/util"
+	"github.com/fosrl/olm/device"
 	"golang.zx2c4.com/wireguard/tun"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -96,9 +98,9 @@ func NewDNSProxy(tunDevice tun.Device, mtu int) (*DNSProxy, error) {
 }
 
 // Start starts the DNS proxy and registers with the filter
-func (p *DNSProxy) Start(filter *FilteredDevice) error {
+func (p *DNSProxy) Start(device *device.MiddleDevice) error {
 	// Install packet filter rule
-	filter.AddRule(p.proxyIP, p.handlePacket)
+	device.AddRule(p.proxyIP, p.handlePacket)
 
 	// Start DNS listener
 	p.wg.Add(2)
@@ -110,9 +112,9 @@ func (p *DNSProxy) Start(filter *FilteredDevice) error {
 }
 
 // Stop stops the DNS proxy
-func (p *DNSProxy) Stop(filter *FilteredDevice) {
-	if filter != nil {
-		filter.RemoveRule(p.proxyIP)
+func (p *DNSProxy) Stop(device *device.MiddleDevice) {
+	if device != nil {
+		device.RemoveRule(p.proxyIP)
 	}
 	p.cancel()
 	p.wg.Wait()
@@ -134,12 +136,12 @@ func (p *DNSProxy) handlePacket(packet []byte) bool {
 	}
 
 	// Quick check for UDP port 53
-	proto, ok := GetProtocol(packet)
+	proto, ok := util.GetProtocol(packet)
 	if !ok || proto != 17 { // 17 = UDP
 		return false // Not UDP, don't handle
 	}
 
-	port, ok := GetDestPort(packet)
+	port, ok := util.GetDestPort(packet)
 	if !ok || port != DNSPort {
 		return false // Not DNS port
 	}

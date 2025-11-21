@@ -1,8 +1,10 @@
-package olm
+package device
 
 import (
 	"net/netip"
 	"testing"
+
+	"github.com/fosrl/newt/util"
 )
 
 func TestExtractDestIP(t *testing.T) {
@@ -74,7 +76,7 @@ func TestGetProtocol(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotProto, gotOk := GetProtocol(tt.packet)
+			gotProto, gotOk := util.GetProtocol(tt.packet)
 			if gotOk != tt.wantOk {
 				t.Errorf("GetProtocol() ok = %v, want %v", gotOk, tt.wantOk)
 				return

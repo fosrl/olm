@@ -1,7 +1,6 @@
-package olm
+package device
 
 import (
-	"encoding/binary"
 	"net/netip"
 	"sync"
 
@@ -17,23 +16,23 @@ type FilterRule struct {
 	Handler PacketHandler
 }
 
-// FilteredDevice wraps a TUN device with packet filtering capabilities
-type FilteredDevice struct {
+// MiddleDevice wraps a TUN device with packet filtering capabilities
+type MiddleDevice struct {
 	tun.Device
 	rules []FilterRule
 	mutex sync.RWMutex
 }
 
-// NewFilteredDevice creates a new filtered TUN device wrapper
-func NewFilteredDevice(device tun.Device) *FilteredDevice {
-	return &FilteredDevice{
+// NewMiddleDevice creates a new filtered TUN device wrapper
+func NewMiddleDevice(device tun.Device) *MiddleDevice {
+	return &MiddleDevice{
 		Device: device,
 		rules:  make([]FilterRule, 0),
 	}
 }
 
 // AddRule adds a packet filtering rule
-func (d *FilteredDevice) AddRule(destIP netip.Addr, handler PacketHandler) {
+func (d *MiddleDevice) AddRule(destIP netip.Addr, handler PacketHandler) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 	d.rules = append(d.rules, FilterRule{
@@ -43,7 +42,7 @@ func (d *FilteredDevice) AddRule(destIP netip.Addr, handler PacketHandler) {
 }
 
 // RemoveRule removes all rules for a given destination IP
-func (d *FilteredDevice) RemoveRule(destIP netip.Addr) {
+func (d *MiddleDevice) RemoveRule(destIP netip.Addr) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 	newRules := make([]FilterRule, 0, len(d.rules))
@@ -86,7 +85,7 @@ func extractDestIP(packet []byte) (netip.Addr, bool) {
 }
 
 // Read intercepts packets going UP from the TUN device (towards WireGuard)
-func (d *FilteredDevice) Read(bufs [][]byte, sizes []int, offset int) (n int, err error) {
+func (d *MiddleDevice) Read(bufs [][]byte, sizes []int, offset int) (n int, err error) {
 	n, err = d.Device.Read(bufs, sizes, offset)
 	if err != nil || n == 0 {
 		return n, err
@@ -142,7 +141,7 @@ func (d *FilteredDevice) Read(bufs [][]byte, sizes []int, offset int) (n int, er
 }
 
 // Write intercepts packets going DOWN to the TUN device (from WireGuard)
-func (d *FilteredDevice) Write(bufs [][]byte, offset int) (int, error) {
+func (d *MiddleDevice) Write(bufs [][]byte, offset int) (int, error) {
 	d.mutex.RLock()
 	rules := d.rules
 	d.mutex.RUnlock()
@@ -188,50 +187,4 @@ func (d *FilteredDevice) Write(bufs [][]byte, offset int) (int, error) {
 	}
 
 	return d.Device.Write(filteredBufs, offset)
-}
-
-// GetProtocol returns protocol number from IPv4 packet (fast path)
-func GetProtocol(packet []byte) (uint8, bool) {
-	if len(packet) < 20 {
-		return 0, false
-	}
-	version := packet[0] >> 4
-	if version == 4 {
-		return packet[9], true
-	} else if version == 6 {
-		if len(packet) < 40 {
-			return 0, false
-		}
-		return packet[6], true
-	}
-	return 0, false
-}
-
-// GetDestPort returns destination port from TCP/UDP packet (fast path)
-func GetDestPort(packet []byte) (uint16, bool) {
-	if len(packet) < 20 {
-		return 0, false
-	}
-
-	version := packet[0] >> 4
-	var headerLen int
-
-	if version == 4 {
-		ihl := packet[0] & 0x0F
-		headerLen = int(ihl) * 4
-		if len(packet) < headerLen+4 {
-			return 0, false
-		}
-	} else if version == 6 {
-		headerLen = 40
-		if len(packet) < headerLen+4 {
-			return 0, false
-		}
-	} else {
-		return 0, false
-	}
-
-	// Destination port is at bytes 2-3 of TCP/UDP header
-	port := binary.BigEndian.Uint16(packet[headerLen+2 : headerLen+4])
-	return port, true
 }
