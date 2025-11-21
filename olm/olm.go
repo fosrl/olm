@@ -15,6 +15,7 @@ import (
 	"github.com/fosrl/olm/api"
 	"github.com/fosrl/olm/network"
 	"github.com/fosrl/olm/peermonitor"
+	"github.com/fosrl/olm/tunfilter"
 	"github.com/fosrl/olm/websocket"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -81,6 +82,12 @@ var (
 	globalCtx        context.Context
 	stopRegister     func()
 	stopPing         chan struct{}
+
+	// Packet interceptor components
+	filteredDev        *tunfilter.FilteredDevice
+	packetInjector     *tunfilter.PacketInjector
+	interceptorManager *tunfilter.InterceptorManager
+	ipFilter           *tunfilter.IPFilter
 )
 
 func Init(ctx context.Context, config GlobalConfig) {
@@ -424,6 +431,16 @@ func StartTunnel(config TunnelConfig) {
 			}
 		}
 
+		// Create packet injector for the TUN device
+		packetInjector = tunfilter.NewPacketInjector(tdev)
+
+		// Create interceptor manager
+		interceptorManager = tunfilter.NewInterceptorManager(packetInjector)
+
+		// Create an interceptor filter and wrap the TUN device
+		interceptorFilter := tunfilter.NewInterceptorFilter(interceptorManager)
+		filteredDev = tunfilter.NewFilteredDevice(tdev, interceptorFilter)
+
 		// fileUAPI, err := func() (*os.File, error) {
 		// 	if config.FileDescriptorUAPI != 0 {
 		// 		fd, err := strconv.ParseUint(fmt.Sprintf("%d", config.FileDescriptorUAPI), 10, 32)
@@ -441,7 +458,8 @@ func StartTunnel(config TunnelConfig) {
 		// }
 
 		wgLogger := logger.GetLogger().GetWireGuardLogger("wireguard: ")
-		dev = device.NewDevice(tdev, sharedBind, (*device.Logger)(wgLogger))
+		// Use filtered device instead of raw TUN device
+		dev = device.NewDevice(filteredDev, sharedBind, (*device.Logger)(wgLogger))
 
 		// uapiListener, err = uapiListen(interfaceName, fileUAPI)
 		// if err != nil {
@@ -1047,6 +1065,26 @@ func Close() {
 		dev.Close() // This will call sharedBind.Close() which releases WireGuard's reference
 		dev = nil
 	}
+
+	// Stop packet injector
+	if packetInjector != nil {
+		packetInjector.Stop()
+		packetInjector = nil
+	}
+
+	// Stop interceptor manager
+	if interceptorManager != nil {
+		interceptorManager.Stop()
+		interceptorManager = nil
+	}
+
+	// Clear packet filter
+	if filteredDev != nil {
+		filteredDev.SetFilter(nil)
+		filteredDev = nil
+	}
+
+	ipFilter = nil
 
 	// Close TUN device
 	if tdev != nil {
