@@ -69,3 +69,21 @@ type RelayPeerData struct {
 	Endpoint  string `json:"endpoint"`
 	PublicKey string `json:"publicKey"`
 }
+
+// AddRemoteSubnetsData represents the data needed to add remote subnets to a peer
+type AddRemoteSubnetsData struct {
+	SiteId        int      `json:"siteId"`
+	RemoteSubnets []string `json:"remoteSubnets"` // subnets to add
+}
+
+// RemoveRemoteSubnetsData represents the data needed to remove remote subnets from a peer
+type RemoveRemoteSubnetsData struct {
+	SiteId        int      `json:"siteId"`
+	RemoteSubnets []string `json:"remoteSubnets"` // subnets to remove
+}
+
+type UpdateRemoteSubnetsData struct {
+	SiteId           int      `json:"siteId"`
+	OldRemoteSubnets []string `json:"oldRemoteSubnets"` // old list of remote subnets
+	NewRemoteSubnets []string `json:"newRemoteSubnets"` // new list of remote subnets
+}
