@@ -428,22 +428,6 @@ func StartTunnel(config TunnelConfig) {
 			}
 		}
 
-		// Wrap TUN device with packet filter for DNS proxy
-		middleDev = middleDevice.NewMiddleDevice(tdev)
-
-		// Create and start DNS proxy
-		dnsProxy, err = dns.NewDNSProxy(tdev, config.MTU)
-		if err != nil {
-			logger.Error("Failed to create DNS proxy: %v", err)
-		}
-		if err := dnsProxy.Start(middleDev); err != nil {
-			logger.Error("Failed to start DNS proxy: %v", err)
-		}
-		ip := net.ParseIP("192.168.1.100")
-		if dnsProxy.AddDNSRecord("example.com", ip); err != nil {
-			logger.Error("Failed to add DNS record: %v", err)
-		}
-
 		// fileUAPI, err := func() (*os.File, error) {
 		// 	if config.FileDescriptorUAPI != 0 {
 		// 		fd, err := strconv.ParseUint(fmt.Sprintf("%d", config.FileDescriptorUAPI), 10, 32)
@@ -459,6 +443,9 @@ func StartTunnel(config TunnelConfig) {
 		// 	os.Exit(1)
 		// 	return
 		// }
+
+		// Wrap TUN device with packet filter for DNS proxy
+		middleDev = middleDevice.NewMiddleDevice(tdev)
 
 		wgLogger := logger.GetLogger().GetWireGuardLogger("wireguard: ")
 		// Use filtered device instead of raw TUN device
@@ -486,10 +473,28 @@ func StartTunnel(config TunnelConfig) {
 			logger.Error("Failed to bring up WireGuard device: %v", err)
 		}
 
+		// Create and start DNS proxy
+		dnsProxy, err = dns.NewDNSProxy(tdev, config.MTU)
+		if err != nil {
+			logger.Error("Failed to create DNS proxy: %v", err)
+		}
+		if err := dnsProxy.Start(middleDev); err != nil {
+			logger.Error("Failed to start DNS proxy: %v", err)
+		}
+		ip := net.ParseIP("192.168.1.100")
+		if dnsProxy.AddDNSRecord("example.com", ip); err != nil {
+			logger.Error("Failed to add DNS record: %v", err)
+		}
+
 		if err = ConfigureInterface(interfaceName, wgData, config.MTU); err != nil {
 			logger.Error("Failed to configure interface: %v", err)
 		}
 
+		if addRoutes([]string{"10.30.30.30/32"}, interfaceName); err != nil {
+			logger.Error("Failed to add route for DNS server: %v", err)
+		}
+
+		// TODO: seperate adding the callback to this so we can init it above with the interface
 		peerMonitor = peermonitor.NewPeerMonitor(
 			func(siteID int, connected bool, rtt time.Duration) {
 				// Find the site config to get endpoint information
@@ -528,11 +533,11 @@ func StartTunnel(config TunnelConfig) {
 				logger.Error("Failed to configure peer: %v", err)
 				return
 			}
-			if err := addRouteForServerIP(site.ServerIP, interfaceName); err != nil {
+			if err := addRouteForServerIP(site.ServerIP, interfaceName); err != nil { // this is something for darwin only thats required
 				logger.Error("Failed to add route for peer: %v", err)
 				return
 			}
-			if err := addRoutesForRemoteSubnets(site.RemoteSubnets, interfaceName); err != nil {
+			if err := addRoutes(site.RemoteSubnets, interfaceName); err != nil {
 				logger.Error("Failed to add routes for remote subnets: %v", err)
 				return
 			}
@@ -635,7 +640,7 @@ func StartTunnel(config TunnelConfig) {
 			}
 
 			// Add new remote subnet routes
-			if err := addRoutesForRemoteSubnets(siteConfig.RemoteSubnets, interfaceName); err != nil {
+			if err := addRoutes(siteConfig.RemoteSubnets, interfaceName); err != nil {
 				logger.Error("Failed to add new remote subnet routes: %v", err)
 				return
 			}
@@ -688,7 +693,7 @@ func StartTunnel(config TunnelConfig) {
 			logger.Error("Failed to add route for new peer: %v", err)
 			return
 		}
-		if err := addRoutesForRemoteSubnets(siteConfig.RemoteSubnets, interfaceName); err != nil {
+		if err := addRoutes(siteConfig.RemoteSubnets, interfaceName); err != nil {
 			logger.Error("Failed to add routes for remote subnets: %v", err)
 			return
 		}
@@ -814,7 +819,7 @@ func StartTunnel(config TunnelConfig) {
 		}
 
 		// Add routes for the new subnets
-		if err := addRoutesForRemoteSubnets(newSubnets, interfaceName); err != nil {
+		if err := addRoutes(newSubnets, interfaceName); err != nil {
 			logger.Error("Failed to add routes for new remote subnets: %v", err)
 			return
 		}
@@ -927,10 +932,10 @@ func StartTunnel(config TunnelConfig) {
 
 		// Then, add routes for new subnets
 		if len(updateSubnetsData.NewRemoteSubnets) > 0 {
-			if err := addRoutesForRemoteSubnets(updateSubnetsData.NewRemoteSubnets, interfaceName); err != nil {
+			if err := addRoutes(updateSubnetsData.NewRemoteSubnets, interfaceName); err != nil {
 				logger.Error("Failed to add routes for new remote subnets: %v", err)
 				// Attempt to rollback by re-adding old routes
-				if rollbackErr := addRoutesForRemoteSubnets(updateSubnetsData.OldRemoteSubnets, interfaceName); rollbackErr != nil {
+				if rollbackErr := addRoutes(updateSubnetsData.OldRemoteSubnets, interfaceName); rollbackErr != nil {
 					logger.Error("Failed to rollback old routes: %v", rollbackErr)
 				}
 				return
