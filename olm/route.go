@@ -10,6 +10,7 @@ import (
 
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/olm/network"
+	"github.com/vishvananda/netlink"
 )
 
 func DarwinAddRoute(destination string, gateway string, interfaceName string) error {
@@ -60,23 +61,40 @@ func LinuxAddRoute(destination string, gateway string, interfaceName string) err
 		return nil
 	}
 
-	var cmd *exec.Cmd
+	// Parse destination CIDR
+	_, ipNet, err := net.ParseCIDR(destination)
+	if err != nil {
+		return fmt.Errorf("invalid destination address: %v", err)
+	}
+
+	// Create route
+	route := &netlink.Route{
+		Dst: ipNet,
+	}
 
 	if gateway != "" {
 		// Route with specific gateway
-		cmd = exec.Command("ip", "route", "add", destination, "via", gateway)
+		gw := net.ParseIP(gateway)
+		if gw == nil {
+			return fmt.Errorf("invalid gateway address: %s", gateway)
+		}
+		route.Gw = gw
+		logger.Info("Adding route to %s via gateway %s", destination, gateway)
 	} else if interfaceName != "" {
 		// Route via interface
-		cmd = exec.Command("ip", "route", "add", destination, "dev", interfaceName)
+		link, err := netlink.LinkByName(interfaceName)
+		if err != nil {
+			return fmt.Errorf("failed to get interface %s: %v", interfaceName, err)
+		}
+		route.LinkIndex = link.Attrs().Index
+		logger.Info("Adding route to %s via interface %s", destination, interfaceName)
 	} else {
 		return fmt.Errorf("either gateway or interface must be specified")
 	}
 
-	logger.Info("Running command: %v", cmd)
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("ip route command failed: %v, output: %s", err, out)
+	// Add the route
+	if err := netlink.RouteAdd(route); err != nil {
+		return fmt.Errorf("failed to add route: %v", err)
 	}
 
 	return nil
@@ -87,12 +105,22 @@ func LinuxRemoveRoute(destination string) error {
 		return nil
 	}
 
-	cmd := exec.Command("ip", "route", "del", destination)
-	logger.Info("Running command: %v", cmd)
-
-	out, err := cmd.CombinedOutput()
+	// Parse destination CIDR
+	_, ipNet, err := net.ParseCIDR(destination)
 	if err != nil {
-		return fmt.Errorf("ip route delete command failed: %v, output: %s", err, out)
+		return fmt.Errorf("invalid destination address: %v", err)
+	}
+
+	// Create route to delete
+	route := &netlink.Route{
+		Dst: ipNet,
+	}
+
+	logger.Info("Removing route to %s", destination)
+
+	// Delete the route
+	if err := netlink.RouteDel(route); err != nil {
+		return fmt.Errorf("failed to delete route: %v", err)
 	}
 
 	return nil
@@ -268,8 +296,8 @@ func removeRouteForNetworkConfig(destination string) error {
 	return nil
 }
 
-// addRoutesForRemoteSubnets adds routes for each subnet in RemoteSubnets
-func addRoutesForRemoteSubnets(remoteSubnets []string, interfaceName string) error {
+// addRoutes adds routes for each subnet in RemoteSubnets
+func addRoutes(remoteSubnets []string, interfaceName string) error {
 	if len(remoteSubnets) == 0 {
 		return nil
 	}
