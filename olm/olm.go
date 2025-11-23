@@ -1095,7 +1095,7 @@ func Close() {
 	}
 
 	if peerMonitor != nil {
-		peerMonitor.Stop()
+		peerMonitor.Close() // Close() also calls Stop() internally
 		peerMonitor = nil
 	}
 
@@ -1104,26 +1104,32 @@ func Close() {
 		uapiListener = nil
 	}
 
-	if dev != nil {
-		dev.Close() // This will call sharedBind.Close() which releases WireGuard's reference
-		dev = nil
+	// Close TUN device first to unblock any reads
+	logger.Debug("Closing TUN device")
+	if tdev != nil {
+		tdev.Close()
+		tdev = nil
+	}
+
+	// Close filtered device (this will close the closed channel and stop pump goroutine)
+	logger.Debug("Closing MiddleDevice")
+	if middleDev != nil {
+		middleDev.Close()
+		middleDev = nil
 	}
 
 	// Stop DNS proxy
+	logger.Debug("Stopping DNS proxy")
 	if dnsProxy != nil {
 		dnsProxy.Stop()
 		dnsProxy = nil
 	}
 
-	// Clear filtered device
-	if middleDev != nil {
-		middleDev = nil
-	}
-
-	// Close TUN device
-	if tdev != nil {
-		tdev.Close()
-		tdev = nil
+	// Now close WireGuard device
+	logger.Debug("Closing WireGuard device")
+	if dev != nil {
+		dev.Close() // This will call sharedBind.Close() which releases WireGuard's reference
+		dev = nil
 	}
 
 	// Release the hole punch reference to the shared bind
