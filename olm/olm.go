@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/fosrl/newt/bind"
@@ -509,6 +510,11 @@ func StartTunnel(config TunnelConfig) {
 		}
 
 		// TODO: seperate adding the callback to this so we can init it above with the interface
+		interfaceIP := wgData.TunnelIP
+		if strings.Contains(interfaceIP, "/") {
+			interfaceIP = strings.Split(interfaceIP, "/")[0]
+		}
+
 		peerMonitor = peermonitor.NewPeerMonitor(
 			func(siteID int, connected bool, rtt time.Duration) {
 				// Find the site config to get endpoint information
@@ -534,6 +540,8 @@ func StartTunnel(config TunnelConfig) {
 			olm,
 			dev,
 			config.Holepunch,
+			middleDev,
+			interfaceIP,
 		)
 
 		for i := range wgData.Sites {
