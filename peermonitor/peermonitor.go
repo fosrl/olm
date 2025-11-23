@@ -13,7 +13,6 @@ import (
 	"github.com/fosrl/newt/util"
 	middleDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/websocket"
-	"github.com/fosrl/olm/wgtester"
 	"golang.zx2c4.com/wireguard/device"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -40,7 +39,7 @@ type WireGuardConfig struct {
 
 // PeerMonitor handles monitoring the connection status to multiple WireGuard peers
 type PeerMonitor struct {
-	monitors          map[int]*wgtester.Client
+	monitors          map[int]*Client
 	configs           map[int]*WireGuardConfig
 	callback          PeerMonitorCallback
 	mutex             sync.Mutex
@@ -69,7 +68,7 @@ type PeerMonitor struct {
 func NewPeerMonitor(callback PeerMonitorCallback, privateKey string, wsClient *websocket.Client, device *device.Device, handleRelaySwitch bool, middleDev *middleDevice.MiddleDevice, localIP string) *PeerMonitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	pm := &PeerMonitor{
-		monitors:          make(map[int]*wgtester.Client),
+		monitors:          make(map[int]*Client),
 		configs:           make(map[int]*WireGuardConfig),
 		callback:          callback,
 		interval:          1 * time.Second, // Default check interval
@@ -142,7 +141,7 @@ func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, wgConfig *WireGuardC
 	}
 
 	// Use our custom dialer that uses netstack
-	client, err := wgtester.NewClient(endpoint, pm.dial)
+	client, err := NewClient(endpoint, pm.dial)
 	if err != nil {
 		return err
 	}
@@ -155,7 +154,7 @@ func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, wgConfig *WireGuardC
 	pm.configs[siteID] = wgConfig
 
 	if pm.running {
-		if err := client.StartMonitor(func(status wgtester.ConnectionStatus) {
+		if err := client.StartMonitor(func(status ConnectionStatus) {
 			pm.handleConnectionStatusChange(siteID, status)
 		}); err != nil {
 			return err
@@ -201,7 +200,7 @@ func (pm *PeerMonitor) Start() {
 	// Start monitoring all peers
 	for siteID, client := range pm.monitors {
 		siteIDCopy := siteID // Create a copy for the closure
-		err := client.StartMonitor(func(status wgtester.ConnectionStatus) {
+		err := client.StartMonitor(func(status ConnectionStatus) {
 			pm.handleConnectionStatusChange(siteIDCopy, status)
 		})
 		if err != nil {
@@ -213,7 +212,7 @@ func (pm *PeerMonitor) Start() {
 }
 
 // handleConnectionStatusChange is called when a peer's connection status changes
-func (pm *PeerMonitor) handleConnectionStatusChange(siteID int, status wgtester.ConnectionStatus) {
+func (pm *PeerMonitor) handleConnectionStatusChange(siteID int, status ConnectionStatus) {
 	// Call the user-provided callback first
 	if pm.callback != nil {
 		pm.callback(siteID, status.Connected, status.RTT)
@@ -336,7 +335,7 @@ func (pm *PeerMonitor) TestAllPeers() map[int]struct {
 	RTT       time.Duration
 } {
 	pm.mutex.Lock()
-	peers := make(map[int]*wgtester.Client, len(pm.monitors))
+	peers := make(map[int]*Client, len(pm.monitors))
 	for siteID, client := range pm.monitors {
 		peers[siteID] = client
 	}

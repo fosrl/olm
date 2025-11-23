@@ -1,4 +1,4 @@
-package wgtester
+package peermonitor
 
 import (
 	"context"
