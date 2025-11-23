@@ -552,6 +552,19 @@ func StartTunnel(config TunnelConfig) {
 				return
 			}
 
+			for _, alias := range site.Aliases {
+				if dnsProxy != nil { // some times this is not initialized
+					// try to parse the alias address into net.IP
+					address := net.ParseIP(alias.AliasAddress)
+					if address == nil {
+						logger.Warn("Invalid alias address for %s: %s", alias.Alias, alias.AliasAddress)
+						continue
+					}
+
+					dnsProxy.AddDNSRecord(alias.Alias, address)
+				}
+			}
+
 			logger.Info("Configured peer %s", site.PublicKey)
 		}
 
@@ -573,7 +586,7 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		var updateData UpdatePeerData
+		var updateData SiteConfig
 		if err := json.Unmarshal(jsonData, &updateData); err != nil {
 			logger.Error("Error unmarshaling update data: %v", err)
 			return
