@@ -47,6 +47,8 @@ type TunnelConfig struct {
 	// Network settings
 	MTU           int
 	DNS           string
+	DNSProxyIP    string
+	UpstreamDNS   []string
 	InterfaceName string
 
 	// Advanced
@@ -124,6 +126,8 @@ func Init(ctx context.Context, config GlobalConfig) {
 				UserToken:     req.UserToken,
 				MTU:           req.MTU,
 				DNS:           req.DNS,
+				DNSProxyIP:    req.DNSProxyIP,
+				UpstreamDNS:   req.UpstreamDNS,
 				InterfaceName: req.InterfaceName,
 				Holepunch:     req.Holepunch,
 				TlsClientCert: req.TlsClientCert,
@@ -156,6 +160,11 @@ func Init(ctx context.Context, config GlobalConfig) {
 			}
 			if req.DNS == "" {
 				tunnelConfig.DNS = "9.9.9.9"
+			}
+			// DNSProxyIP has no default - it must be provided if DNS proxy is desired
+			// UpstreamDNS defaults to 8.8.8.8 if not provided
+			if len(req.UpstreamDNS) == 0 {
+				tunnelConfig.UpstreamDNS = []string{"8.8.8.8"}
 			}
 			if req.InterfaceName == "" {
 				tunnelConfig.InterfaceName = "olm"
@@ -473,25 +482,26 @@ func StartTunnel(config TunnelConfig) {
 			logger.Error("Failed to bring up WireGuard device: %v", err)
 		}
 
-		// Create and start DNS proxy
-		dnsProxy, err = dns.NewDNSProxy(tdev, config.MTU)
-		if err != nil {
-			logger.Error("Failed to create DNS proxy: %v", err)
-		}
-		if err := dnsProxy.Start(middleDev); err != nil {
-			logger.Error("Failed to start DNS proxy: %v", err)
-		}
-		ip := net.ParseIP("192.168.1.100")
-		if dnsProxy.AddDNSRecord("example.com", ip); err != nil {
-			logger.Error("Failed to add DNS record: %v", err)
+		if config.DNSProxyIP != "" {
+			// Create and start DNS proxy
+			dnsProxy, err = dns.NewDNSProxy(tdev, middleDev, config.MTU, config.DNSProxyIP, config.UpstreamDNS)
+			if err != nil {
+				logger.Error("Failed to create DNS proxy: %v", err)
+			}
+
+			if err := dnsProxy.Start(); err != nil {
+				logger.Error("Failed to start DNS proxy: %v", err)
+			}
 		}
 
 		if err = ConfigureInterface(interfaceName, wgData, config.MTU); err != nil {
 			logger.Error("Failed to configure interface: %v", err)
 		}
 
-		if addRoutes([]string{"10.30.30.30/32"}, interfaceName); err != nil {
-			logger.Error("Failed to add route for DNS server: %v", err)
+		if config.DNSProxyIP != "" {
+			if addRoutes([]string{config.DNSProxyIP + "/32"}, interfaceName); err != nil {
+				logger.Error("Failed to add route for DNS server: %v", err)
+			}
 		}
 
 		// TODO: seperate adding the callback to this so we can init it above with the interface
@@ -661,20 +671,10 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		var addData AddPeerData
-		if err := json.Unmarshal(jsonData, &addData); err != nil {
+		var siteConfig SiteConfig
+		if err := json.Unmarshal(jsonData, &siteConfig); err != nil {
 			logger.Error("Error unmarshaling add data: %v", err)
 			return
-		}
-
-		// Convert to SiteConfig
-		siteConfig := SiteConfig{
-			SiteId:        addData.SiteId,
-			Endpoint:      addData.Endpoint,
-			PublicKey:     addData.PublicKey,
-			ServerIP:      addData.ServerIP,
-			ServerPort:    addData.ServerPort,
-			RemoteSubnets: addData.RemoteSubnets,
 		}
 
 		// Add the peer to WireGuard
@@ -699,7 +699,7 @@ func StartTunnel(config TunnelConfig) {
 		}
 
 		// Add successful
-		logger.Info("Successfully added peer for site %d", addData.SiteId)
+		logger.Info("Successfully added peer for site %d", siteConfig.SiteId)
 
 		// Update WgData with the new peer
 		wgData.Sites = append(wgData.Sites, siteConfig)
@@ -1076,7 +1076,7 @@ func Close() {
 
 	// Stop DNS proxy
 	if dnsProxy != nil {
-		dnsProxy.Stop(middleDev)
+		dnsProxy.Stop()
 		dnsProxy = nil
 	}
 

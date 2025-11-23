@@ -1,17 +1,9 @@
 package olm
 
 type WgData struct {
-	Sites    []SiteConfig `json:"sites"`
-	TunnelIP string       `json:"tunnelIP"`
-}
-
-type SiteConfig struct {
-	SiteId        int      `json:"siteId"`
-	Endpoint      string   `json:"endpoint"`
-	PublicKey     string   `json:"publicKey"`
-	ServerIP      string   `json:"serverIP"`
-	ServerPort    uint16   `json:"serverPort"`
-	RemoteSubnets []string `json:"remoteSubnets,omitempty"` // optional, array of subnets that this site can access
+	Sites         []SiteConfig `json:"sites"`
+	TunnelIP      string       `json:"tunnelIP"`
+	UtilitySubnet string       `json:"utilitySubnet"` // this is for things like the DNS server, and alias addresses
 }
 
 type HolePunchMessage struct {
@@ -40,23 +32,19 @@ type PeerAction struct {
 }
 
 // UpdatePeerData represents the data needed to update a peer
-type UpdatePeerData struct {
+type SiteConfig struct {
 	SiteId        int      `json:"siteId"`
 	Endpoint      string   `json:"endpoint,omitempty"`
 	PublicKey     string   `json:"publicKey,omitempty"`
 	ServerIP      string   `json:"serverIP,omitempty"`
 	ServerPort    uint16   `json:"serverPort,omitempty"`
 	RemoteSubnets []string `json:"remoteSubnets,omitempty"` // optional, array of subnets that this site can access
+	Aliases       []Alias  `json:"aliases,omitempty"`       // optional, array of alias configurations
 }
 
-// AddPeerData represents the data needed to add a peer
-type AddPeerData struct {
-	SiteId        int      `json:"siteId"`
-	Endpoint      string   `json:"endpoint"`
-	PublicKey     string   `json:"publicKey"`
-	ServerIP      string   `json:"serverIP"`
-	ServerPort    uint16   `json:"serverPort"`
-	RemoteSubnets []string `json:"remoteSubnets,omitempty"` // optional, array of subnets that this site can access
+type Alias struct {
+	Alias        string `json:"alias"`        // the alias name
+	AliasAddress string `json:"aliasAddress"` // the alias IP address
 }
 
 // RemovePeerData represents the data needed to remove a peer
