@@ -19,15 +19,73 @@ type FilterRule struct {
 // MiddleDevice wraps a TUN device with packet filtering capabilities
 type MiddleDevice struct {
 	tun.Device
-	rules []FilterRule
-	mutex sync.RWMutex
+	rules    []FilterRule
+	mutex    sync.RWMutex
+	readCh   chan readResult
+	injectCh chan []byte
+	closed   chan struct{}
+}
+
+type readResult struct {
+	bufs   [][]byte
+	sizes  []int
+	offset int
+	n      int
+	err    error
 }
 
 // NewMiddleDevice creates a new filtered TUN device wrapper
 func NewMiddleDevice(device tun.Device) *MiddleDevice {
-	return &MiddleDevice{
-		Device: device,
-		rules:  make([]FilterRule, 0),
+	d := &MiddleDevice{
+		Device:   device,
+		rules:    make([]FilterRule, 0),
+		readCh:   make(chan readResult),
+		injectCh: make(chan []byte, 100),
+		closed:   make(chan struct{}),
+	}
+	go d.pump()
+	return d
+}
+
+func (d *MiddleDevice) pump() {
+	const defaultOffset = 16
+	batchSize := d.Device.BatchSize()
+
+	for {
+		select {
+		case <-d.closed:
+			return
+		default:
+		}
+
+		// Allocate buffers for reading
+		// We allocate new buffers for each read to avoid race conditions
+		// since we pass them to the channel
+		bufs := make([][]byte, batchSize)
+		sizes := make([]int, batchSize)
+		for i := range bufs {
+			bufs[i] = make([]byte, 2048) // Standard MTU + headroom
+		}
+
+		n, err := d.Device.Read(bufs, sizes, defaultOffset)
+
+		select {
+		case d.readCh <- readResult{bufs: bufs, sizes: sizes, offset: defaultOffset, n: n, err: err}:
+		case <-d.closed:
+			return
+		}
+
+		if err != nil {
+			return
+		}
+	}
+}
+
+// InjectOutbound injects a packet to be read by WireGuard (as if it came from TUN)
+func (d *MiddleDevice) InjectOutbound(packet []byte) {
+	select {
+	case d.injectCh <- packet:
+	case <-d.closed:
 	}
 }
 
@@ -52,6 +110,16 @@ func (d *MiddleDevice) RemoveRule(destIP netip.Addr) {
 		}
 	}
 	d.rules = newRules
+}
+
+// Close stops the device
+func (d *MiddleDevice) Close() error {
+	select {
+	case <-d.closed:
+	default:
+		close(d.closed)
+	}
+	return d.Device.Close()
 }
 
 // extractDestIP extracts destination IP from packet (fast path)
@@ -86,9 +154,49 @@ func extractDestIP(packet []byte) (netip.Addr, bool) {
 
 // Read intercepts packets going UP from the TUN device (towards WireGuard)
 func (d *MiddleDevice) Read(bufs [][]byte, sizes []int, offset int) (n int, err error) {
-	n, err = d.Device.Read(bufs, sizes, offset)
-	if err != nil || n == 0 {
-		return n, err
+	select {
+	case res := <-d.readCh:
+		if res.err != nil {
+			return 0, res.err
+		}
+
+		// Copy packets from result to provided buffers
+		count := 0
+		for i := 0; i < res.n && i < len(bufs); i++ {
+			// Handle offset mismatch if necessary
+			// We assume the pump used defaultOffset (16)
+			// If caller asks for different offset, we need to shift
+			src := res.bufs[i]
+			srcOffset := res.offset
+			srcSize := res.sizes[i]
+
+			// Calculate where the packet data starts and ends in src
+			pktData := src[srcOffset : srcOffset+srcSize]
+
+			// Ensure dest buffer is large enough
+			if len(bufs[i]) < offset+len(pktData) {
+				continue // Skip if buffer too small
+			}
+
+			copy(bufs[i][offset:], pktData)
+			sizes[i] = len(pktData)
+			count++
+		}
+		n = count
+
+	case pkt := <-d.injectCh:
+		if len(bufs) == 0 {
+			return 0, nil
+		}
+		if len(bufs[0]) < offset+len(pkt) {
+			return 0, nil // Buffer too small
+		}
+		copy(bufs[0][offset:], pkt)
+		sizes[0] = len(pkt)
+		n = 1
+
+	case <-d.closed:
+		return 0, nil // Device closed
 	}
 
 	d.mutex.RLock()
@@ -96,7 +204,7 @@ func (d *MiddleDevice) Read(bufs [][]byte, sizes []int, offset int) (n int, err 
 	d.mutex.RUnlock()
 
 	if len(rules) == 0 {
-		return n, err
+		return n, nil
 	}
 
 	// Process packets and filter out handled ones

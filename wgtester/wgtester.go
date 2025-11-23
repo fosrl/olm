@@ -26,7 +26,7 @@ const (
 
 // Client handles checking connectivity to a server
 type Client struct {
-	conn           *net.UDPConn
+	conn           net.Conn
 	serverAddr     string
 	monitorRunning bool
 	monitorLock    sync.Mutex
@@ -35,7 +35,11 @@ type Client struct {
 	packetInterval time.Duration
 	timeout        time.Duration
 	maxAttempts    int
+	dialer         Dialer
 }
+
+// Dialer is a function that creates a connection
+type Dialer func(network, addr string) (net.Conn, error)
 
 // ConnectionStatus represents the current connection state
 type ConnectionStatus struct {
@@ -44,13 +48,14 @@ type ConnectionStatus struct {
 }
 
 // NewClient creates a new connection test client
-func NewClient(serverAddr string) (*Client, error) {
+func NewClient(serverAddr string, dialer Dialer) (*Client, error) {
 	return &Client{
 		serverAddr:     serverAddr,
 		shutdownCh:     make(chan struct{}),
 		packetInterval: 2 * time.Second,
 		timeout:        500 * time.Millisecond, // Timeout for individual packets
 		maxAttempts:    3,                      // Default max attempts
+		dialer:         dialer,
 	}, nil
 }
 
@@ -91,12 +96,14 @@ func (c *Client) ensureConnection() error {
 		return nil
 	}
 
-	serverAddr, err := net.ResolveUDPAddr("udp", c.serverAddr)
-	if err != nil {
-		return err
+	var err error
+	if c.dialer != nil {
+		c.conn, err = c.dialer("udp", c.serverAddr)
+	} else {
+		// Fallback to standard net.Dial
+		c.conn, err = net.Dial("udp", c.serverAddr)
 	}
 
-	c.conn, err = net.DialUDP("udp", nil, serverAddr)
 	if err != nil {
 		return err
 	}
