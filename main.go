@@ -226,7 +226,6 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 			UserToken:            config.UserToken,
 			MTU:                  config.MTU,
 			DNS:                  config.DNS,
-			DNSProxyIP:           config.DNSProxyIP,
 			UpstreamDNS:          config.UpstreamDNS,
 			InterfaceName:        config.InterfaceName,
 			Holepunch:            config.Holepunch,

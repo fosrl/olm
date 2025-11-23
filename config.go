@@ -24,7 +24,6 @@ type OlmConfig struct {
 	// Network settings
 	MTU           int      `json:"mtu"`
 	DNS           string   `json:"dns"`
-	DNSProxyIP    string   `json:"dnsProxyIP"`
 	UpstreamDNS   []string `json:"upstreamDNS"`
 	InterfaceName string   `json:"interface"`
 
@@ -79,7 +78,6 @@ func DefaultConfig() *OlmConfig {
 	config := &OlmConfig{
 		MTU:           1280,
 		DNS:           "8.8.8.8",
-		DNSProxyIP:    "",
 		UpstreamDNS:   []string{"8.8.8.8"},
 		LogLevel:      "INFO",
 		InterfaceName: "olm",
@@ -95,7 +93,6 @@ func DefaultConfig() *OlmConfig {
 	// Track default sources
 	config.sources["mtu"] = string(SourceDefault)
 	config.sources["dns"] = string(SourceDefault)
-	config.sources["dnsProxyIP"] = string(SourceDefault)
 	config.sources["upstreamDNS"] = string(SourceDefault)
 	config.sources["logLevel"] = string(SourceDefault)
 	config.sources["interface"] = string(SourceDefault)
@@ -220,10 +217,6 @@ func loadConfigFromEnv(config *OlmConfig) {
 		config.DNS = val
 		config.sources["dns"] = string(SourceEnv)
 	}
-	if val := os.Getenv("DNS_PROXY_IP"); val != "" {
-		config.DNSProxyIP = val
-		config.sources["dnsProxyIP"] = string(SourceEnv)
-	}
 	if val := os.Getenv("UPSTREAM_DNS"); val != "" {
 		config.UpstreamDNS = []string{val}
 		config.sources["upstreamDNS"] = string(SourceEnv)
@@ -279,7 +272,6 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 		"userToken":    config.UserToken,
 		"mtu":          config.MTU,
 		"dns":          config.DNS,
-		"dnsProxyIP":   config.DNSProxyIP,
 		"upstreamDNS":  fmt.Sprintf("%v", config.UpstreamDNS),
 		"logLevel":     config.LogLevel,
 		"interface":    config.InterfaceName,
@@ -300,7 +292,6 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	serviceFlags.StringVar(&config.UserToken, "user-token", config.UserToken, "User token (optional)")
 	serviceFlags.IntVar(&config.MTU, "mtu", config.MTU, "MTU to use")
 	serviceFlags.StringVar(&config.DNS, "dns", config.DNS, "DNS server to use")
-	serviceFlags.StringVar(&config.DNSProxyIP, "dns-proxy-ip", config.DNSProxyIP, "IP address for the DNS proxy (required for DNS proxy)")
 	var upstreamDNSFlag string
 	serviceFlags.StringVar(&upstreamDNSFlag, "upstream-dns", "", "Upstream DNS server(s) (comma-separated, default: 8.8.8.8)")
 	serviceFlags.StringVar(&config.LogLevel, "log-level", config.LogLevel, "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
@@ -352,9 +343,6 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	}
 	if config.DNS != origValues["dns"].(string) {
 		config.sources["dns"] = string(SourceCLI)
-	}
-	if config.DNSProxyIP != origValues["dnsProxyIP"].(string) {
-		config.sources["dnsProxyIP"] = string(SourceCLI)
 	}
 	if fmt.Sprintf("%v", config.UpstreamDNS) != origValues["upstreamDNS"].(string) {
 		config.sources["upstreamDNS"] = string(SourceCLI)
@@ -453,10 +441,6 @@ func mergeConfigs(dest, src *OlmConfig) {
 	if src.DNS != "" && src.DNS != "8.8.8.8" {
 		dest.DNS = src.DNS
 		dest.sources["dns"] = string(SourceFile)
-	}
-	if src.DNSProxyIP != "" {
-		dest.DNSProxyIP = src.DNSProxyIP
-		dest.sources["dnsProxyIP"] = string(SourceFile)
 	}
 	if len(src.UpstreamDNS) > 0 && fmt.Sprintf("%v", src.UpstreamDNS) != "[8.8.8.8]" {
 		dest.UpstreamDNS = src.UpstreamDNS
@@ -570,7 +554,6 @@ func (c *OlmConfig) ShowConfig() {
 	fmt.Println("\nNetwork:")
 	fmt.Printf("  mtu          = %d [%s]\n", c.MTU, getSource("mtu"))
 	fmt.Printf("  dns          = %s [%s]\n", c.DNS, getSource("dns"))
-	fmt.Printf("  dns-proxy-ip = %s [%s]\n", formatValue("dnsProxyIP", c.DNSProxyIP), getSource("dnsProxyIP"))
 	fmt.Printf("  upstream-dns = %v [%s]\n", c.UpstreamDNS, getSource("upstreamDNS"))
 	fmt.Printf("  interface    = %s [%s]\n", c.InterfaceName, getSource("interface"))
 
