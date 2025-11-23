@@ -45,10 +45,10 @@ type DNSProxy struct {
 }
 
 // NewDNSProxy creates a new DNS proxy
-func NewDNSProxy(tunDevice tun.Device, middleDevice *device.MiddleDevice, mtu int, dnsProxyIP string, upstreamDns []string) (*DNSProxy, error) {
-	proxyIP, err := netip.ParseAddr(dnsProxyIP)
+func NewDNSProxy(tunDevice tun.Device, middleDevice *device.MiddleDevice, mtu int, utilitySubnet string, upstreamDns []string) (*DNSProxy, error) {
+	proxyIP, err := PickIPFromSubnet(utilitySubnet)
 	if err != nil {
-		return nil, fmt.Errorf("invalid proxy IP: %w", err)
+		return nil, fmt.Errorf("failed to pick DNS proxy IP from subnet: %v", err)
 	}
 
 	if len(upstreamDns) == 0 {
@@ -429,4 +429,20 @@ func (p *DNSProxy) GetDNSRecords(domain string, recordType RecordType) []net.IP 
 // ClearDNSRecords removes all DNS records from the local store
 func (p *DNSProxy) ClearDNSRecords() {
 	p.recordStore.Clear()
+}
+
+func PickIPFromSubnet(subnet string) (netip.Addr, error) {
+	// given a subnet in CIDR notation, pick the first usable IP
+	prefix, err := netip.ParsePrefix(subnet)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("invalid subnet: %w", err)
+	}
+
+	// Pick the first usable IP address from the subnet
+	ip := prefix.Addr().Next()
+	if !ip.IsValid() {
+		return netip.Addr{}, fmt.Errorf("no valid IP address found in subnet: %s", subnet)
+	}
+
+	return ip, nil
 }

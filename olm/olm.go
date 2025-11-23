@@ -52,7 +52,6 @@ type TunnelConfig struct {
 	// Network settings
 	MTU           int
 	DNS           string
-	DNSProxyIP    string
 	UpstreamDNS   []string
 	InterfaceName string
 
@@ -131,7 +130,6 @@ func Init(ctx context.Context, config GlobalConfig) {
 				UserToken:     req.UserToken,
 				MTU:           req.MTU,
 				DNS:           req.DNS,
-				DNSProxyIP:    req.DNSProxyIP,
 				UpstreamDNS:   req.UpstreamDNS,
 				InterfaceName: req.InterfaceName,
 				Holepunch:     req.Holepunch,
@@ -487,26 +485,18 @@ func StartTunnel(config TunnelConfig) {
 			logger.Error("Failed to bring up WireGuard device: %v", err)
 		}
 
-		if config.DNSProxyIP != "" {
-			// Create and start DNS proxy
-			dnsProxy, err = dns.NewDNSProxy(tdev, middleDev, config.MTU, config.DNSProxyIP, config.UpstreamDNS)
-			if err != nil {
-				logger.Error("Failed to create DNS proxy: %v", err)
-			}
-
-			if err := dnsProxy.Start(); err != nil {
-				logger.Error("Failed to start DNS proxy: %v", err)
-			}
+		// Create and start DNS proxy
+		dnsProxy, err = dns.NewDNSProxy(tdev, middleDev, config.MTU, wgData.UtilitySubnet, config.UpstreamDNS)
+		if err != nil {
+			logger.Error("Failed to create DNS proxy: %v", err)
 		}
 
 		if err = ConfigureInterface(interfaceName, wgData, config.MTU); err != nil {
 			logger.Error("Failed to configure interface: %v", err)
 		}
 
-		if config.DNSProxyIP != "" {
-			if addRoutes([]string{config.DNSProxyIP + "/32"}, interfaceName); err != nil {
-				logger.Error("Failed to add route for DNS server: %v", err)
-			}
+		if addRoutes([]string{wgData.UtilitySubnet}, interfaceName); err != nil { // also route the utility subnet
+			logger.Error("Failed to add route for utility subnet: %v", err)
 		}
 
 		// TODO: seperate adding the callback to this so we can init it above with the interface
@@ -565,22 +555,24 @@ func StartTunnel(config TunnelConfig) {
 			}
 
 			for _, alias := range site.Aliases {
-				if dnsProxy != nil { // some times this is not initialized
-					// try to parse the alias address into net.IP
-					address := net.ParseIP(alias.AliasAddress)
-					if address == nil {
-						logger.Warn("Invalid alias address for %s: %s", alias.Alias, alias.AliasAddress)
-						continue
-					}
-
-					dnsProxy.AddDNSRecord(alias.Alias, address)
+				// try to parse the alias address into net.IP
+				address := net.ParseIP(alias.AliasAddress)
+				if address == nil {
+					logger.Warn("Invalid alias address for %s: %s", alias.Alias, alias.AliasAddress)
+					continue
 				}
+
+				dnsProxy.AddDNSRecord(alias.Alias, address)
 			}
 
 			logger.Info("Configured peer %s", site.PublicKey)
 		}
 
 		peerMonitor.Start()
+
+		if err := dnsProxy.Start(); err != nil {
+			logger.Error("Failed to start DNS proxy: %v", err)
+		}
 
 		apiServer.SetRegistered(true)
 
