@@ -25,23 +25,19 @@ import (
 )
 
 const (
-	// DNS proxy listening address
-	DNSProxyIP = "10.30.30.30"
-	DNSPort    = 53
-
-	// Upstream DNS servers
-	UpstreamDNS1 = "8.8.8.8:53"
-	UpstreamDNS2 = "8.8.4.4:53"
+	DNSPort = 53
 )
 
 // DNSProxy implements a DNS proxy using gvisor netstack
 type DNSProxy struct {
-	stack       *stack.Stack
-	ep          *channel.Endpoint
-	proxyIP     netip.Addr
-	mtu         int
-	tunDevice   tun.Device      // Direct reference to underlying TUN device for responses
-	recordStore *DNSRecordStore // Local DNS records
+	stack        *stack.Stack
+	ep           *channel.Endpoint
+	proxyIP      netip.Addr
+	upstreamDNS  []string
+	mtu          int
+	tunDevice    tun.Device           // Direct reference to underlying TUN device for responses
+	middleDevice *device.MiddleDevice // Reference to MiddleDevice for packet filtering
+	recordStore  *DNSRecordStore      // Local DNS records
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -49,10 +45,14 @@ type DNSProxy struct {
 }
 
 // NewDNSProxy creates a new DNS proxy
-func NewDNSProxy(tunDevice tun.Device, mtu int) (*DNSProxy, error) {
-	proxyIP, err := netip.ParseAddr(DNSProxyIP)
+func NewDNSProxy(tunDevice tun.Device, middleDevice *device.MiddleDevice, mtu int, dnsProxyIP string, upstreamDns []string) (*DNSProxy, error) {
+	proxyIP, err := netip.ParseAddr(dnsProxyIP)
 	if err != nil {
 		return nil, fmt.Errorf("invalid proxy IP: %w", err)
+	}
+
+	if len(upstreamDns) == 0 {
+		return nil, fmt.Errorf("at least one upstream DNS server must be specified")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -82,9 +82,11 @@ func NewDNSProxy(tunDevice tun.Device, mtu int) (*DNSProxy, error) {
 	}
 
 	// Add IP address
+	// Parse the proxy IP to get the octets
+	ipBytes := proxyIP.As4()
 	protoAddr := tcpip.ProtocolAddress{
 		Protocol:          ipv4.ProtocolNumber,
-		AddressWithPrefix: tcpip.AddrFrom4([4]byte{10, 30, 30, 30}).WithPrefix(),
+		AddressWithPrefix: tcpip.AddrFrom4(ipBytes).WithPrefix(),
 	}
 
 	if err := proxy.stack.AddProtocolAddress(1, protoAddr, stack.AddressProperties{}); err != nil {
@@ -101,23 +103,23 @@ func NewDNSProxy(tunDevice tun.Device, mtu int) (*DNSProxy, error) {
 }
 
 // Start starts the DNS proxy and registers with the filter
-func (p *DNSProxy) Start(device *device.MiddleDevice) error {
+func (p *DNSProxy) Start() error {
 	// Install packet filter rule
-	device.AddRule(p.proxyIP, p.handlePacket)
+	p.middleDevice.AddRule(p.proxyIP, p.handlePacket)
 
 	// Start DNS listener
 	p.wg.Add(2)
 	go p.runDNSListener()
 	go p.runPacketSender()
 
-	logger.Info("DNS proxy started on %s:%d", DNSProxyIP, DNSPort)
+	logger.Info("DNS proxy started on %s:%d", p.proxyIP.String(), DNSPort)
 	return nil
 }
 
 // Stop stops the DNS proxy
-func (p *DNSProxy) Stop(device *device.MiddleDevice) {
-	if device != nil {
-		device.RemoveRule(p.proxyIP)
+func (p *DNSProxy) Stop() {
+	if p.middleDevice != nil {
+		p.middleDevice.RemoveRule(p.proxyIP)
 	}
 	p.cancel()
 	p.wg.Wait()
@@ -174,9 +176,11 @@ func (p *DNSProxy) runDNSListener() {
 	defer p.wg.Done()
 
 	// Create UDP listener using gonet
+	// Parse the proxy IP to get the octets
+	ipBytes := p.proxyIP.As4()
 	laddr := &tcpip.FullAddress{
 		NIC:  1,
-		Addr: tcpip.AddrFrom4([4]byte{10, 30, 30, 30}),
+		Addr: tcpip.AddrFrom4(ipBytes),
 		Port: DNSPort,
 	}
 
@@ -322,11 +326,11 @@ func (p *DNSProxy) checkLocalRecords(query *dns.Msg, question dns.Question) *dns
 // forwardToUpstream forwards a DNS query to upstream DNS servers
 func (p *DNSProxy) forwardToUpstream(query *dns.Msg) *dns.Msg {
 	// Try primary DNS server
-	response, err := p.queryUpstream(UpstreamDNS1, query, 2*time.Second)
-	if err != nil {
+	response, err := p.queryUpstream(p.upstreamDNS[0], query, 2*time.Second)
+	if err != nil && len(p.upstreamDNS) > 1 {
 		// Try secondary DNS server
 		logger.Debug("Primary DNS failed, trying secondary: %v", err)
-		response, err = p.queryUpstream(UpstreamDNS2, query, 2*time.Second)
+		response, err = p.queryUpstream(p.upstreamDNS[1], query, 2*time.Second)
 		if err != nil {
 			logger.Error("Both DNS servers failed: %v", err)
 			return nil

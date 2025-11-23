@@ -13,18 +13,20 @@ import (
 
 // ConnectionRequest defines the structure for an incoming connection request
 type ConnectionRequest struct {
-	ID            string `json:"id"`
-	Secret        string `json:"secret"`
-	Endpoint      string `json:"endpoint"`
-	UserToken     string `json:"userToken,omitempty"`
-	MTU           int    `json:"mtu,omitempty"`
-	DNS           string `json:"dns,omitempty"`
-	InterfaceName string `json:"interfaceName,omitempty"`
-	Holepunch     bool   `json:"holepunch,omitempty"`
-	TlsClientCert string `json:"tlsClientCert,omitempty"`
-	PingInterval  string `json:"pingInterval,omitempty"`
-	PingTimeout   string `json:"pingTimeout,omitempty"`
-	OrgID         string `json:"orgId,omitempty"`
+	ID            string   `json:"id"`
+	Secret        string   `json:"secret"`
+	Endpoint      string   `json:"endpoint"`
+	UserToken     string   `json:"userToken,omitempty"`
+	MTU           int      `json:"mtu,omitempty"`
+	DNS           string   `json:"dns,omitempty"`
+	DNSProxyIP    string   `json:"dnsProxyIP,omitempty"`
+	UpstreamDNS   []string `json:"upstreamDNS,omitempty"`
+	InterfaceName string   `json:"interfaceName,omitempty"`
+	Holepunch     bool     `json:"holepunch,omitempty"`
+	TlsClientCert string   `json:"tlsClientCert,omitempty"`
+	PingInterval  string   `json:"pingInterval,omitempty"`
+	PingTimeout   string   `json:"pingTimeout,omitempty"`
+	OrgID         string   `json:"orgId,omitempty"`
 }
 
 // SwitchOrgRequest defines the structure for switching organizations
