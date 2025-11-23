@@ -33,6 +33,10 @@ type GlobalConfig struct {
 	SocketPath string
 	Version    string
 
+	// Callbacks
+	OnRegistered func()
+	OnConnected  func()
+
 	// Source tracking (not in JSON)
 	sources map[string]string
 }
@@ -574,6 +578,11 @@ func StartTunnel(config TunnelConfig) {
 
 		connected = true
 
+		// Invoke onConnected callback if configured
+		if globalConfig.OnConnected != nil {
+			go globalConfig.OnConnected()
+		}
+
 		logger.Info("WireGuard device created.")
 	})
 
@@ -1026,6 +1035,11 @@ func StartTunnel(config TunnelConfig) {
 				"orgId":      config.OrgID,
 				// "doNotCreateNewClient": config.DoNotCreateNewClient,
 			}, 1*time.Second)
+
+			// Invoke onRegistered callback if configured
+			if globalConfig.OnRegistered != nil {
+				go globalConfig.OnRegistered()
+			}
 		}
 
 		go keepSendingPing(olm)
