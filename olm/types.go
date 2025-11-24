@@ -1,5 +1,7 @@
 package olm
 
+import "time"
+
 type WgData struct {
 	Sites         []SiteConfig `json:"sites"`
 	TunnelIP      string       `json:"tunnelIP"`
@@ -74,4 +76,51 @@ type UpdateRemoteSubnetsData struct {
 	SiteId           int      `json:"siteId"`
 	OldRemoteSubnets []string `json:"oldRemoteSubnets"` // old list of remote subnets
 	NewRemoteSubnets []string `json:"newRemoteSubnets"` // new list of remote subnets
+}
+
+type GlobalConfig struct {
+	// Logging
+	LogLevel string
+
+	// HTTP server
+	EnableAPI  bool
+	HTTPAddr   string
+	SocketPath string
+	Version    string
+
+	// Callbacks
+	OnRegistered func()
+	OnConnected  func()
+	OnTerminated func()
+
+	// Source tracking (not in JSON)
+	sources map[string]string
+}
+
+type TunnelConfig struct {
+	// Connection settings
+	Endpoint  string
+	ID        string
+	Secret    string
+	UserToken string
+
+	// Network settings
+	MTU           int
+	DNS           string
+	UpstreamDNS   []string
+	InterfaceName string
+
+	// Advanced
+	Holepunch     bool
+	TlsClientCert string
+
+	// Parsed values (not in JSON)
+	PingIntervalDuration time.Duration
+	PingTimeoutDuration  time.Duration
+
+	OrgID string
+	// DoNotCreateNewClient bool
+
+	FileDescriptorTun  uint32
+	FileDescriptorUAPI uint32
 }
