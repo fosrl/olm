@@ -84,9 +84,6 @@ func configureWindows(interfaceName string, ip net.IP, ipNet *net.IPNet) error {
 		return fmt.Errorf("netsh enable interface command failed: %v, output: %s", err, out)
 	}
 
-	// delay 2 seconds
-	time.Sleep(8 * time.Second)
-
 	// Wait for the interface to be up and have the correct IP
 	err = waitForInterfaceUp(interfaceName, ip, 30*time.Second)
 	if err != nil {
