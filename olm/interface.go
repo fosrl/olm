@@ -51,48 +51,6 @@ func ConfigureInterface(interfaceName string, wgData WgData, mtu int) error {
 	}
 }
 
-func configureWindows(interfaceName string, ip net.IP, ipNet *net.IPNet) error {
-	logger.Info("Configuring Windows interface: %s", interfaceName)
-
-	// Calculate mask string (e.g., 255.255.255.0)
-	maskBits, _ := ipNet.Mask.Size()
-	mask := net.CIDRMask(maskBits, 32)
-	maskIP := net.IP(mask)
-
-	// Set the IP address using netsh
-	cmd := exec.Command("netsh", "interface", "ipv4", "set", "address",
-		fmt.Sprintf("name=%s", interfaceName),
-		"source=static",
-		fmt.Sprintf("addr=%s", ip.String()),
-		fmt.Sprintf("mask=%s", maskIP.String()))
-
-	logger.Info("Running command: %v", cmd)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("netsh command failed: %v, output: %s", err, out)
-	}
-
-	// Bring up the interface if needed (in Windows, setting the IP usually brings it up)
-	// But we'll explicitly enable it to be sure
-	cmd = exec.Command("netsh", "interface", "set", "interface",
-		interfaceName,
-		"admin=enable")
-
-	logger.Info("Running command: %v", cmd)
-	out, err = cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("netsh enable interface command failed: %v, output: %s", err, out)
-	}
-
-	// Wait for the interface to be up and have the correct IP
-	err = waitForInterfaceUp(interfaceName, ip, 30*time.Second)
-	if err != nil {
-		return fmt.Errorf("interface did not come up within timeout: %v", err)
-	}
-
-	return nil
-}
-
 // waitForInterfaceUp polls the network interface until it's up or times out
 func waitForInterfaceUp(interfaceName string, expectedIP net.IP, timeout time.Duration) error {
 	logger.Info("Waiting for interface %s to be up with IP %s", interfaceName, expectedIP)
