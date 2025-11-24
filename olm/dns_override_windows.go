@@ -12,31 +12,23 @@ import (
 )
 
 // SetupDNSOverride configures the system DNS to use the DNS proxy on Windows
-// Uses registry-based configuration (requires interface GUID)
+// Uses registry-based configuration (automatically extracts interface GUID)
 func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
 	if dnsProxy == nil {
 		return fmt.Errorf("DNS proxy is nil")
 	}
 
-	// On Windows, we need to get the interface GUID from the TUN device
-	// The interfaceName parameter is ignored on Windows
 	if tdev == nil {
 		return fmt.Errorf("TUN device is not available")
 	}
 
-	guid, err := GetInterfaceGUIDString(tdev)
-	if err != nil {
-		return fmt.Errorf("failed to get interface GUID: %w", err)
-	}
-
-	logger.Info("Retrieved interface GUID: %s for interface name: %s", guid, interfaceName)
-
-	configurator, err = platform.NewWindowsDNSConfigurator(guid)
+	var err error
+	configurator, err = platform.NewWindowsDNSConfigurator(tdev)
 	if err != nil {
 		return fmt.Errorf("failed to create Windows DNS configurator: %w", err)
 	}
 
-	logger.Info("Using Windows registry DNS configurator for GUID: %s", guid)
+	logger.Info("Using Windows registry DNS configurator for interface: %s", interfaceName)
 
 	// Get current DNS servers before changing
 	currentDNS, err := configurator.GetCurrentDNS()
