@@ -1,6 +1,6 @@
 //go:build !windows
 
-package olm
+package network
 
 import (
 	"fmt"

@@ -177,6 +177,12 @@ func GetJSON() (string, error) {
 	return string(data), nil
 }
 
+func GetSettings() NetworkSettings {
+	networkSettingsMutex.RLock()
+	defer networkSettingsMutex.RUnlock()
+	return networkSettings
+}
+
 func GetIncrementor() int {
 	networkSettingsMutex.Lock()
 	defer networkSettingsMutex.Unlock()

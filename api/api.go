@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/logger"
+	"github.com/fosrl/olm/network"
 )
 
 // ConnectionRequest defines the structure for an incoming connection request
@@ -47,12 +48,12 @@ type PeerStatus struct {
 
 // StatusResponse is returned by the status endpoint
 type StatusResponse struct {
-	Connected    bool                `json:"connected"`
-	Registered   bool                `json:"registered"`
-	TunnelIP     string              `json:"tunnelIP,omitempty"`
-	Version      string              `json:"version,omitempty"`
-	OrgID        string              `json:"orgId,omitempty"`
-	PeerStatuses map[int]*PeerStatus `json:"peers,omitempty"`
+	Connected       bool                    `json:"connected"`
+	Registered      bool                    `json:"registered"`
+	Version         string                  `json:"version,omitempty"`
+	OrgID           string                  `json:"orgId,omitempty"`
+	PeerStatuses    map[int]*PeerStatus     `json:"peers,omitempty"`
+	NetworkSettings network.NetworkSettings `json:"networkSettings,omitempty"`
 }
 
 // API represents the HTTP server and its state
@@ -70,7 +71,6 @@ type API struct {
 	connectedAt  time.Time
 	isConnected  bool
 	isRegistered bool
-	tunnelIP     string
 	version      string
 	orgID        string
 }
@@ -206,13 +206,6 @@ func (s *API) SetRegistered(registered bool) {
 	s.isRegistered = registered
 }
 
-// SetTunnelIP sets the tunnel IP address
-func (s *API) SetTunnelIP(tunnelIP string) {
-	s.statusMu.Lock()
-	defer s.statusMu.Unlock()
-	s.tunnelIP = tunnelIP
-}
-
 // SetVersion sets the olm version
 func (s *API) SetVersion(version string) {
 	s.statusMu.Lock()
@@ -300,12 +293,12 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 	defer s.statusMu.RUnlock()
 
 	resp := StatusResponse{
-		Connected:    s.isConnected,
-		Registered:   s.isRegistered,
-		TunnelIP:     s.tunnelIP,
-		Version:      s.version,
-		OrgID:        s.orgID,
-		PeerStatuses: s.peerStatuses,
+		Connected:       s.isConnected,
+		Registered:      s.isRegistered,
+		Version:         s.version,
+		OrgID:           s.orgID,
+		PeerStatuses:    s.peerStatuses,
+		NetworkSettings: network.GetSettings(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

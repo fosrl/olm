@@ -1,6 +1,6 @@
 //go:build !windows
 
-package olm
+package network
 
 func WindowsAddRoute(destination string, gateway string, interfaceName string) error {
 	return nil
