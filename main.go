@@ -164,7 +164,7 @@ func main() {
 
 func runOlmMainWithArgs(ctx context.Context, args []string) {
 	// Setup Windows event logging if on Windows
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS == "windows" {
 		setupWindowsEventLog()
 	} else {
 		// Initialize logger for non-Windows platforms
