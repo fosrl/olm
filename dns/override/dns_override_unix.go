@@ -11,6 +11,8 @@ import (
 	platform "github.com/fosrl/olm/dns/platform"
 )
 
+var configurator platform.DNSConfigurator
+
 // SetupDNSOverride configures the system DNS to use the DNS proxy on Linux/FreeBSD
 // Tries systemd-resolved, NetworkManager, resolvconf, or falls back to /etc/resolv.conf
 func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {

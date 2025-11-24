@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"runtime"
 	"strings"
@@ -17,7 +16,7 @@ import (
 	"github.com/fosrl/olm/api"
 	middleDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/dns"
-	platform "github.com/fosrl/olm/dns/platform"
+	dnsOverride "github.com/fosrl/olm/dns/override"
 	"github.com/fosrl/olm/network"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/websocket"
@@ -93,7 +92,6 @@ var (
 	globalCtx        context.Context
 	stopRegister     func()
 	stopPing         chan struct{}
-	configurator     platform.DNSConfigurator
 )
 
 func Init(ctx context.Context, config GlobalConfig) {
@@ -577,7 +575,7 @@ func StartTunnel(config TunnelConfig) {
 		peerMonitor.Start()
 
 		// Set up DNS override to use our DNS proxy
-		if err := SetupDNSOverride(interfaceName, dnsProxy); err != nil {
+		if err := dnsOverride.SetupDNSOverride(interfaceName, dnsProxy); err != nil {
 			logger.Error("Failed to setup DNS override: %v", err)
 			return
 		}
@@ -1122,13 +1120,13 @@ func Close() {
 		middleDev = nil
 	}
 
-	// Restore original DNS
-	if configurator != nil {
-		fmt.Println("Restoring original DNS servers...")
-		if err := configurator.RestoreDNS(); err != nil {
-			log.Fatalf("Failed to restore DNS: %v", err)
-		}
-	}
+	// // Restore original DNS
+	// if configurator != nil {
+	// 	fmt.Println("Restoring original DNS servers...")
+	// 	if err := configurator.RestoreDNS(); err != nil {
+	// 		log.Fatalf("Failed to restore DNS: %v", err)
+	// 	}
+	// }
 
 	// Stop DNS proxy
 	logger.Debug("Stopping DNS proxy")
@@ -1177,7 +1175,7 @@ func StopTunnel() {
 	Close()
 
 	// Restore original DNS configuration
-	if err := RestoreDNSOverride(); err != nil {
+	if err := dnsOverride.RestoreDNSOverride(); err != nil {
 		logger.Error("Failed to restore DNS: %v", err)
 	}
 

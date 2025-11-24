@@ -11,6 +11,8 @@ import (
 	platform "github.com/fosrl/olm/dns/platform"
 )
 
+var configurator platform.DNSConfigurator
+
 // SetupDNSOverride configures the system DNS to use the DNS proxy on Windows
 // Uses registry-based configuration (automatically extracts interface GUID)
 func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
@@ -18,12 +20,8 @@ func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
 		return fmt.Errorf("DNS proxy is nil")
 	}
 
-	if tdev == nil {
-		return fmt.Errorf("TUN device is not available")
-	}
-
 	var err error
-	configurator, err = platform.NewWindowsDNSConfigurator(tdev)
+	configurator, err = platform.NewWindowsDNSConfigurator(interfaceName)
 	if err != nil {
 		return fmt.Errorf("failed to create Windows DNS configurator: %w", err)
 	}
