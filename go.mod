@@ -6,6 +6,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/fosrl/newt v0.0.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/miekg/dns v1.1.68
 	github.com/vishvananda/netlink v1.3.1
 	golang.org/x/sys v0.38.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
@@ -15,8 +16,8 @@ require (
 )
 
 require (
+	github.com/godbus/dbus/v5 v5.2.0 // indirect
 	github.com/google/btree v1.1.3 // indirect
-	github.com/miekg/dns v1.1.68 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	golang.org/x/crypto v0.44.0 // indirect
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6 // indirect
