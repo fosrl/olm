@@ -11,6 +11,8 @@ import (
 	platform "github.com/fosrl/olm/dns/platform"
 )
 
+var configurator platform.DNSConfigurator
+
 // SetupDNSOverride configures the system DNS to use the DNS proxy on macOS
 // Uses scutil for DNS configuration
 func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
