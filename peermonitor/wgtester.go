@@ -143,14 +143,14 @@ func (c *Client) TestConnection(ctx context.Context) (bool, time.Duration) {
 				return false, 0
 			}
 
-			logger.Debug("Attempting to send monitor packet to %s", c.serverAddr)
+			// logger.Debug("Attempting to send monitor packet to %s", c.serverAddr)
 			_, err := c.conn.Write(packet)
 			if err != nil {
 				c.connLock.Unlock()
 				logger.Info("Error sending packet: %v", err)
 				continue
 			}
-			logger.Debug("Successfully sent monitor packet")
+			// logger.Debug("Successfully sent monitor packet")
 
 			// Set read deadline
 			c.conn.SetReadDeadline(time.Now().Add(c.timeout))
