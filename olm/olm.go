@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/netip"
 	"runtime"
 	"strings"
 	"time"
@@ -577,35 +576,10 @@ func StartTunnel(config TunnelConfig) {
 
 		peerMonitor.Start()
 
-		configurator, err = platform.DetectBestConfigurator(interfaceName)
-		if err != nil {
-			log.Fatalf("Failed to detect DNS configurator: %v", err)
-		}
-
-		fmt.Printf("Using DNS configurator: %s\n", configurator.Name())
-
-		// Get current DNS servers before changing
-		currentDNS, err := configurator.GetCurrentDNS()
-		if err != nil {
-			log.Printf("Warning: Could not get current DNS: %v", err)
-		} else {
-			fmt.Printf("Current DNS servers: %v\n", currentDNS)
-		}
-
-		// Set new DNS servers
-		newDNS := []netip.Addr{
-			dnsProxy.GetProxyIP(),
-			// netip.MustParseAddr("8.8.8.8"), // Google
-		}
-
-		fmt.Printf("Setting DNS servers to: %v\n", newDNS)
-		originalDNS, err := configurator.SetDNS(newDNS)
-		if err != nil {
-			log.Fatalf("Failed to set DNS: %v", err)
-		}
-
-		for _, addr := range originalDNS {
-			fmt.Printf("Original DNS server: %v\n", addr)
+		// Set up DNS override to use our DNS proxy
+		if err := SetupDNSOverride(interfaceName, dnsProxy); err != nil {
+			logger.Error("Failed to setup DNS override: %v", err)
+			return
 		}
 
 		if err := dnsProxy.Start(); err != nil {
@@ -1201,6 +1175,11 @@ func StopTunnel() {
 	}
 
 	Close()
+
+	// Restore original DNS configuration
+	if err := RestoreDNSOverride(); err != nil {
+		logger.Error("Failed to restore DNS: %v", err)
+	}
 
 	// Reset the connected state
 	connected = false
