@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"time"
 
 	"github.com/fosrl/newt/logger"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
@@ -50,11 +49,15 @@ func configureWindows(interfaceName string, ip net.IP, ipNet *net.IPNet) error {
 		return fmt.Errorf("failed to add IP address: %v", err)
 	}
 
-	// Wait for the interface to be up and have the correct IP
-	err = waitForInterfaceUp(interfaceName, ip, 30*time.Second)
-	if err != nil {
-		return fmt.Errorf("interface did not come up within timeout: %v", err)
-	}
+	// This was required when we were using the subprocess "netsh" command to bring up the interface.
+	// With the winipcfg library, the interface should already be up after adding the IP so we dont
+	// need this step anymore as far as I can tell.
+
+	// // Wait for the interface to be up and have the correct IP
+	// err = waitForInterfaceUp(interfaceName, ip, 30*time.Second)
+	// if err != nil {
+	// 	return fmt.Errorf("interface did not come up within timeout: %v", err)
+	// }
 
 	return nil
 }
