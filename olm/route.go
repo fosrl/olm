@@ -5,7 +5,6 @@ import (
 	"net"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 
 	"github.com/fosrl/newt/logger"
@@ -121,106 +120,6 @@ func LinuxRemoveRoute(destination string) error {
 	// Delete the route
 	if err := netlink.RouteDel(route); err != nil {
 		return fmt.Errorf("failed to delete route: %v", err)
-	}
-
-	return nil
-}
-
-func WindowsAddRoute(destination string, gateway string, interfaceName string) error {
-	if runtime.GOOS != "windows" {
-		return nil
-	}
-
-	var cmd *exec.Cmd
-
-	// Parse destination to get the IP and subnet
-	ip, ipNet, err := net.ParseCIDR(destination)
-	if err != nil {
-		return fmt.Errorf("invalid destination address: %v", err)
-	}
-
-	// Calculate the subnet mask
-	maskBits, _ := ipNet.Mask.Size()
-	mask := net.CIDRMask(maskBits, 32)
-	maskIP := net.IP(mask)
-
-	if gateway != "" {
-		// Route with specific gateway
-		cmd = exec.Command("route", "add",
-			ip.String(),
-			"mask", maskIP.String(),
-			gateway,
-			"metric", "1")
-	} else if interfaceName != "" {
-		// First, get the interface index
-		indexCmd := exec.Command("netsh", "interface", "ipv4", "show", "interfaces")
-		output, err := indexCmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("failed to get interface index: %v, output: %s", err, output)
-		}
-
-		// Parse the output to find the interface index
-		lines := strings.Split(string(output), "\n")
-		var ifIndex string
-		for _, line := range lines {
-			if strings.Contains(line, interfaceName) {
-				fields := strings.Fields(line)
-				if len(fields) > 0 {
-					ifIndex = fields[0]
-					break
-				}
-			}
-		}
-
-		if ifIndex == "" {
-			return fmt.Errorf("could not find index for interface %s", interfaceName)
-		}
-
-		// Convert to integer to validate
-		idx, err := strconv.Atoi(ifIndex)
-		if err != nil {
-			return fmt.Errorf("invalid interface index: %v", err)
-		}
-
-		// Route via interface using the index
-		cmd = exec.Command("route", "add",
-			ip.String(),
-			"mask", maskIP.String(),
-			"0.0.0.0",
-			"if", strconv.Itoa(idx))
-	} else {
-		return fmt.Errorf("either gateway or interface must be specified")
-	}
-
-	logger.Info("Running command: %v", cmd)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("route command failed: %v, output: %s", err, out)
-	}
-
-	return nil
-}
-
-func WindowsRemoveRoute(destination string) error {
-	// Parse destination to get the IP
-	ip, ipNet, err := net.ParseCIDR(destination)
-	if err != nil {
-		return fmt.Errorf("invalid destination address: %v", err)
-	}
-
-	// Calculate the subnet mask
-	maskBits, _ := ipNet.Mask.Size()
-	mask := net.CIDRMask(maskBits, 32)
-	maskIP := net.IP(mask)
-
-	cmd := exec.Command("route", "delete",
-		ip.String(),
-		"mask", maskIP.String())
-
-	logger.Info("Running command: %v", cmd)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("route delete command failed: %v, output: %s", err, out)
 	}
 
 	return nil
