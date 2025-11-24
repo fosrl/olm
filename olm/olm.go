@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
+	"net/netip"
 	"runtime"
 	"strings"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/fosrl/olm/api"
 	middleDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/dns"
+	platform "github.com/fosrl/olm/dns/platform"
 	"github.com/fosrl/olm/network"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/websocket"
@@ -91,6 +94,7 @@ var (
 	globalCtx        context.Context
 	stopRegister     func()
 	stopPing         chan struct{}
+	configurator     platform.DNSConfigurator
 )
 
 func Init(ctx context.Context, config GlobalConfig) {
@@ -167,7 +171,7 @@ func Init(ctx context.Context, config GlobalConfig) {
 			// DNSProxyIP has no default - it must be provided if DNS proxy is desired
 			// UpstreamDNS defaults to 8.8.8.8 if not provided
 			if len(req.UpstreamDNS) == 0 {
-				tunnelConfig.UpstreamDNS = []string{"8.8.8.8"}
+				tunnelConfig.UpstreamDNS = []string{"8.8.8.8:53"}
 			}
 			if req.InterfaceName == "" {
 				tunnelConfig.InterfaceName = "olm"
@@ -485,6 +489,9 @@ func StartTunnel(config TunnelConfig) {
 			logger.Error("Failed to bring up WireGuard device: %v", err)
 		}
 
+		// TODO: REMOVE HARDCODE
+		wgData.UtilitySubnet = "100.81.0.0/24"
+
 		// Create and start DNS proxy
 		dnsProxy, err = dns.NewDNSProxy(tdev, middleDev, config.MTU, wgData.UtilitySubnet, config.UpstreamDNS)
 		if err != nil {
@@ -569,6 +576,37 @@ func StartTunnel(config TunnelConfig) {
 		}
 
 		peerMonitor.Start()
+
+		configurator, err = platform.DetectBestConfigurator(interfaceName)
+		if err != nil {
+			log.Fatalf("Failed to detect DNS configurator: %v", err)
+		}
+
+		fmt.Printf("Using DNS configurator: %s\n", configurator.Name())
+
+		// Get current DNS servers before changing
+		currentDNS, err := configurator.GetCurrentDNS()
+		if err != nil {
+			log.Printf("Warning: Could not get current DNS: %v", err)
+		} else {
+			fmt.Printf("Current DNS servers: %v\n", currentDNS)
+		}
+
+		// Set new DNS servers
+		newDNS := []netip.Addr{
+			dnsProxy.GetProxyIP(),
+			// netip.MustParseAddr("8.8.8.8"), // Google
+		}
+
+		fmt.Printf("Setting DNS servers to: %v\n", newDNS)
+		originalDNS, err := configurator.SetDNS(newDNS)
+		if err != nil {
+			log.Fatalf("Failed to set DNS: %v", err)
+		}
+
+		for _, addr := range originalDNS {
+			fmt.Printf("Original DNS server: %v\n", addr)
+		}
 
 		if err := dnsProxy.Start(); err != nil {
 			logger.Error("Failed to start DNS proxy: %v", err)
@@ -1108,6 +1146,14 @@ func Close() {
 	if middleDev != nil {
 		middleDev.Close()
 		middleDev = nil
+	}
+
+	// Restore original DNS
+	if configurator != nil {
+		fmt.Println("Restoring original DNS servers...")
+		if err := configurator.RestoreDNS(); err != nil {
+			log.Fatalf("Failed to restore DNS: %v", err)
+		}
 	}
 
 	// Stop DNS proxy

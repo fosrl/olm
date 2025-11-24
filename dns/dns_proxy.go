@@ -58,12 +58,14 @@ func NewDNSProxy(tunDevice tun.Device, middleDevice *device.MiddleDevice, mtu in
 	ctx, cancel := context.WithCancel(context.Background())
 
 	proxy := &DNSProxy{
-		proxyIP:     proxyIP,
-		mtu:         mtu,
-		tunDevice:   tunDevice,
-		recordStore: NewDNSRecordStore(),
-		ctx:         ctx,
-		cancel:      cancel,
+		proxyIP:      proxyIP,
+		mtu:          mtu,
+		tunDevice:    tunDevice,
+		middleDevice: middleDevice,
+		upstreamDNS:  upstreamDns,
+		recordStore:  NewDNSRecordStore(),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 
 	// Create gvisor netstack
@@ -132,6 +134,10 @@ func (p *DNSProxy) Stop() {
 	}
 
 	logger.Info("DNS proxy stopped")
+}
+
+func (p *DNSProxy) GetProxyIP() netip.Addr {
+	return p.proxyIP
 }
 
 // handlePacket is called by the filter for packets destined to DNS proxy IP
@@ -248,7 +254,7 @@ func (p *DNSProxy) handleDNSQuery(udpConn *gonet.UDPConn, queryData []byte, clie
 
 	// If no local records, forward to upstream
 	if response == nil {
-		logger.Debug("No local record for %s, forwarding upstream", question.Name)
+		logger.Debug("No local record for %s, forwarding upstream to %v", question.Name, p.upstreamDNS)
 		response = p.forwardToUpstream(msg)
 	}
 
