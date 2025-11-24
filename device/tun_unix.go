@@ -1,6 +1,6 @@
 //go:build !windows
 
-package olm
+package device
 
 import (
 	"net"
@@ -12,7 +12,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-func createTUNFromFD(tunFd uint32, mtuInt int) (tun.Device, error) {
+func CreateTUNFromFD(tunFd uint32, mtuInt int) (tun.Device, error) {
 	dupTunFd, err := unix.Dup(int(tunFd))
 	if err != nil {
 		logger.Error("Unable to dup tun fd: %v", err)
@@ -35,10 +35,10 @@ func createTUNFromFD(tunFd uint32, mtuInt int) (tun.Device, error) {
 	return device, nil
 }
 
-func uapiOpen(interfaceName string) (*os.File, error) {
+func UapiOpen(interfaceName string) (*os.File, error) {
 	return ipc.UAPIOpen(interfaceName)
 }
 
-func uapiListen(interfaceName string, fileUAPI *os.File) (net.Listener, error) {
+func UapiListen(interfaceName string, fileUAPI *os.File) (net.Listener, error) {
 	return ipc.UAPIListen(interfaceName, fileUAPI)
 }

@@ -1,4 +1,4 @@
-package olm
+package network
 
 import (
 	"fmt"
@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/fosrl/newt/logger"
-	"github.com/fosrl/olm/network"
 	"github.com/vishvananda/netlink"
 )
 
@@ -126,8 +125,8 @@ func LinuxRemoveRoute(destination string) error {
 }
 
 // addRouteForServerIP adds an OS-specific route for the server IP
-func addRouteForServerIP(serverIP, interfaceName string) error {
-	if err := addRouteForNetworkConfig(serverIP); err != nil {
+func AddRouteForServerIP(serverIP, interfaceName string) error {
+	if err := AddRouteForNetworkConfig(serverIP); err != nil {
 		return err
 	}
 	if interfaceName == "" {
@@ -145,8 +144,8 @@ func addRouteForServerIP(serverIP, interfaceName string) error {
 }
 
 // removeRouteForServerIP removes an OS-specific route for the server IP
-func removeRouteForServerIP(serverIP string, interfaceName string) error {
-	if err := removeRouteForNetworkConfig(serverIP); err != nil {
+func RemoveRouteForServerIP(serverIP string, interfaceName string) error {
+	if err := RemoveRouteForNetworkConfig(serverIP); err != nil {
 		return err
 	}
 	if interfaceName == "" {
@@ -163,7 +162,7 @@ func removeRouteForServerIP(serverIP string, interfaceName string) error {
 	return nil
 }
 
-func addRouteForNetworkConfig(destination string) error {
+func AddRouteForNetworkConfig(destination string) error {
 	// Parse the subnet to extract IP and mask
 	_, ipNet, err := net.ParseCIDR(destination)
 	if err != nil {
@@ -174,12 +173,12 @@ func addRouteForNetworkConfig(destination string) error {
 	mask := net.IP(ipNet.Mask).String()
 	destinationAddress := ipNet.IP.String()
 
-	network.AddIPv4IncludedRoute(network.IPv4Route{DestinationAddress: destinationAddress, SubnetMask: mask})
+	AddIPv4IncludedRoute(IPv4Route{DestinationAddress: destinationAddress, SubnetMask: mask})
 
 	return nil
 }
 
-func removeRouteForNetworkConfig(destination string) error {
+func RemoveRouteForNetworkConfig(destination string) error {
 	// Parse the subnet to extract IP and mask
 	_, ipNet, err := net.ParseCIDR(destination)
 	if err != nil {
@@ -190,13 +189,13 @@ func removeRouteForNetworkConfig(destination string) error {
 	mask := net.IP(ipNet.Mask).String()
 	destinationAddress := ipNet.IP.String()
 
-	network.RemoveIPv4IncludedRoute(network.IPv4Route{DestinationAddress: destinationAddress, SubnetMask: mask})
+	RemoveIPv4IncludedRoute(IPv4Route{DestinationAddress: destinationAddress, SubnetMask: mask})
 
 	return nil
 }
 
 // addRoutes adds routes for each subnet in RemoteSubnets
-func addRoutes(remoteSubnets []string, interfaceName string) error {
+func AddRoutes(remoteSubnets []string, interfaceName string) error {
 	if len(remoteSubnets) == 0 {
 		return nil
 	}
@@ -208,7 +207,7 @@ func addRoutes(remoteSubnets []string, interfaceName string) error {
 			continue
 		}
 
-		if err := addRouteForNetworkConfig(subnet); err != nil {
+		if err := AddRouteForNetworkConfig(subnet); err != nil {
 			logger.Error("Failed to add network config for subnet %s: %v", subnet, err)
 			continue
 		}
@@ -241,7 +240,7 @@ func addRoutes(remoteSubnets []string, interfaceName string) error {
 }
 
 // removeRoutesForRemoteSubnets removes routes for each subnet in RemoteSubnets
-func removeRoutesForRemoteSubnets(remoteSubnets []string) error {
+func RemoveRoutesForRemoteSubnets(remoteSubnets []string) error {
 	if len(remoteSubnets) == 0 {
 		return nil
 	}
@@ -253,7 +252,7 @@ func removeRoutesForRemoteSubnets(remoteSubnets []string) error {
 			continue
 		}
 
-		if err := removeRouteForNetworkConfig(subnet); err != nil {
+		if err := RemoveRouteForNetworkConfig(subnet); err != nil {
 			logger.Error("Failed to remove network config for subnet %s: %v", subnet, err)
 			continue
 		}

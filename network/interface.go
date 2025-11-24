@@ -1,4 +1,4 @@
-package olm
+package network
 
 import (
 	"fmt"
@@ -10,16 +10,15 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/logger"
-	"github.com/fosrl/olm/network"
 	"github.com/vishvananda/netlink"
 )
 
 // ConfigureInterface configures a network interface with an IP address and brings it up
-func ConfigureInterface(interfaceName string, wgData WgData, mtu int) error {
-	logger.Info("The tunnel IP is: %s", wgData.TunnelIP)
+func ConfigureInterface(interfaceName string, tunnelIp string, mtu int) error {
+	logger.Info("The tunnel IP is: %s", tunnelIp)
 
 	// Parse the IP address and network
-	ip, ipNet, err := net.ParseCIDR(wgData.TunnelIP)
+	ip, ipNet, err := net.ParseCIDR(tunnelIp)
 	if err != nil {
 		return fmt.Errorf("invalid IP address: %v", err)
 	}
@@ -31,9 +30,8 @@ func ConfigureInterface(interfaceName string, wgData WgData, mtu int) error {
 	logger.Debug("The destination address is: %s", destinationAddress)
 
 	// network.SetTunnelRemoteAddress() // what does this do?
-	network.SetIPv4Settings([]string{destinationAddress}, []string{mask})
-	network.SetMTU(mtu)
-	apiServer.SetTunnelIP(destinationAddress)
+	SetIPv4Settings([]string{destinationAddress}, []string{mask})
+	SetMTU(mtu)
 
 	if interfaceName == "" {
 		return nil
@@ -89,7 +87,7 @@ func waitForInterfaceUp(interfaceName string, expectedIP net.IP, timeout time.Du
 	return fmt.Errorf("timed out waiting for interface %s to be up with IP %s", interfaceName, expectedIP)
 }
 
-func findUnusedUTUN() (string, error) {
+func FindUnusedUTUN() (string, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return "", fmt.Errorf("failed to list interfaces: %v", err)
