@@ -415,3 +415,14 @@ func (s *API) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 		"status": "disconnect initiated",
 	})
 }
+
+func (s *API) GetStatus() StatusResponse {
+	return StatusResponse{
+		Connected:       s.isConnected,
+		Registered:      s.isRegistered,
+		Version:         s.version,
+		OrgID:           s.orgID,
+		PeerStatuses:    s.peerStatuses,
+		NetworkSettings: network.GetSettings(),
+	}
+}
