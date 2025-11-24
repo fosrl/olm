@@ -5,17 +5,17 @@ package dns
 import "fmt"
 
 // DetectBestConfigurator returns the Windows DNS configurator
-// guid is the network interface GUID
-func DetectBestConfigurator(guid string) (DNSConfigurator, error) {
-	if guid == "" {
+// ifaceName should be the network interface GUID on Windows
+func DetectBestConfigurator(ifaceName string) (DNSConfigurator, error) {
+	if ifaceName == "" {
 		return nil, fmt.Errorf("interface GUID is required for Windows")
 	}
-	return NewWindowsDNSConfigurator(guid)
+	return newWindowsDNSConfiguratorFromGUID(ifaceName)
 }
 
 // GetSystemDNS returns the current system DNS servers for the given interface
-func GetSystemDNS(guid string) ([]string, error) {
-	configurator, err := NewWindowsDNSConfigurator(guid)
+func GetSystemDNS(ifaceName string) ([]string, error) {
+	configurator, err := newWindowsDNSConfiguratorFromGUID(ifaceName)
 	if err != nil {
 		return nil, fmt.Errorf("create configurator: %w", err)
 	}
