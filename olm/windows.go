@@ -11,7 +11,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-func createTUNFromFD(tunFdStr string, mtuInt int) (tun.Device, error) {
+func createTUNFromFD(tunFd uint32, mtuInt int) (tun.Device, error) {
 	return nil, errors.New("CreateTUNFromFile not supported on Windows")
 }
 

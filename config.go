@@ -78,7 +78,7 @@ func DefaultConfig() *OlmConfig {
 	config := &OlmConfig{
 		MTU:           1280,
 		DNS:           "8.8.8.8",
-		UpstreamDNS:   []string{"8.8.8.8"},
+		UpstreamDNS:   []string{"8.8.8.8:53"},
 		LogLevel:      "INFO",
 		InterfaceName: "olm",
 		EnableAPI:     false,
@@ -293,7 +293,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	serviceFlags.IntVar(&config.MTU, "mtu", config.MTU, "MTU to use")
 	serviceFlags.StringVar(&config.DNS, "dns", config.DNS, "DNS server to use")
 	var upstreamDNSFlag string
-	serviceFlags.StringVar(&upstreamDNSFlag, "upstream-dns", "", "Upstream DNS server(s) (comma-separated, default: 8.8.8.8)")
+	serviceFlags.StringVar(&upstreamDNSFlag, "upstream-dns", "", "Upstream DNS server(s) (comma-separated, default: 8.8.8.8:53)")
 	serviceFlags.StringVar(&config.LogLevel, "log-level", config.LogLevel, "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
 	serviceFlags.StringVar(&config.InterfaceName, "interface", config.InterfaceName, "Name of the WireGuard interface")
 	serviceFlags.StringVar(&config.HTTPAddr, "http-addr", config.HTTPAddr, "HTTP server address (e.g., ':9452')")
@@ -442,7 +442,7 @@ func mergeConfigs(dest, src *OlmConfig) {
 		dest.DNS = src.DNS
 		dest.sources["dns"] = string(SourceFile)
 	}
-	if len(src.UpstreamDNS) > 0 && fmt.Sprintf("%v", src.UpstreamDNS) != "[8.8.8.8]" {
+	if len(src.UpstreamDNS) > 0 && fmt.Sprintf("%v", src.UpstreamDNS) != "[8.8.8.8:53]" {
 		dest.UpstreamDNS = src.UpstreamDNS
 		dest.sources["upstreamDNS"] = string(SourceFile)
 	}
