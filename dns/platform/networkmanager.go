@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/fosrl/newt/logger"
 	dbus "github.com/godbus/dbus/v5"
 )
 
@@ -21,6 +22,7 @@ const (
 	networkManagerDbusDeviceGetApplied   = networkManagerDbusDeviceInterface + ".GetAppliedConnection"
 	networkManagerDbusDeviceReapply      = networkManagerDbusDeviceInterface + ".Reapply"
 	networkManagerDbusIPv4Key            = "ipv4"
+	networkManagerDbusIPv6Key            = "ipv6"
 	networkManagerDbusDNSKey             = "dns"
 	networkManagerDbusDNSPriorityKey     = "dns-priority"
 	networkManagerDbusPrimaryDNSPriority = int32(-500)
@@ -28,6 +30,19 @@ const (
 
 type networkManagerConnSettings map[string]map[string]dbus.Variant
 type networkManagerConfigVersion uint64
+
+// cleanDeprecatedSettings removes deprecated settings that are still returned by
+// GetAppliedConnection but can't be reapplied
+func (s networkManagerConnSettings) cleanDeprecatedSettings() {
+	for _, key := range []string{"addresses", "routes"} {
+		if ipv4Settings, ok := s[networkManagerDbusIPv4Key]; ok {
+			delete(ipv4Settings, key)
+		}
+		if ipv6Settings, ok := s[networkManagerDbusIPv6Key]; ok {
+			delete(ipv6Settings, key)
+		}
+	}
+}
 
 // NetworkManagerDNSConfigurator manages DNS settings using NetworkManager D-Bus API
 type NetworkManagerDNSConfigurator struct {
@@ -100,6 +115,8 @@ func (n *NetworkManagerDNSConfigurator) RestoreDNS() error {
 }
 
 // GetCurrentDNS returns the currently configured DNS servers
+// Note: NetworkManager may not have DNS settings on the interface level
+// if DNS is being managed globally, so this may return empty
 func (n *NetworkManagerDNSConfigurator) GetCurrentDNS() ([]netip.Addr, error) {
 	connSettings, _, err := n.getAppliedConnectionSettings()
 	if err != nil {
@@ -114,6 +131,14 @@ func (n *NetworkManagerDNSConfigurator) applyDNSServers(servers []netip.Addr) er
 	connSettings, configVersion, err := n.getAppliedConnectionSettings()
 	if err != nil {
 		return fmt.Errorf("get connection settings: %w", err)
+	}
+
+	// Clean deprecated settings that can't be reapplied
+	connSettings.cleanDeprecatedSettings()
+
+	// Ensure IPv4 settings map exists
+	if connSettings[networkManagerDbusIPv4Key] == nil {
+		connSettings[networkManagerDbusIPv4Key] = make(map[string]dbus.Variant)
 	}
 
 	// Convert DNS servers to NetworkManager format (uint32 little-endian)
@@ -184,6 +209,7 @@ func (n *NetworkManagerDNSConfigurator) reApplyConnectionSettings(connSettings n
 }
 
 // extractDNSServers extracts DNS servers from connection settings
+// Returns empty slice if no DNS is configured on this interface
 func (n *NetworkManagerDNSConfigurator) extractDNSServers(connSettings networkManagerConnSettings) []netip.Addr {
 	var servers []netip.Addr
 
@@ -194,11 +220,12 @@ func (n *NetworkManagerDNSConfigurator) extractDNSServers(connSettings networkMa
 
 	dnsVariant, ok := ipv4Settings[networkManagerDbusDNSKey]
 	if !ok {
+		// DNS not configured on this interface - this is normal
 		return servers
 	}
 
 	dnsServers, ok := dnsVariant.Value().([]uint32)
-	if !ok {
+	if !ok || dnsServers == nil {
 		return servers
 	}
 
@@ -230,6 +257,7 @@ func IsNetworkManagerAvailable() bool {
 
 	// Try to ping NetworkManager
 	if err := obj.CallWithContext(ctx, "org.freedesktop.DBus.Peer.Ping", 0).Store(); err != nil {
+		logger.Debug("NetworkManager ping failed: %v", err)
 		return false
 	}
 
