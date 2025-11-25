@@ -1,4 +1,4 @@
-package olm
+package peers
 
 import (
 	"fmt"
@@ -14,7 +14,7 @@ import (
 )
 
 // ConfigurePeer sets up or updates a peer within the WireGuard device
-func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes.Key, endpoint string) error {
+func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes.Key, endpoint string, peerMonitor *peermonitor.PeerMonitor) error {
 	siteHost, err := util.ResolveDomain(formatEndpoint(siteConfig.Endpoint))
 	if err != nil {
 		return fmt.Errorf("failed to resolve endpoint for site %d: %v", siteConfig.SiteId, err)
@@ -33,10 +33,13 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 	var allowedIPs []string
 	allowedIPs = append(allowedIPs, allowedIpStr)
 
-	// If we have anything in remoteSubnets, add those as well
-	if len(siteConfig.RemoteSubnets) > 0 {
-		// Add each remote subnet
-		for _, subnet := range siteConfig.RemoteSubnets {
+	// Use AllowedIps if available, otherwise fall back to RemoteSubnets for backwards compatibility
+	subnetsToAdd := siteConfig.AllowedIps
+
+	// If we have anything to add, process them
+	if len(subnetsToAdd) > 0 {
+		// Add each subnet
+		for _, subnet := range subnetsToAdd {
 			subnet = strings.TrimSpace(subnet)
 			if subnet != "" {
 				allowedIPs = append(allowedIPs, subnet)
@@ -96,7 +99,7 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 }
 
 // RemovePeer removes a peer from the WireGuard device
-func RemovePeer(dev *device.Device, siteId int, publicKey string) error {
+func RemovePeer(dev *device.Device, siteId int, publicKey string, peerMonitor *peermonitor.PeerMonitor) error {
 	// Construct WireGuard config to remove the peer
 	var configBuilder strings.Builder
 	configBuilder.WriteString(fmt.Sprintf("public_key=%s\n", util.FixKey(publicKey)))
@@ -117,4 +120,11 @@ func RemovePeer(dev *device.Device, siteId int, publicKey string) error {
 	}
 
 	return nil
+}
+
+func formatEndpoint(endpoint string) string {
+	if strings.Contains(endpoint, ":") {
+		return endpoint
+	}
+	return endpoint + ":51820"
 }

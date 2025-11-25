@@ -3,90 +3,149 @@
 package dns
 
 import (
-	"fmt"
-	"net/netip"
+	"bufio"
+	"io"
 	"os"
 	"strings"
+
+	"github.com/fosrl/newt/logger"
 )
 
-// DetectBestConfigurator detects and returns the most appropriate DNS configurator for the system
-// ifaceName is optional and only used for NetworkManager, systemd-resolved, and resolvconf
-func DetectBestConfigurator(ifaceName string) (DNSConfigurator, error) {
-	// Try systemd-resolved first (most modern)
-	if IsSystemdResolvedAvailable() && ifaceName != "" {
-		if configurator, err := NewSystemdResolvedDNSConfigurator(ifaceName); err == nil {
-			return configurator, nil
-		}
-	}
+const defaultResolvConfPath = "/etc/resolv.conf"
 
-	// Try NetworkManager (common on desktops)
-	if IsNetworkManagerAvailable() && ifaceName != "" {
-		if configurator, err := NewNetworkManagerDNSConfigurator(ifaceName); err == nil {
-			return configurator, nil
-		}
-	}
+// DNSManagerType represents the type of DNS manager detected
+type DNSManagerType int
 
-	// Try resolvconf (common on older systems)
-	if IsResolvconfAvailable() && ifaceName != "" {
-		if configurator, err := NewResolvconfDNSConfigurator(ifaceName); err == nil {
-			return configurator, nil
-		}
-	}
+const (
+	// UnknownManager indicates we couldn't determine the DNS manager
+	UnknownManager DNSManagerType = iota
+	// SystemdResolvedManager indicates systemd-resolved is managing DNS
+	SystemdResolvedManager
+	// NetworkManagerManager indicates NetworkManager is managing DNS
+	NetworkManagerManager
+	// ResolvconfManager indicates resolvconf is managing DNS
+	ResolvconfManager
+	// FileManager indicates direct file management (no DNS manager)
+	FileManager
+)
 
-	// Fall back to direct file manipulation
-	return NewFileDNSConfigurator()
-}
-
-// Helper functions for checking system state
-
-// IsSystemdResolvedRunning checks if systemd-resolved is running
-func IsSystemdResolvedRunning() bool {
-	// Check if stub resolver is configured
-	servers, err := readResolvConfDNS()
+// DetectDNSManagerFromFile reads /etc/resolv.conf to determine which DNS manager is in use
+// This provides a hint based on comments in the file, similar to Netbird's approach
+func DetectDNSManagerFromFile() DNSManagerType {
+	file, err := os.Open(defaultResolvConfPath)
 	if err != nil {
-		return false
+		return UnknownManager
 	}
+	defer file.Close()
 
-	// systemd-resolved uses 127.0.0.53
-	stubAddr := netip.MustParseAddr("127.0.0.53")
-	for _, server := range servers {
-		if server == stubAddr {
-			return true
-		}
-	}
-
-	return false
-}
-
-// readResolvConfDNS reads DNS servers from /etc/resolv.conf
-func readResolvConfDNS() ([]netip.Addr, error) {
-	content, err := os.ReadFile("/etc/resolv.conf")
-	if err != nil {
-		return nil, fmt.Errorf("read resolv.conf: %w", err)
-	}
-
-	var servers []netip.Addr
-	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		text := scanner.Text()
+		if len(text) == 0 {
 			continue
 		}
 
-		if strings.HasPrefix(line, "nameserver") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				if addr, err := netip.ParseAddr(fields[1]); err == nil {
-					servers = append(servers, addr)
-				}
-			}
+		// If we hit a non-comment line, default to file-based
+		if text[0] != '#' {
+			return FileManager
+		}
+
+		// Check for DNS manager signatures in comments
+		if strings.Contains(text, "NetworkManager") {
+			return NetworkManagerManager
+		}
+
+		if strings.Contains(text, "systemd-resolved") {
+			return SystemdResolvedManager
+		}
+
+		if strings.Contains(text, "resolvconf") {
+			return ResolvconfManager
 		}
 	}
 
-	return servers, nil
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		return UnknownManager
+	}
+
+	// No indicators found, assume file-based management
+	return FileManager
 }
 
-// GetSystemDNS returns the current system DNS servers
-func GetSystemDNS() ([]netip.Addr, error) {
-	return readResolvConfDNS()
+// String returns a human-readable name for the DNS manager type
+func (d DNSManagerType) String() string {
+	switch d {
+	case SystemdResolvedManager:
+		return "systemd-resolved"
+	case NetworkManagerManager:
+		return "NetworkManager"
+	case ResolvconfManager:
+		return "resolvconf"
+	case FileManager:
+		return "file"
+	default:
+		return "unknown"
+	}
+}
+
+// DetectDNSManager combines file detection with runtime availability checks
+// to determine the best DNS configurator to use
+func DetectDNSManager(interfaceName string) DNSManagerType {
+	// First check what the file suggests
+	fileHint := DetectDNSManagerFromFile()
+
+	// Verify the hint with runtime checks
+	switch fileHint {
+	case SystemdResolvedManager:
+		// Verify systemd-resolved is actually running
+		if IsSystemdResolvedAvailable() {
+			return SystemdResolvedManager
+		}
+		logger.Warn("dns platform: Found systemd-resolved but it is not running. Falling back to file...")
+		os.Exit(0)
+		return FileManager
+
+	case NetworkManagerManager:
+		// Verify NetworkManager is actually running
+		if IsNetworkManagerAvailable() {
+			return NetworkManagerManager
+		}
+		logger.Warn("dns platform: Found network manager but it is not running. Falling back to file...")
+		return FileManager
+
+	case ResolvconfManager:
+		// Verify resolvconf is available
+		if IsResolvconfAvailable() {
+			return ResolvconfManager
+		}
+		// If resolvconf is mentioned but not available, fall back to file
+		return FileManager
+
+	case FileManager:
+		// File suggests direct file management
+		// But we should still check if a manager is available that wasn't mentioned
+		if IsSystemdResolvedAvailable() && interfaceName != "" {
+			return SystemdResolvedManager
+		}
+		if IsNetworkManagerAvailable() && interfaceName != "" {
+			return NetworkManagerManager
+		}
+		if IsResolvconfAvailable() && interfaceName != "" {
+			return ResolvconfManager
+		}
+		return FileManager
+
+	default:
+		// Unknown - do runtime detection
+		if IsSystemdResolvedAvailable() && interfaceName != "" {
+			return SystemdResolvedManager
+		}
+		if IsNetworkManagerAvailable() && interfaceName != "" {
+			return NetworkManagerManager
+		}
+		if IsResolvconfAvailable() && interfaceName != "" {
+			return ResolvconfManager
+		}
+		return FileManager
+	}
 }
