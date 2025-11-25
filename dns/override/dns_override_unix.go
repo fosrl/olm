@@ -14,7 +14,7 @@ import (
 var configurator platform.DNSConfigurator
 
 // SetupDNSOverride configures the system DNS to use the DNS proxy on Linux/FreeBSD
-// Tries systemd-resolved, NetworkManager, resolvconf, or falls back to /etc/resolv.conf
+// Detects the DNS manager by reading /etc/resolv.conf and verifying runtime availability
 func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
 	if dnsProxy == nil {
 		return fmt.Errorf("DNS proxy is nil")
@@ -22,34 +22,35 @@ func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
 
 	var err error
 
-	// Try systemd-resolved first (most modern)
-	if platform.IsSystemdResolvedAvailable() && interfaceName != "" {
+	// Detect which DNS manager is in use by checking /etc/resolv.conf and runtime availability
+	managerType := platform.DetectDNSManager(interfaceName)
+	logger.Info("Detected DNS manager: %s", managerType.String())
+
+	// Create configurator based on detected manager
+	switch managerType {
+	case platform.SystemdResolvedManager:
 		configurator, err = platform.NewSystemdResolvedDNSConfigurator(interfaceName)
 		if err == nil {
 			logger.Info("Using systemd-resolved DNS configurator")
 			return setDNS(dnsProxy, configurator)
 		}
-		logger.Debug("systemd-resolved not available: %v", err)
-	}
+		logger.Warn("Failed to create systemd-resolved configurator: %v, falling back", err)
 
-	// Try NetworkManager (common on desktops)
-	if platform.IsNetworkManagerAvailable() && interfaceName != "" {
+	case platform.NetworkManagerManager:
 		configurator, err = platform.NewNetworkManagerDNSConfigurator(interfaceName)
 		if err == nil {
-			logger.Info("Using NetworkManager DNS configurator")
+			logger.Info("************************************Using NetworkManager DNS configurator")
 			return setDNS(dnsProxy, configurator)
 		}
-		logger.Debug("NetworkManager not available: %v", err)
-	}
+		logger.Warn("Failed to create NetworkManager configurator: %v, falling back", err)
 
-	// Try resolvconf (common on older systems)
-	if platform.IsResolvconfAvailable() && interfaceName != "" {
+	case platform.ResolvconfManager:
 		configurator, err = platform.NewResolvconfDNSConfigurator(interfaceName)
 		if err == nil {
 			logger.Info("Using resolvconf DNS configurator")
 			return setDNS(dnsProxy, configurator)
 		}
-		logger.Debug("resolvconf not available: %v", err)
+		logger.Warn("Failed to create resolvconf configurator: %v, falling back", err)
 	}
 
 	// Fall back to direct file manipulation

@@ -21,6 +21,7 @@ import (
 	dnsOverride "github.com/fosrl/olm/dns/override"
 	"github.com/fosrl/olm/network"
 	"github.com/fosrl/olm/peermonitor"
+	"github.com/fosrl/olm/peers"
 	"github.com/fosrl/olm/websocket"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -48,6 +49,7 @@ var (
 	globalCtx        context.Context
 	stopRegister     func()
 	stopPing         chan struct{}
+	peerManager      *peers.PeerManager
 )
 
 func Init(ctx context.Context, config GlobalConfig) {
@@ -464,32 +466,15 @@ func StartTunnel(config TunnelConfig) {
 			interfaceIP,
 		)
 
+		peerManager = peers.NewPeerManager(dev, peerMonitor, dnsProxy, interfaceName, privateKey)
+
 		for i := range wgData.Sites {
-			site := &wgData.Sites[i] // Use a pointer to modify the struct in the slice
+			site := wgData.Sites[i]
 			apiServer.UpdatePeerStatus(site.SiteId, false, 0, site.Endpoint, false)
 
-			if err := ConfigurePeer(dev, *site, privateKey, endpoint); err != nil {
-				logger.Error("Failed to configure peer: %v", err)
+			if err := peerManager.AddPeer(site, endpoint); err != nil {
+				logger.Error("Failed to add peer: %v", err)
 				return
-			}
-			if err := network.AddRouteForServerIP(site.ServerIP, interfaceName); err != nil { // this is something for darwin only thats required
-				logger.Error("Failed to add route for peer: %v", err)
-				return
-			}
-			if err := network.AddRoutes(site.RemoteSubnets, interfaceName); err != nil {
-				logger.Error("Failed to add routes for remote subnets: %v", err)
-				return
-			}
-
-			for _, alias := range site.Aliases {
-				// try to parse the alias address into net.IP
-				address := net.ParseIP(alias.AliasAddress)
-				if address == nil {
-					logger.Warn("Invalid alias address for %s: %s", alias.Alias, alias.AliasAddress)
-					continue
-				}
-
-				dnsProxy.AddDNSRecord(alias.Alias, address)
 			}
 
 			logger.Info("Configured peer %s", site.PublicKey)
@@ -528,41 +513,21 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		var updateData SiteConfig
+		var updateData peers.SiteConfig
 		if err := json.Unmarshal(jsonData, &updateData); err != nil {
 			logger.Error("Error unmarshaling update data: %v", err)
 			return
 		}
 
-		// Update the peer in WireGuard
-		if dev == nil {
-			logger.Error("WireGuard device not initialized")
-			return
-		}
-
-		// Find the existing peer to merge updates with
-		var existingPeer *SiteConfig
-		var peerIndex int
-		for i, site := range wgData.Sites {
-			if site.SiteId == updateData.SiteId {
-				existingPeer = &wgData.Sites[i]
-				peerIndex = i
-				break
-			}
-		}
-
-		if existingPeer == nil {
+		// Get existing peer from PeerManager
+		existingPeer, exists := peerManager.GetPeer(updateData.SiteId)
+		if !exists {
 			logger.Error("Peer with site ID %d not found", updateData.SiteId)
 			return
 		}
 
-		// Store old values for comparison
-		oldRemoteSubnets := existingPeer.RemoteSubnets
-		oldPublicKey := existingPeer.PublicKey
-
 		// Create updated site config by merging with existing data
-		// Only update fields that are provided (non-empty/non-zero)
-		siteConfig := *existingPeer // Start with existing data
+		siteConfig := existingPeer
 
 		if updateData.Endpoint != "" {
 			siteConfig.Endpoint = updateData.Endpoint
@@ -580,37 +545,13 @@ func StartTunnel(config TunnelConfig) {
 			siteConfig.RemoteSubnets = updateData.RemoteSubnets
 		}
 
-		// If the public key has changed, remove the old peer first
-		if siteConfig.PublicKey != oldPublicKey {
-			logger.Info("Public key changed for site %d, removing old peer with key %s", updateData.SiteId, oldPublicKey)
-			if err := RemovePeer(dev, updateData.SiteId, oldPublicKey); err != nil {
-				logger.Error("Failed to remove old peer: %v", err)
-				return
-			}
-		}
-
-		if err := ConfigurePeer(dev, siteConfig, privateKey, endpoint); err != nil {
+		if err := peerManager.UpdatePeer(siteConfig, endpoint); err != nil {
 			logger.Error("Failed to update peer: %v", err)
 			return
 		}
 
-		// Handle remote subnet route changes
-		if !stringSlicesEqual(oldRemoteSubnets, siteConfig.RemoteSubnets) {
-			if err := network.RemoveRoutes(oldRemoteSubnets); err != nil {
-				logger.Error("Failed to remove old remote subnet routes: %v", err)
-				// Continue anyway to add new routes
-			}
-
-			// Add new remote subnet routes
-			if err := network.AddRoutes(siteConfig.RemoteSubnets, interfaceName); err != nil {
-				logger.Error("Failed to add new remote subnet routes: %v", err)
-				return
-			}
-		}
-
 		// Update successful
 		logger.Info("Successfully updated peer for site %d", updateData.SiteId)
-		wgData.Sites[peerIndex] = siteConfig
 	})
 
 	// Handler for adding a new peer
@@ -623,46 +564,19 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		var siteConfig SiteConfig
+		var siteConfig peers.SiteConfig
 		if err := json.Unmarshal(jsonData, &siteConfig); err != nil {
 			logger.Error("Error unmarshaling add data: %v", err)
 			return
 		}
 
-		// Add the peer to WireGuard
-		if dev == nil {
-			logger.Error("WireGuard device not initialized")
-			return
-		}
-
-		if err := ConfigurePeer(dev, siteConfig, privateKey, endpoint); err != nil {
+		if err := peerManager.AddPeer(siteConfig, endpoint); err != nil {
 			logger.Error("Failed to add peer: %v", err)
 			return
-		}
-		if err := network.AddRouteForServerIP(siteConfig.ServerIP, interfaceName); err != nil {
-			logger.Error("Failed to add route for new peer: %v", err)
-			return
-		}
-		if err := network.AddRoutes(siteConfig.RemoteSubnets, interfaceName); err != nil {
-			logger.Error("Failed to add routes for remote subnets: %v", err)
-			return
-		}
-		for _, alias := range siteConfig.Aliases {
-			// try to parse the alias address into net.IP
-			address := net.ParseIP(alias.AliasAddress)
-			if address == nil {
-				logger.Warn("Invalid alias address for %s: %s", alias.Alias, alias.AliasAddress)
-				continue
-			}
-
-			dnsProxy.AddDNSRecord(alias.Alias, address)
 		}
 
 		// Add successful
 		logger.Info("Successfully added peer for site %d", siteConfig.SiteId)
-
-		// Update WgData with the new peer
-		wgData.Sites = append(wgData.Sites, siteConfig)
 	})
 
 	// Handler for removing a peer
@@ -675,69 +589,19 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		var removeData PeerRemove
+		var removeData peers.PeerRemove
 		if err := json.Unmarshal(jsonData, &removeData); err != nil {
 			logger.Error("Error unmarshaling remove data: %v", err)
 			return
 		}
 
-		// Find the peer to remove
-		var peerToRemove *SiteConfig
-		var newSites []SiteConfig
-
-		for _, site := range wgData.Sites {
-			if site.SiteId == removeData.SiteId {
-				peerToRemove = &site
-			} else {
-				newSites = append(newSites, site)
-			}
-		}
-
-		if peerToRemove == nil {
-			logger.Error("Peer with site ID %d not found", removeData.SiteId)
-			return
-		}
-
-		// Remove the peer from WireGuard
-		if dev == nil {
-			logger.Error("WireGuard device not initialized")
-			return
-		}
-		if err := RemovePeer(dev, removeData.SiteId, peerToRemove.PublicKey); err != nil {
+		if err := peerManager.RemovePeer(removeData.SiteId); err != nil {
 			logger.Error("Failed to remove peer: %v", err)
-			// Send error response if needed
 			return
-		}
-
-		// Remove route for the peer
-		err = network.RemoveRouteForServerIP(peerToRemove.ServerIP, interfaceName)
-		if err != nil {
-			logger.Error("Failed to remove route for peer: %v", err)
-			return
-		}
-
-		// Remove routes for remote subnets
-		if err := network.RemoveRoutes(peerToRemove.RemoteSubnets); err != nil {
-			logger.Error("Failed to remove routes for remote subnets: %v", err)
-			return
-		}
-
-		for _, alias := range peerToRemove.Aliases {
-			// try to parse the alias address into net.IP
-			address := net.ParseIP(alias.AliasAddress)
-			if address == nil {
-				logger.Warn("Invalid alias address for %s: %s", alias.Alias, alias.AliasAddress)
-				continue
-			}
-
-			dnsProxy.RemoveDNSRecord(alias.Alias, address)
 		}
 
 		// Remove successful
 		logger.Info("Successfully removed peer for site %d", removeData.SiteId)
-
-		// Update WgData to remove the peer
-		wgData.Sites = newSites
 	})
 
 	// Handler for adding remote subnets to a peer
@@ -750,76 +614,24 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		var addSubnetsData PeerAdd
+		var addSubnetsData peers.PeerAdd
 		if err := json.Unmarshal(jsonData, &addSubnetsData); err != nil {
 			logger.Error("Error unmarshaling add-remote-subnets data: %v", err)
 			return
 		}
 
-		// Find the peer to update
-		var peerIndex = -1
-		for i, site := range wgData.Sites {
-			if site.SiteId == addSubnetsData.SiteId {
-				peerIndex = i
-				break
-			}
-		}
-
-		if peerIndex == -1 {
-			logger.Error("Peer with site ID %d not found", addSubnetsData.SiteId)
-			return
-		}
-
-		// Add new subnets to the peer's remote subnets (avoiding duplicates)
-		existingSubnets := make(map[string]bool)
-		for _, subnet := range wgData.Sites[peerIndex].RemoteSubnets {
-			existingSubnets[subnet] = true
-		}
-
-		var newSubnets []string
+		// Add new subnets
 		for _, subnet := range addSubnetsData.RemoteSubnets {
-			if !existingSubnets[subnet] {
-				newSubnets = append(newSubnets, subnet)
-				wgData.Sites[peerIndex].RemoteSubnets = append(wgData.Sites[peerIndex].RemoteSubnets, subnet)
+			if err := peerManager.AddRemoteSubnet(addSubnetsData.SiteId, subnet); err != nil {
+				logger.Error("Failed to add allowed IP %s: %v", subnet, err)
 			}
 		}
 
-		if len(newSubnets) == 0 {
-			logger.Info("No new subnets to add for site %d (all already exist)", addSubnetsData.SiteId)
-			// Still process aliases even if no new subnets
-		} else {
-			// Add routes for the new subnets
-			if err := network.AddRoutes(newSubnets, interfaceName); err != nil {
-				logger.Error("Failed to add routes for new remote subnets: %v", err)
-				return
-			}
-			logger.Info("Successfully added %d remote subnet(s) to peer %d", len(newSubnets), addSubnetsData.SiteId)
-		}
-
-		// Add new aliases to the peer's aliases (avoiding duplicates)
-		existingAliases := make(map[string]bool)
-		for _, alias := range wgData.Sites[peerIndex].Aliases {
-			existingAliases[alias.Alias] = true
-		}
-
-		var newAliases []Alias
+		// Add new aliases
 		for _, alias := range addSubnetsData.Aliases {
-			if !existingAliases[alias.Alias] {
-				address := net.ParseIP(alias.AliasAddress)
-				if address == nil {
-					logger.Warn("Invalid alias address for %s: %s", alias.Alias, alias.AliasAddress)
-					continue
-				}
-
-				// Add DNS record
-				dnsProxy.AddDNSRecord(alias.Alias, address)
-				newAliases = append(newAliases, alias)
-				wgData.Sites[peerIndex].Aliases = append(wgData.Sites[peerIndex].Aliases, alias)
+			if err := peerManager.AddAlias(addSubnetsData.SiteId, alias); err != nil {
+				logger.Error("Failed to add alias %s: %v", alias.Alias, err)
 			}
-		}
-
-		if len(newAliases) > 0 {
-			logger.Info("Successfully added %d alias(es) to peer %d", len(newAliases), addSubnetsData.SiteId)
 		}
 	})
 
@@ -833,89 +645,24 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		var removeSubnetsData RemovePeerData
+		var removeSubnetsData peers.RemovePeerData
 		if err := json.Unmarshal(jsonData, &removeSubnetsData); err != nil {
 			logger.Error("Error unmarshaling remove-remote-subnets data: %v", err)
 			return
 		}
 
-		// Find the peer to update
-		var peerIndex = -1
-		for i, site := range wgData.Sites {
-			if site.SiteId == removeSubnetsData.SiteId {
-				peerIndex = i
-				break
-			}
-		}
-
-		if peerIndex == -1 {
-			logger.Error("Peer with site ID %d not found", removeSubnetsData.SiteId)
-			return
-		}
-
-		// Create a map of subnets to remove for quick lookup
-		subnetsToRemove := make(map[string]bool)
+		// Remove subnets
 		for _, subnet := range removeSubnetsData.RemoteSubnets {
-			subnetsToRemove[subnet] = true
-		}
-
-		// Filter out the subnets to remove
-		var updatedSubnets []string
-		var removedSubnets []string
-		for _, subnet := range wgData.Sites[peerIndex].RemoteSubnets {
-			if subnetsToRemove[subnet] {
-				removedSubnets = append(removedSubnets, subnet)
-			} else {
-				updatedSubnets = append(updatedSubnets, subnet)
+			if err := peerManager.RemoveRemoteSubnet(removeSubnetsData.SiteId, subnet); err != nil {
+				logger.Error("Failed to remove allowed IP %s: %v", subnet, err)
 			}
 		}
 
-		if len(removedSubnets) == 0 {
-			logger.Info("No subnets to remove for site %d (none matched)", removeSubnetsData.SiteId)
-			// Still process aliases even if no subnets to remove
-		} else {
-			// Remove routes for the removed subnets
-			if err := network.RemoveRoutes(removedSubnets); err != nil {
-				logger.Error("Failed to remove routes for remote subnets: %v", err)
-				return
-			}
-
-			// Update the peer's remote subnets
-			wgData.Sites[peerIndex].RemoteSubnets = updatedSubnets
-			logger.Info("Successfully removed %d remote subnet(s) from peer %d", len(removedSubnets), removeSubnetsData.SiteId)
-		}
-
-		// Create a map of aliases to remove for quick lookup
-		aliasesToRemove := make(map[string]bool)
+		// Remove aliases
 		for _, alias := range removeSubnetsData.Aliases {
-			aliasesToRemove[alias.Alias] = true
-		}
-
-		// Filter out the aliases to remove
-		var updatedAliases []Alias
-		var removedAliases []Alias
-		for _, alias := range wgData.Sites[peerIndex].Aliases {
-			if aliasesToRemove[alias.Alias] {
-				removedAliases = append(removedAliases, alias)
-			} else {
-				updatedAliases = append(updatedAliases, alias)
+			if err := peerManager.RemoveAlias(removeSubnetsData.SiteId, alias.Alias); err != nil {
+				logger.Error("Failed to remove alias %s: %v", alias.Alias, err)
 			}
-		}
-
-		if len(removedAliases) > 0 {
-			// Remove DNS records for the removed aliases
-			for _, alias := range removedAliases {
-				address := net.ParseIP(alias.AliasAddress)
-				if address == nil {
-					logger.Warn("Invalid alias address for %s: %s", alias.Alias, alias.AliasAddress)
-					continue
-				}
-				dnsProxy.RemoveDNSRecord(alias.Alias, address)
-			}
-
-			// Update the peer's aliases
-			wgData.Sites[peerIndex].Aliases = updatedAliases
-			logger.Info("Successfully removed %d alias(es) from peer %d", len(removedAliases), removeSubnetsData.SiteId)
 		}
 	})
 
@@ -929,82 +676,41 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		var updateSubnetsData UpdatePeerData
+		var updateSubnetsData peers.UpdatePeerData
 		if err := json.Unmarshal(jsonData, &updateSubnetsData); err != nil {
 			logger.Error("Error unmarshaling update-remote-subnets data: %v", err)
 			return
 		}
 
-		// Find the peer to update
-		var peerIndex = -1
-		for i, site := range wgData.Sites {
-			if site.SiteId == updateSubnetsData.SiteId {
-				peerIndex = i
-				break
+		// Remove old subnets
+		for _, subnet := range updateSubnetsData.OldRemoteSubnets {
+			if err := peerManager.RemoveRemoteSubnet(updateSubnetsData.SiteId, subnet); err != nil {
+				logger.Error("Failed to remove allowed IP %s: %v", subnet, err)
 			}
 		}
 
-		if peerIndex == -1 {
-			logger.Error("Peer with site ID %d not found", updateSubnetsData.SiteId)
-			return
-		}
-
-		// First, remove routes for old subnets
-		if len(updateSubnetsData.OldRemoteSubnets) > 0 {
-			if err := network.RemoveRoutes(updateSubnetsData.OldRemoteSubnets); err != nil {
-				logger.Error("Failed to remove routes for old remote subnets: %v", err)
-				return
+		// Add new subnets
+		for _, subnet := range updateSubnetsData.NewRemoteSubnets {
+			if err := peerManager.AddRemoteSubnet(updateSubnetsData.SiteId, subnet); err != nil {
+				logger.Error("Failed to add allowed IP %s: %v", subnet, err)
 			}
-			logger.Info("Removed %d old remote subnet(s) from peer %d", len(updateSubnetsData.OldRemoteSubnets), updateSubnetsData.SiteId)
 		}
 
-		// Then, add routes for new subnets
-		if len(updateSubnetsData.NewRemoteSubnets) > 0 {
-			if err := network.AddRoutes(updateSubnetsData.NewRemoteSubnets, interfaceName); err != nil {
-				logger.Error("Failed to add routes for new remote subnets: %v", err)
-				// Attempt to rollback by re-adding old routes
-				if rollbackErr := network.AddRoutes(updateSubnetsData.OldRemoteSubnets, interfaceName); rollbackErr != nil {
-					logger.Error("Failed to rollback old routes: %v", rollbackErr)
-				}
-				return
+		// Remove old aliases
+		for _, alias := range updateSubnetsData.OldAliases {
+			if err := peerManager.RemoveAlias(updateSubnetsData.SiteId, alias.Alias); err != nil {
+				logger.Error("Failed to remove alias %s: %v", alias.Alias, err)
 			}
-			logger.Info("Added %d new remote subnet(s) to peer %d", len(updateSubnetsData.NewRemoteSubnets), updateSubnetsData.SiteId)
 		}
 
-		// Finally, update the peer's remote subnets in wgData
-		wgData.Sites[peerIndex].RemoteSubnets = updateSubnetsData.NewRemoteSubnets
-
-		logger.Info("Successfully updated remote subnets for peer %d (removed %d, added %d)",
-			updateSubnetsData.SiteId, len(updateSubnetsData.OldRemoteSubnets), len(updateSubnetsData.NewRemoteSubnets))
-
-		// Remove DNS records for old aliases
-		if len(updateSubnetsData.OldAliases) > 0 {
-			for _, alias := range updateSubnetsData.OldAliases {
-				address := net.ParseIP(alias.AliasAddress)
-				if address == nil {
-					logger.Warn("Invalid old alias address for %s: %s", alias.Alias, alias.AliasAddress)
-					continue
-				}
-				dnsProxy.RemoveDNSRecord(alias.Alias, address)
+		// Add new aliases
+		for _, alias := range updateSubnetsData.NewAliases {
+			if err := peerManager.AddAlias(updateSubnetsData.SiteId, alias); err != nil {
+				logger.Error("Failed to add alias %s: %v", alias.Alias, err)
 			}
-			logger.Info("Removed %d old alias(es) from peer %d", len(updateSubnetsData.OldAliases), updateSubnetsData.SiteId)
 		}
 
-		// Add DNS records for new aliases
-		if len(updateSubnetsData.NewAliases) > 0 {
-			for _, alias := range updateSubnetsData.NewAliases {
-				address := net.ParseIP(alias.AliasAddress)
-				if address == nil {
-					logger.Warn("Invalid new alias address for %s: %s", alias.Alias, alias.AliasAddress)
-					continue
-				}
-				dnsProxy.AddDNSRecord(alias.Alias, address)
-			}
-			logger.Info("Added %d new alias(es) to peer %d", len(updateSubnetsData.NewAliases), updateSubnetsData.SiteId)
-		}
-
-		// Update the peer's aliases in wgData
-		wgData.Sites[peerIndex].Aliases = updateSubnetsData.NewAliases
+		logger.Info("Successfully updated remote subnets and aliases for peer %d", updateSubnetsData.SiteId)
 	})
 
 	olm.RegisterHandler("olm/wg/peer/relay", func(msg websocket.WSMessage) {
@@ -1016,7 +722,7 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		var relayData RelayPeerData
+		var relayData peers.RelayPeerData
 		if err := json.Unmarshal(jsonData, &relayData); err != nil {
 			logger.Error("Error unmarshaling relay data: %v", err)
 			return
