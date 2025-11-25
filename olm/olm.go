@@ -811,6 +811,12 @@ func StartTunnel(config TunnelConfig) {
 }
 
 func Close() {
+	// Restore original DNS configuration
+	// we do this first to avoid any DNS issues if something else gets stuck
+	if err := dnsOverride.RestoreDNSOverride(); err != nil {
+		logger.Error("Failed to restore DNS: %v", err)
+	}
+
 	// Stop hole punch manager
 	if holePunchManager != nil {
 		holePunchManager.Stop()
@@ -854,14 +860,6 @@ func Close() {
 		middleDev.Close()
 		middleDev = nil
 	}
-
-	// // Restore original DNS
-	// if configurator != nil {
-	// 	fmt.Println("Restoring original DNS servers...")
-	// 	if err := configurator.RestoreDNS(); err != nil {
-	// 		log.Fatalf("Failed to restore DNS: %v", err)
-	// 	}
-	// }
 
 	// Stop DNS proxy
 	logger.Debug("Stopping DNS proxy")
@@ -908,11 +906,6 @@ func StopTunnel() error {
 	}
 
 	Close()
-
-	// Restore original DNS configuration
-	if err := dnsOverride.RestoreDNSOverride(); err != nil {
-		logger.Error("Failed to restore DNS: %v", err)
-	}
 
 	// Reset the connected state
 	connected = false

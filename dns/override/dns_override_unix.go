@@ -39,7 +39,7 @@ func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
 	case platform.NetworkManagerManager:
 		configurator, err = platform.NewNetworkManagerDNSConfigurator(interfaceName)
 		if err == nil {
-			logger.Info("************************************Using NetworkManager DNS configurator")
+			logger.Info("Using NetworkManager DNS configurator")
 			return setDNS(dnsProxy, configurator)
 		}
 		logger.Warn("Failed to create NetworkManager configurator: %v, falling back", err)
