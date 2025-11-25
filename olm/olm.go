@@ -167,6 +167,9 @@ func StartTunnel(config TunnelConfig) {
 
 	tunnelRunning = true // Also set it here in case it is called externally
 
+	// debug print out the whole config
+	logger.Debug("Starting tunnel with config: %+v", config)
+
 	if config.Holepunch {
 		logger.Warn("Hole punching is enabled. This is EXPERIMENTAL and may not work in all environments.")
 	}
