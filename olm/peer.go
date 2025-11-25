@@ -15,7 +15,7 @@ import (
 
 // ConfigurePeer sets up or updates a peer within the WireGuard device
 func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes.Key, endpoint string) error {
-	siteHost, err := util.ResolveDomain(siteConfig.Endpoint)
+	siteHost, err := util.ResolveDomain(formatEndpoint(siteConfig.Endpoint))
 	if err != nil {
 		return fmt.Errorf("failed to resolve endpoint for site %d: %v", siteConfig.SiteId, err)
 	}

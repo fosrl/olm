@@ -49,8 +49,8 @@ type Alias struct {
 	AliasAddress string `json:"aliasAddress"` // the alias IP address
 }
 
-// RemovePeerData represents the data needed to remove a peer
-type RemovePeerData struct {
+// RemovePeer represents the data needed to remove a peer
+type PeerRemove struct {
 	SiteId int `json:"siteId"`
 }
 
@@ -60,22 +60,26 @@ type RelayPeerData struct {
 	PublicKey string `json:"publicKey"`
 }
 
-// AddRemoteSubnetsData represents the data needed to add remote subnets to a peer
-type AddRemoteSubnetsData struct {
+// PeerAdd represents the data needed to add remote subnets to a peer
+type PeerAdd struct {
 	SiteId        int      `json:"siteId"`
-	RemoteSubnets []string `json:"remoteSubnets"` // subnets to add
+	RemoteSubnets []string `json:"remoteSubnets"`     // subnets to add
+	Aliases       []Alias  `json:"aliases,omitempty"` // aliases to add
 }
 
-// RemoveRemoteSubnetsData represents the data needed to remove remote subnets from a peer
-type RemoveRemoteSubnetsData struct {
+// RemovePeerData represents the data needed to remove remote subnets from a peer
+type RemovePeerData struct {
 	SiteId        int      `json:"siteId"`
-	RemoteSubnets []string `json:"remoteSubnets"` // subnets to remove
+	RemoteSubnets []string `json:"remoteSubnets"`     // subnets to remove
+	Aliases       []Alias  `json:"aliases,omitempty"` // aliases to remove
 }
 
-type UpdateRemoteSubnetsData struct {
+type UpdatePeerData struct {
 	SiteId           int      `json:"siteId"`
-	OldRemoteSubnets []string `json:"oldRemoteSubnets"` // old list of remote subnets
-	NewRemoteSubnets []string `json:"newRemoteSubnets"` // new list of remote subnets
+	OldRemoteSubnets []string `json:"oldRemoteSubnets"`     // old list of remote subnets
+	NewRemoteSubnets []string `json:"newRemoteSubnets"`     // new list of remote subnets
+	OldAliases       []Alias  `json:"oldAliases,omitempty"` // old list of aliases
+	NewAliases       []Alias  `json:"newAliases,omitempty"` // new list of aliases
 }
 
 type GlobalConfig struct {
@@ -123,4 +127,6 @@ type TunnelConfig struct {
 
 	FileDescriptorTun  uint32
 	FileDescriptorUAPI uint32
+
+	EnableUAPI bool
 }

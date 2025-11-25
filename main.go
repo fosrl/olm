@@ -233,6 +233,7 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 			PingIntervalDuration: config.PingIntervalDuration,
 			PingTimeoutDuration:  config.PingTimeoutDuration,
 			OrgID:                config.OrgID,
+			EnableUAPI:           true,
 		}
 		go olm.StartTunnel(tunnelConfig)
 	} else {

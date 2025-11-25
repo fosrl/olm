@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -366,22 +368,6 @@ func StartTunnel(config TunnelConfig) {
 			}
 		}
 
-		// fileUAPI, err := func() (*os.File, error) {
-		// 	if config.FileDescriptorUAPI != 0 {
-		// 		fd, err := strconv.ParseUint(fmt.Sprintf("%d", config.FileDescriptorUAPI), 10, 32)
-		// 		if err != nil {
-		// 			return nil, fmt.Errorf("invalid UAPI file descriptor: %v", err)
-		// 		}
-		// 		return os.NewFile(uintptr(fd), ""), nil
-		// 	}
-		// 	return uapiOpen(interfaceName)
-		// }()
-		// if err != nil {
-		// 	logger.Error("UAPI listen error: %v", err)
-		// 	os.Exit(1)
-		// 	return
-		// }
-
 		// Wrap TUN device with packet filter for DNS proxy
 		middleDev = olmDevice.NewMiddleDevice(tdev)
 
@@ -389,30 +375,45 @@ func StartTunnel(config TunnelConfig) {
 		// Use filtered device instead of raw TUN device
 		dev = device.NewDevice(middleDev, sharedBind, (*device.Logger)(wgLogger))
 
-		// uapiListener, err = uapiListen(interfaceName, fileUAPI)
-		// if err != nil {
-		// 	logger.Error("Failed to listen on uapi socket: %v", err)
-		// 	os.Exit(1)
-		// }
+		if config.EnableUAPI {
+			fileUAPI, err := func() (*os.File, error) {
+				if config.FileDescriptorUAPI != 0 {
+					fd, err := strconv.ParseUint(fmt.Sprintf("%d", config.FileDescriptorUAPI), 10, 32)
+					if err != nil {
+						return nil, fmt.Errorf("invalid UAPI file descriptor: %v", err)
+					}
+					return os.NewFile(uintptr(fd), ""), nil
+				}
+				return olmDevice.UapiOpen(interfaceName)
+			}()
+			if err != nil {
+				logger.Error("UAPI listen error: %v", err)
+				os.Exit(1)
+				return
+			}
 
-		// go func() {
-		// 	for {
-		// 		conn, err := uapiListener.Accept()
-		// 		if err != nil {
+			uapiListener, err = olmDevice.UapiListen(interfaceName, fileUAPI)
+			if err != nil {
+				logger.Error("Failed to listen on uapi socket: %v", err)
+				os.Exit(1)
+			}
 
-		// 			return
-		// 		}
-		// 		go dev.IpcHandle(conn)
-		// 	}
-		// }()
-		// logger.Info("UAPI listener started")
+			go func() {
+				for {
+					conn, err := uapiListener.Accept()
+					if err != nil {
+
+						return
+					}
+					go dev.IpcHandle(conn)
+				}
+			}()
+			logger.Info("UAPI listener started")
+		}
 
 		if err = dev.Up(); err != nil {
 			logger.Error("Failed to bring up WireGuard device: %v", err)
 		}
-
-		// TODO: REMOVE HARDCODE
-		wgData.UtilitySubnet = "100.81.0.0/24"
 
 		// Create and start DNS proxy
 		dnsProxy, err = dns.NewDNSProxy(tdev, middleDev, config.MTU, wgData.UtilitySubnet, config.UpstreamDNS)
@@ -466,9 +467,6 @@ func StartTunnel(config TunnelConfig) {
 		for i := range wgData.Sites {
 			site := &wgData.Sites[i] // Use a pointer to modify the struct in the slice
 			apiServer.UpdatePeerStatus(site.SiteId, false, 0, site.Endpoint, false)
-
-			// Format the endpoint before configuring the peer.
-			site.Endpoint = formatEndpoint(site.Endpoint)
 
 			if err := ConfigurePeer(dev, *site, privateKey, endpoint); err != nil {
 				logger.Error("Failed to configure peer: %v", err)
@@ -591,9 +589,6 @@ func StartTunnel(config TunnelConfig) {
 			}
 		}
 
-		// Format the endpoint before updating the peer.
-		siteConfig.Endpoint = formatEndpoint(siteConfig.Endpoint)
-
 		if err := ConfigurePeer(dev, siteConfig, privateKey, endpoint); err != nil {
 			logger.Error("Failed to update peer: %v", err)
 			return
@@ -601,7 +596,7 @@ func StartTunnel(config TunnelConfig) {
 
 		// Handle remote subnet route changes
 		if !stringSlicesEqual(oldRemoteSubnets, siteConfig.RemoteSubnets) {
-			if err := network.RemoveRoutesForRemoteSubnets(oldRemoteSubnets); err != nil {
+			if err := network.RemoveRoutes(oldRemoteSubnets); err != nil {
 				logger.Error("Failed to remove old remote subnet routes: %v", err)
 				// Continue anyway to add new routes
 			}
@@ -639,8 +634,6 @@ func StartTunnel(config TunnelConfig) {
 			logger.Error("WireGuard device not initialized")
 			return
 		}
-		// Format the endpoint before adding the new peer.
-		siteConfig.Endpoint = formatEndpoint(siteConfig.Endpoint)
 
 		if err := ConfigurePeer(dev, siteConfig, privateKey, endpoint); err != nil {
 			logger.Error("Failed to add peer: %v", err)
@@ -653,6 +646,16 @@ func StartTunnel(config TunnelConfig) {
 		if err := network.AddRoutes(siteConfig.RemoteSubnets, interfaceName); err != nil {
 			logger.Error("Failed to add routes for remote subnets: %v", err)
 			return
+		}
+		for _, alias := range siteConfig.Aliases {
+			// try to parse the alias address into net.IP
+			address := net.ParseIP(alias.AliasAddress)
+			if address == nil {
+				logger.Warn("Invalid alias address for %s: %s", alias.Alias, alias.AliasAddress)
+				continue
+			}
+
+			dnsProxy.AddDNSRecord(alias.Alias, address)
 		}
 
 		// Add successful
@@ -672,7 +675,7 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		var removeData RemovePeerData
+		var removeData PeerRemove
 		if err := json.Unmarshal(jsonData, &removeData); err != nil {
 			logger.Error("Error unmarshaling remove data: %v", err)
 			return
@@ -714,9 +717,20 @@ func StartTunnel(config TunnelConfig) {
 		}
 
 		// Remove routes for remote subnets
-		if err := network.RemoveRoutesForRemoteSubnets(peerToRemove.RemoteSubnets); err != nil {
+		if err := network.RemoveRoutes(peerToRemove.RemoteSubnets); err != nil {
 			logger.Error("Failed to remove routes for remote subnets: %v", err)
 			return
+		}
+
+		for _, alias := range peerToRemove.Aliases {
+			// try to parse the alias address into net.IP
+			address := net.ParseIP(alias.AliasAddress)
+			if address == nil {
+				logger.Warn("Invalid alias address for %s: %s", alias.Alias, alias.AliasAddress)
+				continue
+			}
+
+			dnsProxy.RemoveDNSRecord(alias.Alias, address)
 		}
 
 		// Remove successful
@@ -727,8 +741,8 @@ func StartTunnel(config TunnelConfig) {
 	})
 
 	// Handler for adding remote subnets to a peer
-	olm.RegisterHandler("olm/wg/peer/add-remote-subnets", func(msg websocket.WSMessage) {
-		logger.Debug("Received add-remote-subnets message: %v", msg.Data)
+	olm.RegisterHandler("olm/wg/peer/data/add", func(msg websocket.WSMessage) {
+		logger.Debug("Received add-remote-subnets-aliases message: %v", msg.Data)
 
 		jsonData, err := json.Marshal(msg.Data)
 		if err != nil {
@@ -736,7 +750,7 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		var addSubnetsData AddRemoteSubnetsData
+		var addSubnetsData PeerAdd
 		if err := json.Unmarshal(jsonData, &addSubnetsData); err != nil {
 			logger.Error("Error unmarshaling add-remote-subnets data: %v", err)
 			return
@@ -772,21 +786,46 @@ func StartTunnel(config TunnelConfig) {
 
 		if len(newSubnets) == 0 {
 			logger.Info("No new subnets to add for site %d (all already exist)", addSubnetsData.SiteId)
-			return
+			// Still process aliases even if no new subnets
+		} else {
+			// Add routes for the new subnets
+			if err := network.AddRoutes(newSubnets, interfaceName); err != nil {
+				logger.Error("Failed to add routes for new remote subnets: %v", err)
+				return
+			}
+			logger.Info("Successfully added %d remote subnet(s) to peer %d", len(newSubnets), addSubnetsData.SiteId)
 		}
 
-		// Add routes for the new subnets
-		if err := network.AddRoutes(newSubnets, interfaceName); err != nil {
-			logger.Error("Failed to add routes for new remote subnets: %v", err)
-			return
+		// Add new aliases to the peer's aliases (avoiding duplicates)
+		existingAliases := make(map[string]bool)
+		for _, alias := range wgData.Sites[peerIndex].Aliases {
+			existingAliases[alias.Alias] = true
 		}
 
-		logger.Info("Successfully added %d remote subnet(s) to peer %d", len(newSubnets), addSubnetsData.SiteId)
+		var newAliases []Alias
+		for _, alias := range addSubnetsData.Aliases {
+			if !existingAliases[alias.Alias] {
+				address := net.ParseIP(alias.AliasAddress)
+				if address == nil {
+					logger.Warn("Invalid alias address for %s: %s", alias.Alias, alias.AliasAddress)
+					continue
+				}
+
+				// Add DNS record
+				dnsProxy.AddDNSRecord(alias.Alias, address)
+				newAliases = append(newAliases, alias)
+				wgData.Sites[peerIndex].Aliases = append(wgData.Sites[peerIndex].Aliases, alias)
+			}
+		}
+
+		if len(newAliases) > 0 {
+			logger.Info("Successfully added %d alias(es) to peer %d", len(newAliases), addSubnetsData.SiteId)
+		}
 	})
 
 	// Handler for removing remote subnets from a peer
-	olm.RegisterHandler("olm/wg/peer/remove-remote-subnets", func(msg websocket.WSMessage) {
-		logger.Debug("Received remove-remote-subnets message: %v", msg.Data)
+	olm.RegisterHandler("olm/wg/peer/data/remove", func(msg websocket.WSMessage) {
+		logger.Debug("Received remove-remote-subnets-aliases message: %v", msg.Data)
 
 		jsonData, err := json.Marshal(msg.Data)
 		if err != nil {
@@ -794,7 +833,7 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		var removeSubnetsData RemoveRemoteSubnetsData
+		var removeSubnetsData RemovePeerData
 		if err := json.Unmarshal(jsonData, &removeSubnetsData); err != nil {
 			logger.Error("Error unmarshaling remove-remote-subnets data: %v", err)
 			return
@@ -833,24 +872,56 @@ func StartTunnel(config TunnelConfig) {
 
 		if len(removedSubnets) == 0 {
 			logger.Info("No subnets to remove for site %d (none matched)", removeSubnetsData.SiteId)
-			return
+			// Still process aliases even if no subnets to remove
+		} else {
+			// Remove routes for the removed subnets
+			if err := network.RemoveRoutes(removedSubnets); err != nil {
+				logger.Error("Failed to remove routes for remote subnets: %v", err)
+				return
+			}
+
+			// Update the peer's remote subnets
+			wgData.Sites[peerIndex].RemoteSubnets = updatedSubnets
+			logger.Info("Successfully removed %d remote subnet(s) from peer %d", len(removedSubnets), removeSubnetsData.SiteId)
 		}
 
-		// Remove routes for the removed subnets
-		if err := network.RemoveRoutesForRemoteSubnets(removedSubnets); err != nil {
-			logger.Error("Failed to remove routes for remote subnets: %v", err)
-			return
+		// Create a map of aliases to remove for quick lookup
+		aliasesToRemove := make(map[string]bool)
+		for _, alias := range removeSubnetsData.Aliases {
+			aliasesToRemove[alias.Alias] = true
 		}
 
-		// Update the peer's remote subnets
-		wgData.Sites[peerIndex].RemoteSubnets = updatedSubnets
+		// Filter out the aliases to remove
+		var updatedAliases []Alias
+		var removedAliases []Alias
+		for _, alias := range wgData.Sites[peerIndex].Aliases {
+			if aliasesToRemove[alias.Alias] {
+				removedAliases = append(removedAliases, alias)
+			} else {
+				updatedAliases = append(updatedAliases, alias)
+			}
+		}
 
-		logger.Info("Successfully removed %d remote subnet(s) from peer %d", len(removedSubnets), removeSubnetsData.SiteId)
+		if len(removedAliases) > 0 {
+			// Remove DNS records for the removed aliases
+			for _, alias := range removedAliases {
+				address := net.ParseIP(alias.AliasAddress)
+				if address == nil {
+					logger.Warn("Invalid alias address for %s: %s", alias.Alias, alias.AliasAddress)
+					continue
+				}
+				dnsProxy.RemoveDNSRecord(alias.Alias, address)
+			}
+
+			// Update the peer's aliases
+			wgData.Sites[peerIndex].Aliases = updatedAliases
+			logger.Info("Successfully removed %d alias(es) from peer %d", len(removedAliases), removeSubnetsData.SiteId)
+		}
 	})
 
 	// Handler for updating remote subnets of a peer (remove old, add new in one operation)
-	olm.RegisterHandler("olm/wg/peer/update-remote-subnets", func(msg websocket.WSMessage) {
-		logger.Debug("Received update-remote-subnets message: %v", msg.Data)
+	olm.RegisterHandler("olm/wg/peer/data/update", func(msg websocket.WSMessage) {
+		logger.Debug("Received update-remote-subnets-aliases message: %v", msg.Data)
 
 		jsonData, err := json.Marshal(msg.Data)
 		if err != nil {
@@ -858,7 +929,7 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		var updateSubnetsData UpdateRemoteSubnetsData
+		var updateSubnetsData UpdatePeerData
 		if err := json.Unmarshal(jsonData, &updateSubnetsData); err != nil {
 			logger.Error("Error unmarshaling update-remote-subnets data: %v", err)
 			return
@@ -880,7 +951,7 @@ func StartTunnel(config TunnelConfig) {
 
 		// First, remove routes for old subnets
 		if len(updateSubnetsData.OldRemoteSubnets) > 0 {
-			if err := network.RemoveRoutesForRemoteSubnets(updateSubnetsData.OldRemoteSubnets); err != nil {
+			if err := network.RemoveRoutes(updateSubnetsData.OldRemoteSubnets); err != nil {
 				logger.Error("Failed to remove routes for old remote subnets: %v", err)
 				return
 			}
@@ -905,6 +976,35 @@ func StartTunnel(config TunnelConfig) {
 
 		logger.Info("Successfully updated remote subnets for peer %d (removed %d, added %d)",
 			updateSubnetsData.SiteId, len(updateSubnetsData.OldRemoteSubnets), len(updateSubnetsData.NewRemoteSubnets))
+
+		// Remove DNS records for old aliases
+		if len(updateSubnetsData.OldAliases) > 0 {
+			for _, alias := range updateSubnetsData.OldAliases {
+				address := net.ParseIP(alias.AliasAddress)
+				if address == nil {
+					logger.Warn("Invalid old alias address for %s: %s", alias.Alias, alias.AliasAddress)
+					continue
+				}
+				dnsProxy.RemoveDNSRecord(alias.Alias, address)
+			}
+			logger.Info("Removed %d old alias(es) from peer %d", len(updateSubnetsData.OldAliases), updateSubnetsData.SiteId)
+		}
+
+		// Add DNS records for new aliases
+		if len(updateSubnetsData.NewAliases) > 0 {
+			for _, alias := range updateSubnetsData.NewAliases {
+				address := net.ParseIP(alias.AliasAddress)
+				if address == nil {
+					logger.Warn("Invalid new alias address for %s: %s", alias.Alias, alias.AliasAddress)
+					continue
+				}
+				dnsProxy.AddDNSRecord(alias.Alias, address)
+			}
+			logger.Info("Added %d new alias(es) to peer %d", len(updateSubnetsData.NewAliases), updateSubnetsData.SiteId)
+		}
+
+		// Update the peer's aliases in wgData
+		wgData.Sites[peerIndex].Aliases = updateSubnetsData.NewAliases
 	})
 
 	olm.RegisterHandler("olm/wg/peer/relay", func(msg websocket.WSMessage) {
