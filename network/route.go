@@ -240,7 +240,7 @@ func AddRoutes(remoteSubnets []string, interfaceName string) error {
 }
 
 // removeRoutesForRemoteSubnets removes routes for each subnet in RemoteSubnets
-func RemoveRoutesForRemoteSubnets(remoteSubnets []string) error {
+func RemoveRoutes(remoteSubnets []string) error {
 	if len(remoteSubnets) == 0 {
 		return nil
 	}
