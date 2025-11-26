@@ -108,6 +108,13 @@ func DetectDNSManager(interfaceName string) DNSManagerType {
 	case NetworkManagerManager:
 		// Verify NetworkManager is actually running
 		if IsNetworkManagerAvailable() {
+			// Check if NetworkManager is delegating to systemd-resolved
+			if !IsNetworkManagerDNSModeSupported() {
+				logger.Info("NetworkManager is delegating DNS to systemd-resolved, using systemd-resolved configurator")
+				if IsSystemdResolvedAvailable() {
+					return SystemdResolvedManager
+				}
+			}
 			return NetworkManagerManager
 		}
 		logger.Warn("dns platform: Found network manager but it is not running. Falling back to file...")
