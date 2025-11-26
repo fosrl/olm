@@ -14,19 +14,33 @@ import (
 )
 
 const (
-	systemdResolvedDest      = "org.freedesktop.resolve1"
-	systemdDbusObjectNode    = "/org/freedesktop/resolve1"
-	systemdDbusManagerIface  = "org.freedesktop.resolve1.Manager"
-	systemdDbusGetLinkMethod = systemdDbusManagerIface + ".GetLink"
-	systemdDbusLinkInterface = "org.freedesktop.resolve1.Link"
-	systemdDbusSetDNSMethod  = systemdDbusLinkInterface + ".SetDNS"
-	systemdDbusRevertMethod  = systemdDbusLinkInterface + ".Revert"
+	systemdResolvedDest              = "org.freedesktop.resolve1"
+	systemdDbusObjectNode            = "/org/freedesktop/resolve1"
+	systemdDbusManagerIface          = "org.freedesktop.resolve1.Manager"
+	systemdDbusGetLinkMethod         = systemdDbusManagerIface + ".GetLink"
+	systemdDbusFlushCachesMethod     = systemdDbusManagerIface + ".FlushCaches"
+	systemdDbusLinkInterface         = "org.freedesktop.resolve1.Link"
+	systemdDbusSetDNSMethod          = systemdDbusLinkInterface + ".SetDNS"
+	systemdDbusSetDefaultRouteMethod = systemdDbusLinkInterface + ".SetDefaultRoute"
+	systemdDbusSetDomainsMethod      = systemdDbusLinkInterface + ".SetDomains"
+	systemdDbusSetDNSSECMethod       = systemdDbusLinkInterface + ".SetDNSSEC"
+	systemdDbusSetDNSOverTLSMethod   = systemdDbusLinkInterface + ".SetDNSOverTLS"
+	systemdDbusRevertMethod          = systemdDbusLinkInterface + ".Revert"
+
+	// RootZone is the root DNS zone that matches all queries
+	RootZone = "."
 )
 
 // systemdDbusDNSInput maps to (iay) dbus input for SetDNS method
 type systemdDbusDNSInput struct {
 	Family  int32
 	Address []byte
+}
+
+// systemdDbusDomainsInput maps to (sb) dbus input for SetDomains method
+type systemdDbusDomainsInput struct {
+	Domain    string
+	MatchOnly bool
 }
 
 // SystemdResolvedDNSConfigurator manages DNS settings using systemd-resolved D-Bus API
@@ -111,6 +125,11 @@ func (s *SystemdResolvedDNSConfigurator) RestoreDNS() error {
 		return fmt.Errorf("revert DNS settings: %w", err)
 	}
 
+	// Flush DNS cache after reverting
+	if err := s.flushDNSCache(); err != nil {
+		fmt.Printf("warning: failed to flush DNS cache: %v\n", err)
+	}
+
 	return nil
 }
 
@@ -156,9 +175,90 @@ func (s *SystemdResolvedDNSConfigurator) applyDNSServers(servers []netip.Addr) e
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Call SetDNS method
+	// Call SetDNS method to set the DNS servers
 	if err := obj.CallWithContext(ctx, systemdDbusSetDNSMethod, 0, dnsInputs).Store(); err != nil {
 		return fmt.Errorf("set DNS servers: %w", err)
+	}
+
+	// Set this interface as the default route for DNS
+	// This ensures all DNS queries prefer this interface
+	if err := s.callLinkMethod(systemdDbusSetDefaultRouteMethod, true); err != nil {
+		return fmt.Errorf("set default route: %w", err)
+	}
+
+	// Set the root zone "." as a match-only domain
+	// This captures ALL DNS queries and routes them through this interface
+	domainsInput := []systemdDbusDomainsInput{
+		{
+			Domain:    RootZone,
+			MatchOnly: true,
+		},
+	}
+	if err := s.callLinkMethod(systemdDbusSetDomainsMethod, domainsInput); err != nil {
+		return fmt.Errorf("set domains: %w", err)
+	}
+
+	// Disable DNSSEC - we don't support it and it may be enabled by default
+	if err := s.callLinkMethod(systemdDbusSetDNSSECMethod, "no"); err != nil {
+		// Log warning but don't fail - this is optional
+		fmt.Printf("warning: failed to disable DNSSEC: %v\n", err)
+	}
+
+	// Disable DNSOverTLS - we don't support it and it may be enabled by default
+	if err := s.callLinkMethod(systemdDbusSetDNSOverTLSMethod, "no"); err != nil {
+		// Log warning but don't fail - this is optional
+		fmt.Printf("warning: failed to disable DNSOverTLS: %v\n", err)
+	}
+
+	// Flush DNS cache to ensure new settings take effect immediately
+	if err := s.flushDNSCache(); err != nil {
+		fmt.Printf("warning: failed to flush DNS cache: %v\n", err)
+	}
+
+	return nil
+}
+
+// callLinkMethod is a helper to call methods on the link object
+func (s *SystemdResolvedDNSConfigurator) callLinkMethod(method string, value any) error {
+	conn, err := dbus.SystemBus()
+	if err != nil {
+		return fmt.Errorf("connect to system bus: %w", err)
+	}
+	defer conn.Close()
+
+	obj := conn.Object(systemdResolvedDest, s.dbusLinkObject)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if value != nil {
+		if err := obj.CallWithContext(ctx, method, 0, value).Store(); err != nil {
+			return fmt.Errorf("call %s: %w", method, err)
+		}
+	} else {
+		if err := obj.CallWithContext(ctx, method, 0).Store(); err != nil {
+			return fmt.Errorf("call %s: %w", method, err)
+		}
+	}
+
+	return nil
+}
+
+// flushDNSCache flushes the systemd-resolved DNS cache
+func (s *SystemdResolvedDNSConfigurator) flushDNSCache() error {
+	conn, err := dbus.SystemBus()
+	if err != nil {
+		return fmt.Errorf("connect to system bus: %w", err)
+	}
+	defer conn.Close()
+
+	obj := conn.Object(systemdResolvedDest, systemdDbusObjectNode)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := obj.CallWithContext(ctx, systemdDbusFlushCachesMethod, 0).Store(); err != nil {
+		return fmt.Errorf("flush caches: %w", err)
 	}
 
 	return nil

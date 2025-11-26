@@ -92,10 +92,7 @@ func (d DNSManagerType) String() string {
 // to determine the best DNS configurator to use
 func DetectDNSManager(interfaceName string) DNSManagerType {
 	// First check what the file suggests
-	// fileHint := DetectDNSManagerFromFile()
-
-	// TODO: Remove hardcode
-	fileHint := NetworkManagerManager
+	fileHint := DetectDNSManagerFromFile()
 
 	// Verify the hint with runtime checks
 	switch fileHint {
