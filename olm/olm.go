@@ -14,12 +14,12 @@ import (
 	"github.com/fosrl/newt/bind"
 	"github.com/fosrl/newt/holepunch"
 	"github.com/fosrl/newt/logger"
+	"github.com/fosrl/newt/network"
 	"github.com/fosrl/newt/util"
 	"github.com/fosrl/olm/api"
 	olmDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/dns"
 	dnsOverride "github.com/fosrl/olm/dns/override"
-	"github.com/fosrl/olm/network"
 	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/peers"
 	"github.com/fosrl/olm/websocket"
@@ -770,6 +770,7 @@ func StartTunnel(config TunnelConfig) {
 				"relay":      !config.Holepunch,
 				"olmVersion": globalConfig.Version,
 				"orgId":      config.OrgID,
+				"userToken":  userToken,
 				// "doNotCreateNewClient": config.DoNotCreateNewClient,
 			}, 1*time.Second)
 
