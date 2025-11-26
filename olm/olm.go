@@ -742,17 +742,6 @@ func StartTunnel(config TunnelConfig) {
 		peerMonitor.HandleFailover(relayData.SiteId, primaryRelay)
 	})
 
-	olm.RegisterHandler("olm/register/no-sites", func(msg websocket.WSMessage) {
-		logger.Info("Received no-sites message - no sites available for connection")
-
-		if stopRegister != nil {
-			stopRegister()
-			stopRegister = nil
-		}
-
-		logger.Info("No sites available - stopped registration and holepunch processes")
-	})
-
 	olm.RegisterHandler("olm/terminate", func(msg websocket.WSMessage) {
 		logger.Info("Received terminate message")
 		Close()
