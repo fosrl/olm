@@ -839,28 +839,24 @@ func Close() {
 		uapiListener = nil
 	}
 
-	// Close TUN device first to unblock any reads
-	logger.Debug("Closing TUN device")
-	if tdev != nil {
-		tdev.Close()
-		tdev = nil
-	}
-
-	// Close filtered device (this will close the closed channel and stop pump goroutine)
-	logger.Debug("Closing MiddleDevice")
-	if middleDev != nil {
-		middleDev.Close()
-		middleDev = nil
-	}
-
-	// Stop DNS proxy
+	// Stop DNS proxy first - it uses the middleDev for packet filtering
 	logger.Debug("Stopping DNS proxy")
 	if dnsProxy != nil {
 		dnsProxy.Stop()
 		dnsProxy = nil
 	}
 
-	// Now close WireGuard device
+	// Close MiddleDevice first - this closes the TUN and signals the closed channel
+	// This unblocks the pump goroutine and allows WireGuard's TUN reader to exit
+	logger.Debug("Closing MiddleDevice")
+	if middleDev != nil {
+		middleDev.Close()
+		middleDev = nil
+	}
+	// Note: tdev is closed by middleDev.Close() since middleDev wraps it
+	tdev = nil
+
+	// Now close WireGuard device - its TUN reader should have exited by now
 	logger.Debug("Closing WireGuard device")
 	if dev != nil {
 		dev.Close() // This will call sharedBind.Close() which releases WireGuard's reference

@@ -124,13 +124,16 @@ func (p *DNSProxy) Stop() {
 		p.middleDevice.RemoveRule(p.proxyIP)
 	}
 	p.cancel()
+
+	// Close the endpoint first to unblock any pending Read() calls in runPacketSender
+	if p.ep != nil {
+		p.ep.Close()
+	}
+
 	p.wg.Wait()
 
 	if p.stack != nil {
 		p.stack.Close()
-	}
-	if p.ep != nil {
-		p.ep.Close()
 	}
 
 	logger.Info("DNS proxy stopped")
