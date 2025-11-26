@@ -15,17 +15,24 @@ import (
 )
 
 const (
-	networkManagerDest                   = "org.freedesktop.NetworkManager"
-	networkManagerDbusObjectNode         = "/org/freedesktop/NetworkManager"
-	networkManagerDbusGetDeviceByIPIface = networkManagerDest + ".GetDeviceByIpIface"
-	networkManagerDbusDeviceInterface    = "org.freedesktop.NetworkManager.Device"
-	networkManagerDbusDeviceGetApplied   = networkManagerDbusDeviceInterface + ".GetAppliedConnection"
-	networkManagerDbusDeviceReapply      = networkManagerDbusDeviceInterface + ".Reapply"
-	networkManagerDbusIPv4Key            = "ipv4"
-	networkManagerDbusIPv6Key            = "ipv6"
-	networkManagerDbusDNSKey             = "dns"
-	networkManagerDbusDNSPriorityKey     = "dns-priority"
-	networkManagerDbusPrimaryDNSPriority = int32(-500)
+	networkManagerDest                     = "org.freedesktop.NetworkManager"
+	networkManagerDbusObjectNode           = "/org/freedesktop/NetworkManager"
+	networkManagerDbusDNSManagerObjectNode = networkManagerDbusObjectNode + "/DnsManager"
+	networkManagerDbusDNSManagerInterface  = "org.freedesktop.NetworkManager.DnsManager"
+	networkManagerDbusDNSManagerMode       = networkManagerDbusDNSManagerInterface + ".Mode"
+	networkManagerDbusGetDeviceByIPIface   = networkManagerDest + ".GetDeviceByIpIface"
+	networkManagerDbusDeviceInterface      = "org.freedesktop.NetworkManager.Device"
+	networkManagerDbusDeviceGetApplied     = networkManagerDbusDeviceInterface + ".GetAppliedConnection"
+	networkManagerDbusDeviceReapply        = networkManagerDbusDeviceInterface + ".Reapply"
+	networkManagerDbusPrimaryConnection    = networkManagerDest + ".PrimaryConnection"
+	networkManagerDbusActiveConnInterface  = "org.freedesktop.NetworkManager.Connection.Active"
+	networkManagerDbusActiveConnDevices    = networkManagerDbusActiveConnInterface + ".Devices"
+	networkManagerDbusIPv4Key              = "ipv4"
+	networkManagerDbusIPv6Key              = "ipv6"
+	networkManagerDbusDNSKey               = "dns"
+	networkManagerDbusDNSSearchKey         = "dns-search"
+	networkManagerDbusDNSPriorityKey       = "dns-priority"
+	networkManagerDbusPrimaryDNSPriority   = int32(-500)
 )
 
 type networkManagerConnSettings map[string]map[string]dbus.Variant
@@ -45,6 +52,8 @@ func (s networkManagerConnSettings) cleanDeprecatedSettings() {
 }
 
 // NetworkManagerDNSConfigurator manages DNS settings using NetworkManager D-Bus API
+// Note: This configures DNS on the PRIMARY active connection, not on tunnel interfaces
+// which are typically unmanaged by NetworkManager
 type NetworkManagerDNSConfigurator struct {
 	ifaceName      string
 	dbusLinkObject dbus.ObjectPath
@@ -52,11 +61,71 @@ type NetworkManagerDNSConfigurator struct {
 }
 
 // NewNetworkManagerDNSConfigurator creates a new NetworkManager DNS configurator
+// It finds the primary active connection's device to configure DNS on
 func NewNetworkManagerDNSConfigurator(ifaceName string) (*NetworkManagerDNSConfigurator, error) {
-	// Get the D-Bus link object for this interface
+	// First, try to get the primary connection's device
+	// This is what we should configure DNS on, not the tunnel interface
+	primaryDevice, err := getPrimaryConnectionDevice()
+	if err != nil {
+		logger.Warn("Could not get primary connection device: %v, trying specified interface", err)
+		// Fall back to trying the specified interface
+		primaryDevice, err = getDeviceByInterface(ifaceName)
+		if err != nil {
+			return nil, fmt.Errorf("get device for interface %s: %w", ifaceName, err)
+		}
+	}
+
+	logger.Info("NetworkManager: using device %s for DNS configuration", primaryDevice)
+
+	return &NetworkManagerDNSConfigurator{
+		ifaceName:      ifaceName,
+		dbusLinkObject: primaryDevice,
+	}, nil
+}
+
+// getPrimaryConnectionDevice gets the device associated with NetworkManager's primary connection
+func getPrimaryConnectionDevice() (dbus.ObjectPath, error) {
 	conn, err := dbus.SystemBus()
 	if err != nil {
-		return nil, fmt.Errorf("connect to system bus: %w", err)
+		return "", fmt.Errorf("connect to system bus: %w", err)
+	}
+	defer conn.Close()
+
+	// Get the primary connection path
+	nmObj := conn.Object(networkManagerDest, networkManagerDbusObjectNode)
+	primaryConnVariant, err := nmObj.GetProperty(networkManagerDbusPrimaryConnection)
+	if err != nil {
+		return "", fmt.Errorf("get primary connection: %w", err)
+	}
+
+	primaryConnPath, ok := primaryConnVariant.Value().(dbus.ObjectPath)
+	if !ok || primaryConnPath == "/" || primaryConnPath == "" {
+		return "", fmt.Errorf("no primary connection available")
+	}
+
+	logger.Debug("NetworkManager primary connection: %s", primaryConnPath)
+
+	// Get the devices for this active connection
+	activeConnObj := conn.Object(networkManagerDest, primaryConnPath)
+	devicesVariant, err := activeConnObj.GetProperty(networkManagerDbusActiveConnDevices)
+	if err != nil {
+		return "", fmt.Errorf("get active connection devices: %w", err)
+	}
+
+	devices, ok := devicesVariant.Value().([]dbus.ObjectPath)
+	if !ok || len(devices) == 0 {
+		return "", fmt.Errorf("no devices for primary connection")
+	}
+
+	logger.Debug("NetworkManager primary connection device: %s", devices[0])
+	return devices[0], nil
+}
+
+// getDeviceByInterface gets the device path for a specific interface name
+func getDeviceByInterface(ifaceName string) (dbus.ObjectPath, error) {
+	conn, err := dbus.SystemBus()
+	if err != nil {
+		return "", fmt.Errorf("connect to system bus: %w", err)
 	}
 	defer conn.Close()
 
@@ -64,13 +133,10 @@ func NewNetworkManagerDNSConfigurator(ifaceName string) (*NetworkManagerDNSConfi
 
 	var linkPath string
 	if err := obj.Call(networkManagerDbusGetDeviceByIPIface, 0, ifaceName).Store(&linkPath); err != nil {
-		return nil, fmt.Errorf("get device by interface: %w", err)
+		return "", fmt.Errorf("get device by interface: %w", err)
 	}
 
-	return &NetworkManagerDNSConfigurator{
-		ifaceName:      ifaceName,
-		dbusLinkObject: dbus.ObjectPath(linkPath),
-	}, nil
+	return dbus.ObjectPath(linkPath), nil
 }
 
 // Name returns the configurator name
@@ -157,10 +223,20 @@ func (n *NetworkManagerDNSConfigurator) applyDNSServers(servers []netip.Addr) er
 	connSettings[networkManagerDbusIPv4Key][networkManagerDbusDNSKey] = dbus.MakeVariant(dnsServers)
 	connSettings[networkManagerDbusIPv4Key][networkManagerDbusDNSPriorityKey] = dbus.MakeVariant(networkManagerDbusPrimaryDNSPriority)
 
+	// Set dns-search with "~." to make this a catch-all DNS route
+	// This is critical for NetworkManager to route all DNS queries through our server
+	// See: https://wiki.gnome.org/Projects/NetworkManager/DNS
+	connSettings[networkManagerDbusIPv4Key][networkManagerDbusDNSSearchKey] = dbus.MakeVariant([]string{"~."})
+
+	logger.Info("NetworkManager: applying DNS servers %v with priority %d and search domains [~.]",
+		servers, networkManagerDbusPrimaryDNSPriority)
+
 	// Reapply connection settings
 	if err := n.reApplyConnectionSettings(connSettings, configVersion); err != nil {
 		return fmt.Errorf("reapply connection settings: %w", err)
 	}
+
+	logger.Info("NetworkManager: successfully applied DNS configuration to interface %s", n.ifaceName)
 
 	return nil
 }
@@ -262,6 +338,55 @@ func IsNetworkManagerAvailable() bool {
 	}
 
 	return true
+}
+
+// GetNetworkManagerDNSMode returns the DNS mode NetworkManager is using
+// Possible values: "dnsmasq", "systemd-resolved", "unbound", "default", etc.
+func GetNetworkManagerDNSMode() (string, error) {
+	conn, err := dbus.SystemBus()
+	if err != nil {
+		return "", fmt.Errorf("connect to system bus: %w", err)
+	}
+	defer conn.Close()
+
+	obj := conn.Object(networkManagerDest, networkManagerDbusDNSManagerObjectNode)
+
+	variant, err := obj.GetProperty(networkManagerDbusDNSManagerMode)
+	if err != nil {
+		return "", fmt.Errorf("get DNS mode property: %w", err)
+	}
+
+	mode, ok := variant.Value().(string)
+	if !ok {
+		return "", fmt.Errorf("DNS mode is not a string")
+	}
+
+	return mode, nil
+}
+
+// IsNetworkManagerDNSModeSupported checks if NetworkManager's DNS mode
+// allows direct DNS configuration via D-Bus
+func IsNetworkManagerDNSModeSupported() bool {
+	mode, err := GetNetworkManagerDNSMode()
+	if err != nil {
+		logger.Debug("Failed to get NetworkManager DNS mode: %v", err)
+		return false
+	}
+
+	logger.Debug("NetworkManager DNS mode: %s", mode)
+
+	// These modes support D-Bus DNS configuration
+	switch mode {
+	case "dnsmasq", "unbound", "default":
+		return true
+	case "systemd-resolved":
+		// When NM delegates to systemd-resolved, we should use systemd-resolved directly
+		logger.Warn("NetworkManager is using systemd-resolved mode - consider using systemd-resolved configurator instead")
+		return false
+	default:
+		logger.Warn("Unknown NetworkManager DNS mode: %s", mode)
+		return true // Try anyway
+	}
 }
 
 // GetNetworkInterfaces returns available network interfaces
