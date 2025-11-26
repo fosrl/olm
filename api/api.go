@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/logger"
-	"github.com/fosrl/olm/network"
+	"github.com/fosrl/newt/network"
 )
 
 // ConnectionRequest defines the structure for an incoming connection request

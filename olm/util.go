@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/logger"
-	"github.com/fosrl/olm/network"
+	"github.com/fosrl/newt/network"
 	"github.com/fosrl/olm/websocket"
 )
 

@@ -6,8 +6,8 @@ import (
 	"sync"
 
 	"github.com/fosrl/newt/logger"
+	"github.com/fosrl/newt/network"
 	"github.com/fosrl/olm/dns"
-	"github.com/fosrl/olm/network"
 	"github.com/fosrl/olm/peermonitor"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
