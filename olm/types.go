@@ -78,4 +78,6 @@ type TunnelConfig struct {
 	FileDescriptorUAPI uint32
 
 	EnableUAPI bool
+
+	OverrideDNS bool
 }
