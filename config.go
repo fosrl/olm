@@ -42,6 +42,7 @@ type OlmConfig struct {
 	// Advanced
 	Holepunch     bool   `json:"holepunch"`
 	TlsClientCert string `json:"tlsClientCert"`
+	OverrideDNS   bool   `json:"overrideDNS"`
 	// DoNotCreateNewClient bool   `json:"doNotCreateNewClient"`
 
 	// Parsed values (not in JSON)
@@ -102,6 +103,7 @@ func DefaultConfig() *OlmConfig {
 	config.sources["pingInterval"] = string(SourceDefault)
 	config.sources["pingTimeout"] = string(SourceDefault)
 	config.sources["holepunch"] = string(SourceDefault)
+	config.sources["overrideDNS"] = string(SourceDefault)
 	// config.sources["doNotCreateNewClient"] = string(SourceDefault)
 
 	return config
@@ -253,6 +255,10 @@ func loadConfigFromEnv(config *OlmConfig) {
 		config.Holepunch = true
 		config.sources["holepunch"] = string(SourceEnv)
 	}
+	if val := os.Getenv("OVERRIDE_DNS"); val == "true" {
+		config.OverrideDNS = true
+		config.sources["overrideDNS"] = string(SourceEnv)
+	}
 	// if val := os.Getenv("DO_NOT_CREATE_NEW_CLIENT"); val == "true" {
 	// 	config.DoNotCreateNewClient = true
 	// 	config.sources["doNotCreateNewClient"] = string(SourceEnv)
@@ -281,6 +287,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 		"pingTimeout":  config.PingTimeout,
 		"enableApi":    config.EnableAPI,
 		"holepunch":    config.Holepunch,
+		"overrideDNS":  config.OverrideDNS,
 		// "doNotCreateNewClient": config.DoNotCreateNewClient,
 	}
 
@@ -302,6 +309,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	serviceFlags.StringVar(&config.PingTimeout, "ping-timeout", config.PingTimeout, "Timeout for each ping")
 	serviceFlags.BoolVar(&config.EnableAPI, "enable-api", config.EnableAPI, "Enable API server for receiving connection requests")
 	serviceFlags.BoolVar(&config.Holepunch, "holepunch", config.Holepunch, "Enable hole punching")
+	serviceFlags.BoolVar(&config.OverrideDNS, "override-dns", config.OverrideDNS, "Override system DNS settings")
 	// serviceFlags.BoolVar(&config.DoNotCreateNewClient, "do-not-create-new-client", config.DoNotCreateNewClient, "Do not create new client")
 
 	version := serviceFlags.Bool("version", false, "Print the version")
@@ -370,6 +378,9 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	}
 	if config.Holepunch != origValues["holepunch"].(bool) {
 		config.sources["holepunch"] = string(SourceCLI)
+	}
+	if config.OverrideDNS != origValues["overrideDNS"].(bool) {
+		config.sources["overrideDNS"] = string(SourceCLI)
 	}
 	// if config.DoNotCreateNewClient != origValues["doNotCreateNewClient"].(bool) {
 	// 	config.sources["doNotCreateNewClient"] = string(SourceCLI)
@@ -487,6 +498,10 @@ func mergeConfigs(dest, src *OlmConfig) {
 		dest.Holepunch = src.Holepunch
 		dest.sources["holepunch"] = string(SourceFile)
 	}
+	if src.OverrideDNS {
+		dest.OverrideDNS = src.OverrideDNS
+		dest.sources["overrideDNS"] = string(SourceFile)
+	}
 	// if src.DoNotCreateNewClient {
 	// 	dest.DoNotCreateNewClient = src.DoNotCreateNewClient
 	// 	dest.sources["doNotCreateNewClient"] = string(SourceFile)
@@ -575,6 +590,7 @@ func (c *OlmConfig) ShowConfig() {
 	// Advanced
 	fmt.Println("\nAdvanced:")
 	fmt.Printf("  holepunch             = %v [%s]\n", c.Holepunch, getSource("holepunch"))
+	fmt.Printf("  override-dns          = %v [%s]\n", c.OverrideDNS, getSource("overrideDNS"))
 	// fmt.Printf("  do-not-create-new-client = %v [%s]\n", c.DoNotCreateNewClient, getSource("doNotCreateNewClient"))
 	if c.TlsClientCert != "" {
 		fmt.Printf("  tls-cert              = %s [%s]\n", c.TlsClientCert, getSource("tlsClientCert"))
