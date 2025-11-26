@@ -21,16 +21,24 @@ type PeerManager struct {
 	dnsProxy      *dns.DNSProxy
 	interfaceName string
 	privateKey    wgtypes.Key
+	// allowedIPOwners tracks which peer currently "owns" each allowed IP in WireGuard
+	// key is the CIDR string, value is the siteId that has it configured in WG
+	allowedIPOwners map[string]int
+	// allowedIPClaims tracks all peers that claim each allowed IP
+	// key is the CIDR string, value is a set of siteIds that want this IP
+	allowedIPClaims map[string]map[int]bool
 }
 
 func NewPeerManager(dev *device.Device, monitor *peermonitor.PeerMonitor, dnsProxy *dns.DNSProxy, interfaceName string, privateKey wgtypes.Key) *PeerManager {
 	return &PeerManager{
-		device:        dev,
-		peers:         make(map[int]SiteConfig),
-		peerMonitor:   monitor,
-		dnsProxy:      dnsProxy,
-		interfaceName: interfaceName,
-		privateKey:    privateKey,
+		device:          dev,
+		peers:           make(map[int]SiteConfig),
+		peerMonitor:     monitor,
+		dnsProxy:        dnsProxy,
+		interfaceName:   interfaceName,
+		privateKey:      privateKey,
+		allowedIPOwners: make(map[string]int),
+		allowedIPClaims: make(map[string]map[int]bool),
 	}
 }
 
@@ -63,7 +71,21 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig, endpoint string) error {
 	}
 	siteConfig.AllowedIps = allowedIPs
 
-	if err := ConfigurePeer(pm.device, siteConfig, pm.privateKey, endpoint, pm.peerMonitor); err != nil {
+	// Register claims for all allowed IPs and determine which ones this peer will own
+	ownedIPs := make([]string, 0, len(allowedIPs))
+	for _, ip := range allowedIPs {
+		pm.claimAllowedIP(siteConfig.SiteId, ip)
+		// Check if this peer became the owner
+		if pm.allowedIPOwners[ip] == siteConfig.SiteId {
+			ownedIPs = append(ownedIPs, ip)
+		}
+	}
+
+	// Create a config with only the owned IPs for WireGuard
+	wgConfig := siteConfig
+	wgConfig.AllowedIps = ownedIPs
+
+	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, endpoint, pm.peerMonitor); err != nil {
 		return err
 	}
 
@@ -115,6 +137,41 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 		pm.dnsProxy.RemoveDNSRecord(alias.Alias, address)
 	}
 
+	// Release all IP claims and promote other peers as needed
+	// Collect promotions first to avoid modifying while iterating
+	type promotion struct {
+		newOwner int
+		cidr     string
+	}
+	var promotions []promotion
+
+	for _, ip := range peer.AllowedIps {
+		newOwner, promoted := pm.releaseAllowedIP(siteId, ip)
+		if promoted && newOwner >= 0 {
+			promotions = append(promotions, promotion{newOwner: newOwner, cidr: ip})
+		}
+	}
+
+	// Apply promotions - update WireGuard config for newly promoted peers
+	// Group by peer to avoid multiple config updates
+	promotedPeers := make(map[int]bool)
+	for _, p := range promotions {
+		promotedPeers[p.newOwner] = true
+		logger.Info("Promoted peer %d to owner of IP %s", p.newOwner, p.cidr)
+	}
+
+	for promotedPeerId := range promotedPeers {
+		if promotedPeer, exists := pm.peers[promotedPeerId]; exists {
+			// Build the list of IPs this peer now owns
+			ownedIPs := pm.getOwnedAllowedIPs(promotedPeerId)
+			wgConfig := promotedPeer
+			wgConfig.AllowedIps = ownedIPs
+			if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, promotedPeer.Endpoint, pm.peerMonitor); err != nil {
+				logger.Error("Failed to update promoted peer %d: %v", promotedPeerId, err)
+			}
+		}
+	}
+
 	delete(pm.peers, siteId)
 	return nil
 }
@@ -135,8 +192,64 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig, endpoint string) error 
 		}
 	}
 
-	if err := ConfigurePeer(pm.device, siteConfig, pm.privateKey, endpoint, pm.peerMonitor); err != nil {
+	// Build the new allowed IPs list
+	newAllowedIPs := make([]string, 0, len(siteConfig.RemoteSubnets)+len(siteConfig.Aliases))
+	newAllowedIPs = append(newAllowedIPs, siteConfig.RemoteSubnets...)
+	for _, alias := range siteConfig.Aliases {
+		newAllowedIPs = append(newAllowedIPs, alias.AliasAddress+"/32")
+	}
+	siteConfig.AllowedIps = newAllowedIPs
+
+	// Handle allowed IP claim changes
+	oldAllowedIPs := make(map[string]bool)
+	for _, ip := range oldPeer.AllowedIps {
+		oldAllowedIPs[ip] = true
+	}
+	newAllowedIPsSet := make(map[string]bool)
+	for _, ip := range newAllowedIPs {
+		newAllowedIPsSet[ip] = true
+	}
+
+	// Track peers that need WireGuard config updates due to promotions
+	peersToUpdate := make(map[int]bool)
+
+	// Release claims for removed IPs and handle promotions
+	for ip := range oldAllowedIPs {
+		if !newAllowedIPsSet[ip] {
+			newOwner, promoted := pm.releaseAllowedIP(siteConfig.SiteId, ip)
+			if promoted && newOwner >= 0 {
+				peersToUpdate[newOwner] = true
+				logger.Info("Promoted peer %d to owner of IP %s", newOwner, ip)
+			}
+		}
+	}
+
+	// Add claims for new IPs
+	for ip := range newAllowedIPsSet {
+		if !oldAllowedIPs[ip] {
+			pm.claimAllowedIP(siteConfig.SiteId, ip)
+		}
+	}
+
+	// Build the list of IPs this peer owns for WireGuard config
+	ownedIPs := pm.getOwnedAllowedIPs(siteConfig.SiteId)
+	wgConfig := siteConfig
+	wgConfig.AllowedIps = ownedIPs
+
+	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, endpoint, pm.peerMonitor); err != nil {
 		return err
+	}
+
+	// Update WireGuard config for any promoted peers
+	for promotedPeerId := range peersToUpdate {
+		if promotedPeer, exists := pm.peers[promotedPeerId]; exists {
+			promotedOwnedIPs := pm.getOwnedAllowedIPs(promotedPeerId)
+			promotedWgConfig := promotedPeer
+			promotedWgConfig.AllowedIps = promotedOwnedIPs
+			if err := ConfigurePeer(pm.device, promotedWgConfig, pm.privateKey, promotedPeer.Endpoint, pm.peerMonitor); err != nil {
+				logger.Error("Failed to update promoted peer %d: %v", promotedPeerId, err)
+			}
+		}
 	}
 
 	// Handle remote subnet route changes
@@ -200,8 +313,70 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig, endpoint string) error 
 	return nil
 }
 
+// claimAllowedIP registers a peer's claim to an allowed IP.
+// If no other peer owns it in WireGuard, this peer becomes the owner.
+// Must be called with lock held.
+func (pm *PeerManager) claimAllowedIP(siteId int, cidr string) {
+	// Add to claims
+	if pm.allowedIPClaims[cidr] == nil {
+		pm.allowedIPClaims[cidr] = make(map[int]bool)
+	}
+	pm.allowedIPClaims[cidr][siteId] = true
+
+	// If no owner yet, this peer becomes the owner
+	if _, hasOwner := pm.allowedIPOwners[cidr]; !hasOwner {
+		pm.allowedIPOwners[cidr] = siteId
+	}
+}
+
+// releaseAllowedIP removes a peer's claim to an allowed IP.
+// If this peer was the owner, it promotes another claimant to owner.
+// Returns the new owner's siteId (or -1 if no new owner) and whether promotion occurred.
+// Must be called with lock held.
+func (pm *PeerManager) releaseAllowedIP(siteId int, cidr string) (newOwner int, promoted bool) {
+	// Remove from claims
+	if claims, exists := pm.allowedIPClaims[cidr]; exists {
+		delete(claims, siteId)
+		if len(claims) == 0 {
+			delete(pm.allowedIPClaims, cidr)
+		}
+	}
+
+	// Check if this peer was the owner
+	owner, isOwned := pm.allowedIPOwners[cidr]
+	if !isOwned || owner != siteId {
+		return -1, false // Not the owner, nothing to promote
+	}
+
+	// This peer was the owner, need to find a new owner
+	delete(pm.allowedIPOwners, cidr)
+
+	// Find another claimant to promote
+	if claims, exists := pm.allowedIPClaims[cidr]; exists && len(claims) > 0 {
+		for claimantId := range claims {
+			pm.allowedIPOwners[cidr] = claimantId
+			return claimantId, true
+		}
+	}
+
+	return -1, false
+}
+
+// getOwnedAllowedIPs returns the list of allowed IPs that a peer currently owns in WireGuard.
+// Must be called with lock held.
+func (pm *PeerManager) getOwnedAllowedIPs(siteId int) []string {
+	var owned []string
+	for cidr, owner := range pm.allowedIPOwners {
+		if owner == siteId {
+			owned = append(owned, cidr)
+		}
+	}
+	return owned
+}
+
 // addAllowedIp adds an IP (subnet) to the allowed IPs list of a peer
-// and updates WireGuard configuration. Must be called with lock held.
+// and updates WireGuard configuration if this peer owns the IP.
+// Must be called with lock held.
 func (pm *PeerManager) addAllowedIp(siteId int, ip string) error {
 	peer, exists := pm.peers[siteId]
 	if !exists {
@@ -215,19 +390,25 @@ func (pm *PeerManager) addAllowedIp(siteId int, ip string) error {
 		}
 	}
 
-	peer.AllowedIps = append(peer.AllowedIps, ip)
+	// Register our claim to this IP
+	pm.claimAllowedIP(siteId, ip)
 
-	// Update WireGuard
-	if err := ConfigurePeer(pm.device, peer, pm.privateKey, peer.Endpoint, pm.peerMonitor); err != nil {
-		return err
+	peer.AllowedIps = append(peer.AllowedIps, ip)
+	pm.peers[siteId] = peer
+
+	// Only update WireGuard if we own this IP
+	if pm.allowedIPOwners[ip] == siteId {
+		if err := ConfigurePeer(pm.device, peer, pm.privateKey, peer.Endpoint, pm.peerMonitor); err != nil {
+			return err
+		}
 	}
 
-	pm.peers[siteId] = peer
 	return nil
 }
 
 // removeAllowedIp removes an IP (subnet) from the allowed IPs list of a peer
-// and updates WireGuard configuration. Must be called with lock held.
+// and updates WireGuard configuration. If this peer owned the IP, it promotes
+// another peer that also claims this IP. Must be called with lock held.
 func (pm *PeerManager) removeAllowedIp(siteId int, cidr string) error {
 	peer, exists := pm.peers[siteId]
 	if !exists {
@@ -251,13 +432,27 @@ func (pm *PeerManager) removeAllowedIp(siteId int, cidr string) error {
 	}
 
 	peer.AllowedIps = newAllowedIps
+	pm.peers[siteId] = peer
 
-	// Update WireGuard
+	// Release our claim and check if we need to promote another peer
+	newOwner, promoted := pm.releaseAllowedIP(siteId, cidr)
+
+	// Update WireGuard for this peer (to remove the IP from its config)
 	if err := ConfigurePeer(pm.device, peer, pm.privateKey, peer.Endpoint, pm.peerMonitor); err != nil {
 		return err
 	}
 
-	pm.peers[siteId] = peer
+	// If another peer was promoted to owner, update their WireGuard config
+	if promoted && newOwner >= 0 {
+		if newOwnerPeer, exists := pm.peers[newOwner]; exists {
+			if err := ConfigurePeer(pm.device, newOwnerPeer, pm.privateKey, newOwnerPeer.Endpoint, pm.peerMonitor); err != nil {
+				logger.Error("Failed to promote peer %d for IP %s: %v", newOwner, cidr, err)
+			} else {
+				logger.Info("Promoted peer %d to owner of IP %s", newOwner, cidr)
+			}
+		}
+	}
+
 	return nil
 }
 
