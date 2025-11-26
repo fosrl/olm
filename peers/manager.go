@@ -474,6 +474,7 @@ func (pm *PeerManager) AddRemoteSubnet(siteId int, cidr string) error {
 	}
 
 	peer.RemoteSubnets = append(peer.RemoteSubnets, cidr)
+	pm.peers[siteId] = peer // Save before calling addAllowedIp which reads from pm.peers
 
 	// Add to allowed IPs
 	if err := pm.addAllowedIp(siteId, cidr); err != nil {
@@ -515,8 +516,9 @@ func (pm *PeerManager) RemoveRemoteSubnet(siteId int, ip string) error {
 	}
 
 	peer.RemoteSubnets = newSubnets
+	pm.peers[siteId] = peer // Save before calling removeAllowedIp which reads from pm.peers
 
-	// Remove from allowed IPs
+	// Remove from allowed IPs (this also handles promotion of other peers)
 	if err := pm.removeAllowedIp(siteId, ip); err != nil {
 		return err
 	}
@@ -525,8 +527,6 @@ func (pm *PeerManager) RemoveRemoteSubnet(siteId int, ip string) error {
 	if err := network.RemoveRoutes([]string{ip}); err != nil {
 		return err
 	}
-
-	pm.peers[siteId] = peer
 
 	return nil
 }
