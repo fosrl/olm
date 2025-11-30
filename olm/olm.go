@@ -799,6 +799,24 @@ func StartTunnel(config TunnelConfig) {
 		}
 	})
 
+	olm.OnAuthError(func(statusCode int, message string) {
+		logger.Error("Authentication error (status %d): %s. Terminating tunnel.", statusCode, message)
+		apiServer.SetTerminated(true)
+		apiServer.SetConnectionStatus(false)
+		apiServer.SetRegistered(false)
+		apiServer.ClearPeerStatuses()
+		network.ClearNetworkSettings()
+		Close()
+
+		if globalConfig.OnAuthError != nil {
+			go globalConfig.OnAuthError(statusCode, message)
+		}
+
+		if globalConfig.OnTerminated != nil {
+			go globalConfig.OnTerminated()
+		}
+	})
+
 	// Connect to the WebSocket server
 	if err := olm.Connect(); err != nil {
 		logger.Error("Failed to connect to server: %v", err)

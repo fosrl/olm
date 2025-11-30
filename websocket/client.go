@@ -20,6 +20,22 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// AuthError represents an authentication/authorization error (401/403)
+type AuthError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *AuthError) Error() string {
+	return fmt.Sprintf("authentication error (status %d): %s", e.StatusCode, e.Message)
+}
+
+// IsAuthError checks if an error is an authentication error
+func IsAuthError(err error) bool {
+	_, ok := err.(*AuthError)
+	return ok
+}
+
 type TokenResponse struct {
 	Data struct {
 		Token string `json:"token"`
@@ -56,6 +72,7 @@ type Client struct {
 	pingTimeout       time.Duration
 	onConnect         func() error
 	onTokenUpdate     func(token string)
+	onAuthError       func(statusCode int, message string) // Callback for auth errors
 	writeMux          sync.Mutex
 	clientType        string // Type of client (e.g., "newt", "olm")
 	tlsConfig         TLSConfig
@@ -101,6 +118,10 @@ func (c *Client) OnConnect(callback func() error) {
 
 func (c *Client) OnTokenUpdate(callback func(token string)) {
 	c.onTokenUpdate = callback
+}
+
+func (c *Client) OnAuthError(callback func(statusCode int, message string)) {
+	c.onAuthError = callback
 }
 
 // NewClient creates a new websocket client
@@ -305,6 +326,16 @@ func (c *Client) getToken() (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		logger.Error("Failed to get token with status code: %d, body: %s", resp.StatusCode, string(body))
+
+		// Return AuthError for 401/403 status codes
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return "", &AuthError{
+				StatusCode: resp.StatusCode,
+				Message:    string(body),
+			}
+		}
+
+		// For other errors (5xx, network issues, etc.), return regular error
 		return "", fmt.Errorf("failed to get token with status code: %d, body: %s", resp.StatusCode, string(body))
 	}
 
@@ -335,6 +366,18 @@ func (c *Client) connectWithRetry() {
 		default:
 			err := c.establishConnection()
 			if err != nil {
+				// Check if this is an auth error (401/403)
+				if authErr, ok := err.(*AuthError); ok {
+					logger.Error("Authentication failed: %v. Terminating tunnel and retrying...", authErr)
+					// Trigger auth error callback if set (this should terminate the tunnel)
+					if c.onAuthError != nil {
+						c.onAuthError(authErr.StatusCode, authErr.Message)
+					}
+					// Continue retrying after auth error
+					time.Sleep(c.reconnectInterval)
+					continue
+				}
+				// For other errors (5xx, network issues), continue retrying
 				logger.Error("Failed to connect: %v. Retrying in %v...", err, c.reconnectInterval)
 				time.Sleep(c.reconnectInterval)
 				continue
