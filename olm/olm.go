@@ -750,6 +750,8 @@ func StartTunnel(config TunnelConfig) {
 		apiServer.SetTerminated(true)
 		apiServer.SetConnectionStatus(false)
 		apiServer.SetRegistered(false)
+		apiServer.ClearPeerStatuses()
+		network.ClearNetworkSettings()
 		Close()
 
 		if globalConfig.OnTerminated != nil {
