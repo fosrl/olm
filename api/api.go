@@ -214,6 +214,13 @@ func (s *API) SetTerminated(terminated bool) {
 	s.isTerminated = terminated
 }
 
+// ClearPeerStatuses clears all peer statuses
+func (s *API) ClearPeerStatuses() {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.peerStatuses = make(map[int]*PeerStatus)
+}
+
 // SetVersion sets the olm version
 func (s *API) SetVersion(version string) {
 	s.statusMu.Lock()

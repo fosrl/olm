@@ -748,6 +748,8 @@ func StartTunnel(config TunnelConfig) {
 	olm.RegisterHandler("olm/terminate", func(msg websocket.WSMessage) {
 		logger.Info("Received terminate message")
 		apiServer.SetTerminated(true)
+		apiServer.SetConnectionStatus(false)
+		apiServer.SetRegistered(false)
 		Close()
 
 		if globalConfig.OnTerminated != nil {
@@ -909,6 +911,7 @@ func StopTunnel() error {
 	apiServer.SetRegistered(false)
 
 	network.ClearNetworkSettings()
+	apiServer.ClearPeerStatuses()
 
 	logger.Info("Tunnel process stopped")
 
