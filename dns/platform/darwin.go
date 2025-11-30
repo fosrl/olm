@@ -9,6 +9,8 @@ import (
 	"net/netip"
 	"os/exec"
 	"strings"
+
+	"github.com/fosrl/newt/logger"
 )
 
 const (
@@ -209,10 +211,13 @@ func (d *DarwinDNSConfigurator) parseServerAddresses(output []byte) []netip.Addr
 
 // flushDNSCache flushes the system DNS cache
 func (d *DarwinDNSConfigurator) flushDNSCache() error {
+	logger.Debug("Flushing dscacheutil cache")
 	cmd := exec.Command(dscacheutilPath, "-flushcache")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("flush cache: %w", err)
 	}
+
+	logger.Debug("Flushing mDNSResponder cache")
 
 	cmd = exec.Command("killall", "-HUP", "mDNSResponder")
 	if err := cmd.Run(); err != nil {
@@ -228,6 +233,8 @@ func (d *DarwinDNSConfigurator) runScutil(commands string) ([]byte, error) {
 	// Wrap commands with open/quit
 	wrapped := fmt.Sprintf("open\n%squit\n", commands)
 
+	logger.Debug("Running scutil with commands:\n%s\n", wrapped)
+
 	cmd := exec.Command(scutilPath)
 	cmd.Stdin = strings.NewReader(wrapped)
 
@@ -235,6 +242,8 @@ func (d *DarwinDNSConfigurator) runScutil(commands string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scutil command failed: %w, output: %s", err, output)
 	}
+
+	logger.Debug("scutil output:\n%s\n", output)
 
 	return output, nil
 }
