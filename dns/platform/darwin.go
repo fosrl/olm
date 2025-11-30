@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/fosrl/newt/logger"
@@ -21,8 +22,12 @@ const (
 	globalIPv4State      = "State:/Network/Global/IPv4"
 	primaryServiceFormat = "State:/Network/Service/%s/DNS"
 
-	keyServerAddresses = "ServerAddresses"
-	arraySymbol        = "* "
+	keySupplementalMatchDomains         = "SupplementalMatchDomains"
+	keySupplementalMatchDomainsNoSearch = "SupplementalMatchDomainsNoSearch"
+	keyServerAddresses                  = "ServerAddresses"
+	keyServerPort                       = "ServerPort"
+	arraySymbol                         = "* "
+	digitSymbol                         = "# "
 )
 
 // DarwinDNSConfigurator manages DNS settings on macOS using scutil
@@ -115,25 +120,39 @@ func (d *DarwinDNSConfigurator) applyDNSServers(servers []netip.Addr) error {
 
 	key := fmt.Sprintf(dnsStateKeyFormat, "Override")
 
-	// Build server addresses array
-	var serverLines strings.Builder
-	for _, server := range servers {
-		serverLines.WriteString(arraySymbol)
-		serverLines.WriteString(server.String())
-		serverLines.WriteString("\n")
-	}
-
-	// Build scutil command
-	cmd := fmt.Sprintf(`d.init
-d.add %s %s
-set %s
-`, keyServerAddresses, strings.TrimSpace(serverLines.String()), key)
-
-	if _, err := d.runScutil(cmd); err != nil {
+	// Use SupplementalMatchDomains with empty string to match ALL domains
+	// This is the key to making DNS override work on macOS
+	// Setting SupplementalMatchDomainsNoSearch to 0 enables search domain behavior
+	err := d.addDNSState(key, "\"\"", servers[0], 53, true)
+	if err != nil {
 		return fmt.Errorf("set DNS servers: %w", err)
 	}
 
 	d.createdKeys[key] = struct{}{}
+	return nil
+}
+
+// addDNSState adds a DNS state entry with the specified configuration
+func (d *DarwinDNSConfigurator) addDNSState(state, domains string, dnsServer netip.Addr, port int, enableSearch bool) error {
+	noSearch := "1"
+	if enableSearch {
+		noSearch = "0"
+	}
+
+	// Build the scutil command following NetBird's approach
+	var commands strings.Builder
+	commands.WriteString("d.init\n")
+	commands.WriteString(fmt.Sprintf("d.add %s %s%s\n", keySupplementalMatchDomains, arraySymbol, domains))
+	commands.WriteString(fmt.Sprintf("d.add %s %s%s\n", keySupplementalMatchDomainsNoSearch, digitSymbol, noSearch))
+	commands.WriteString(fmt.Sprintf("d.add %s %s%s\n", keyServerAddresses, arraySymbol, dnsServer.String()))
+	commands.WriteString(fmt.Sprintf("d.add %s %s%s\n", keyServerPort, digitSymbol, strconv.Itoa(port)))
+	commands.WriteString(fmt.Sprintf("set %s\n", state))
+
+	if _, err := d.runScutil(commands.String()); err != nil {
+		return fmt.Errorf("applying state for domains %s, error: %w", domains, err)
+	}
+
+	logger.Info("Added DNS override with server %s:%d for domains: %s", dnsServer.String(), port, domains)
 	return nil
 }
 
