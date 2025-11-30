@@ -167,6 +167,9 @@ func StartTunnel(config TunnelConfig) {
 
 	tunnelRunning = true // Also set it here in case it is called externally
 
+	// Reset terminated status when tunnel starts
+	apiServer.SetTerminated(false)
+
 	// debug print out the whole config
 	logger.Debug("Starting tunnel with config: %+v", config)
 
@@ -744,6 +747,7 @@ func StartTunnel(config TunnelConfig) {
 
 	olm.RegisterHandler("olm/terminate", func(msg websocket.WSMessage) {
 		logger.Info("Received terminate message")
+		apiServer.SetTerminated(true)
 		Close()
 
 		if globalConfig.OnTerminated != nil {

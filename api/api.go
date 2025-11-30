@@ -50,6 +50,7 @@ type PeerStatus struct {
 type StatusResponse struct {
 	Connected       bool                    `json:"connected"`
 	Registered      bool                    `json:"registered"`
+	Terminated      bool                    `json:"terminated"`
 	Version         string                  `json:"version,omitempty"`
 	OrgID           string                  `json:"orgId,omitempty"`
 	PeerStatuses    map[int]*PeerStatus     `json:"peers,omitempty"`
@@ -71,6 +72,7 @@ type API struct {
 	connectedAt  time.Time
 	isConnected  bool
 	isRegistered bool
+	isTerminated bool
 	version      string
 	orgID        string
 }
@@ -206,6 +208,12 @@ func (s *API) SetRegistered(registered bool) {
 	s.isRegistered = registered
 }
 
+func (s *API) SetTerminated(terminated bool) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.isTerminated = terminated
+}
+
 // SetVersion sets the olm version
 func (s *API) SetVersion(version string) {
 	s.statusMu.Lock()
@@ -295,6 +303,7 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp := StatusResponse{
 		Connected:       s.isConnected,
 		Registered:      s.isRegistered,
+		Terminated:      s.isTerminated,
 		Version:         s.version,
 		OrgID:           s.orgID,
 		PeerStatuses:    s.peerStatuses,
@@ -420,6 +429,7 @@ func (s *API) GetStatus() StatusResponse {
 	return StatusResponse{
 		Connected:       s.isConnected,
 		Registered:      s.isRegistered,
+		Terminated:      s.isTerminated,
 		Version:         s.version,
 		OrgID:           s.orgID,
 		PeerStatuses:    s.peerStatuses,
