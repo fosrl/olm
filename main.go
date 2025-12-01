@@ -235,6 +235,7 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 			OrgID:                config.OrgID,
 			OverrideDNS:          config.OverrideDNS,
 			EnableUAPI:           true,
+			DisableRelay:         true,
 		}
 		go olm.StartTunnel(tunnelConfig)
 	} else {

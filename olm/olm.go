@@ -52,6 +52,41 @@ var (
 	peerManager      *peers.PeerManager
 )
 
+// initSharedBindAndHolepunch creates the shared UDP socket and holepunch manager.
+// This is used during initial tunnel setup and when switching organizations.
+func initSharedBindAndHolepunch(clientID string) error {
+	sourcePort, err := util.FindAvailableUDPPort(49152, 65535)
+	if err != nil {
+		return fmt.Errorf("failed to find available UDP port: %w", err)
+	}
+
+	localAddr := &net.UDPAddr{
+		Port: int(sourcePort),
+		IP:   net.IPv4zero,
+	}
+
+	udpConn, err := net.ListenUDP("udp", localAddr)
+	if err != nil {
+		return fmt.Errorf("failed to create UDP socket: %w", err)
+	}
+
+	sharedBind, err = bind.New(udpConn)
+	if err != nil {
+		udpConn.Close()
+		return fmt.Errorf("failed to create shared bind: %w", err)
+	}
+
+	// Add a reference for the hole punch senders (creator already has one reference for WireGuard)
+	sharedBind.AddRef()
+
+	logger.Info("Created shared UDP socket on port %d (refcount: %d)", sourcePort, sharedBind.GetRefCount())
+
+	// Create the holepunch manager
+	holePunchManager = holepunch.NewManager(sharedBind, clientID, "olm")
+
+	return nil
+}
+
 func Init(ctx context.Context, config GlobalConfig) {
 	globalConfig = config
 	globalCtx = ctx
@@ -220,38 +255,11 @@ func StartTunnel(config TunnelConfig) {
 		return
 	}
 
-	// Create shared UDP socket for both holepunch and WireGuard
-	sourcePort, err := util.FindAvailableUDPPort(49152, 65535)
-	if err != nil {
-		logger.Error("Error finding available port: %v", err)
+	// Create shared UDP socket and holepunch manager
+	if err := initSharedBindAndHolepunch(id); err != nil {
+		logger.Error("%v", err)
 		return
 	}
-
-	localAddr := &net.UDPAddr{
-		Port: int(sourcePort),
-		IP:   net.IPv4zero,
-	}
-
-	udpConn, err := net.ListenUDP("udp", localAddr)
-	if err != nil {
-		logger.Error("Failed to create shared UDP socket: %v", err)
-		return
-	}
-
-	sharedBind, err = bind.New(udpConn)
-	if err != nil {
-		logger.Error("Failed to create shared bind: %v", err)
-		udpConn.Close()
-		return
-	}
-
-	// Add a reference for the hole punch senders (creator already has one reference for WireGuard)
-	sharedBind.AddRef()
-
-	logger.Info("Created shared UDP socket on port %d (refcount: %d)", sourcePort, sharedBind.GetRefCount())
-
-	// Create the holepunch manager
-	holePunchManager = holepunch.NewManager(sharedBind, id, "olm")
 
 	olm.RegisterHandler("olm/wg/holepunch/all", func(msg websocket.WSMessage) {
 		logger.Debug("Received message: %v", msg.Data)
@@ -467,7 +475,7 @@ func StartTunnel(config TunnelConfig) {
 			util.FixKey(privateKey.String()),
 			olm,
 			dev,
-			config.Holepunch,
+			config.Holepunch && !config.DisableRelay, // Enable relay only if holepunching is enabled and DisableRelay is false
 			middleDev,
 			interfaceIP,
 		)
@@ -861,6 +869,10 @@ func Close() {
 		peerMonitor = nil
 	}
 
+	if peerManager != nil {
+		peerManager = nil
+	}
+
 	if uapiListener != nil {
 		uapiListener.Close()
 		uapiListener = nil
@@ -976,7 +988,13 @@ func SwitchOrg(orgID string) error {
 	// Mark as not connected to trigger re-registration
 	connected = false
 
+	// Close existing tunnel resources (but keep websocket alive)
 	Close()
+
+	// Recreate sharedBind and holepunch manager - needed because Close() releases them
+	if err := initSharedBindAndHolepunch(olmClient.GetConfig().ID); err != nil {
+		return err
+	}
 
 	// Clear peer statuses in API
 	apiServer.SetRegistered(false)
