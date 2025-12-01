@@ -419,6 +419,7 @@ func StartTunnel(config TunnelConfig) {
 			config.Holepunch && !config.DisableRelay, // Enable relay only if holepunching is enabled and DisableRelay is false
 			middleDev,
 			interfaceIP,
+			sharedBind, // Pass sharedBind for holepunch testing
 		)
 
 		peerManager = peers.NewPeerManager(dev, peerMonitor, dnsProxy, interfaceName, privateKey)
@@ -432,8 +433,19 @@ func StartTunnel(config TunnelConfig) {
 				return
 			}
 
+			// Add holepunch monitoring for this endpoint if holepunching is enabled
+			if config.Holepunch {
+				peerMonitor.AddHolepunchEndpoint(site.SiteId, site.Endpoint)
+			}
+
 			logger.Info("Configured peer %s", site.PublicKey)
 		}
+
+		peerMonitor.SetHolepunchStatusCallback(func(siteID int, endpoint string, connected bool, rtt time.Duration) {
+			// This callback is for additional handling if needed
+			// The PeerMonitor already logs status changes
+			logger.Info("+++++++++++++++++++++++++ holepunch monitor callback for site %d, endpoint %s, connected: %v, rtt: %v", siteID, endpoint, connected, rtt)
+		})
 
 		peerMonitor.Start()
 
