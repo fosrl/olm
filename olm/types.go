@@ -12,25 +12,6 @@ type WgData struct {
 	UtilitySubnet string             `json:"utilitySubnet"` // this is for things like the DNS server, and alias addresses
 }
 
-type HolePunchMessage struct {
-	NewtID string `json:"newtId"`
-}
-
-type ExitNode struct {
-	Endpoint  string `json:"endpoint"`
-	PublicKey string `json:"publicKey"`
-}
-
-type HolePunchData struct {
-	ExitNodes []ExitNode `json:"exitNodes"`
-}
-
-type EncryptedHolePunchMessage struct {
-	EphemeralPublicKey string `json:"ephemeralPublicKey"`
-	Nonce              []byte `json:"nonce"`
-	Ciphertext         []byte `json:"ciphertext"`
-}
-
 type GlobalConfig struct {
 	// Logging
 	LogLevel string
