@@ -73,7 +73,7 @@ func NewPeerMonitor(callback PeerMonitorCallback, privateKey string, wsClient *w
 		callback:          callback,
 		interval:          1 * time.Second, // Default check interval
 		timeout:           2500 * time.Millisecond,
-		maxAttempts:       8,
+		maxAttempts:       15,
 		privateKey:        privateKey,
 		wsClient:          wsClient,
 		device:            device,

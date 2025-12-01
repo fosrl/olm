@@ -234,8 +234,8 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 			PingTimeoutDuration:  config.PingTimeoutDuration,
 			OrgID:                config.OrgID,
 			OverrideDNS:          config.OverrideDNS,
+			DisableRelay:         config.DisableRelay,
 			EnableUAPI:           true,
-			DisableRelay:         false, // allow it to relay
 		}
 		go olm.StartTunnel(tunnelConfig)
 	} else {
