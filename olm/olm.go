@@ -45,6 +45,7 @@ var (
 	holePunchManager *holepunch.Manager
 	peerMonitor      *peermonitor.PeerMonitor
 	globalConfig     GlobalConfig
+	tunnelConfig     TunnelConfig
 	globalCtx        context.Context
 	stopRegister     func()
 	stopPeerSend     func()
@@ -99,7 +100,7 @@ func Init(ctx context.Context, config GlobalConfig) {
 	globalConfig = config
 	globalCtx = ctx
 
-	// Create a cancellable context for internal shutdown control
+	// Create a cancellable context for internal shutdown controconfiguration    GlobalConfigl
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -209,6 +210,7 @@ func StartTunnel(config TunnelConfig) {
 	}
 
 	tunnelRunning = true // Also set it here in case it is called externally
+	tunnelConfig = config
 
 	// Reset terminated status when tunnel starts
 	apiServer.SetTerminated(false)
@@ -245,7 +247,8 @@ func StartTunnel(config TunnelConfig) {
 		id,        // Use provided ID
 		secret,    // Use provided secret
 		userToken, // Use provided user token OPTIONAL
-		endpoint,  // Use provided endpoint
+		config.OrgID,
+		endpoint, // Use provided endpoint
 		config.PingIntervalDuration,
 		config.PingTimeoutDuration,
 	)
@@ -1000,38 +1003,18 @@ func GetStatus() api.StatusResponse {
 
 func SwitchOrg(orgID string) error {
 	logger.Info("Processing org switch request to orgId: %s", orgID)
-
-	// Ensure we have an active olmClient
-	if olmClient == nil {
-		return fmt.Errorf("no active connection to switch organizations")
+	// stop the tunnel
+	if err := StopTunnel(); err != nil {
+		return fmt.Errorf("failed to stop existing tunnel: %w", err)
 	}
 
-	// Update the orgID in the API server
+	// Update the org ID in the API server and global config
 	apiServer.SetOrgID(orgID)
 
-	// Mark as not connected to trigger re-registration
-	connected = false
+	tunnelConfig.OrgID = orgID
 
-	// Close existing tunnel resources (but keep websocket alive)
-	Close()
-
-	// Recreate sharedBind and holepunch manager - needed because Close() releases them
-	if err := initTunnelInfo(olmClient.GetConfig().ID); err != nil {
-		return err
-	}
-
-	// Clear peer statuses in API
-	apiServer.SetRegistered(false)
-
-	// Trigger re-registration with new orgId
-	logger.Info("Re-registering with new orgId: %s", orgID)
-	publicKey := privateKey.PublicKey()
-	stopRegister, updateRegister = olmClient.SendMessageInterval("olm/wg/register", map[string]interface{}{
-		"publicKey":  publicKey.String(),
-		"relay":      true, // Default to relay mode for org switch
-		"olmVersion": globalConfig.Version,
-		"orgId":      orgID,
-	}, 1*time.Second)
+	// Restart the tunnel with the same config but new org ID
+	go StartTunnel(tunnelConfig)
 
 	return nil
 }

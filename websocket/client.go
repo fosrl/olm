@@ -62,6 +62,7 @@ type Config struct {
 	Endpoint      string
 	TlsClientCert string // legacy PKCS12 file path
 	UserToken     string // optional user token for websocket authentication
+	OrgID         string // optional organization ID for websocket authentication
 }
 
 type Client struct {
@@ -131,12 +132,13 @@ func (c *Client) OnAuthError(callback func(statusCode int, message string)) {
 }
 
 // NewClient creates a new websocket client
-func NewClient(ID, secret string, userToken string, endpoint string, pingInterval time.Duration, pingTimeout time.Duration, opts ...ClientOption) (*Client, error) {
+func NewClient(ID, secret, userToken, orgId, endpoint string, pingInterval time.Duration, pingTimeout time.Duration, opts ...ClientOption) (*Client, error) {
 	config := &Config{
 		ID:        ID,
 		Secret:    secret,
 		Endpoint:  endpoint,
 		UserToken: userToken,
+		OrgID:     orgId,
 	}
 
 	client := &Client{
@@ -321,11 +323,10 @@ func (c *Client) getToken() (string, []ExitNode, error) {
 		logger.Debug("TLS certificate verification disabled via SKIP_TLS_VERIFY environment variable")
 	}
 
-	var tokenData map[string]interface{}
-
-	tokenData = map[string]interface{}{
+	tokenData := map[string]interface{}{
 		"olmId":  c.config.ID,
 		"secret": c.config.Secret,
+		"orgId":  c.config.OrgID,
 	}
 	jsonData, err := json.Marshal(tokenData)
 
