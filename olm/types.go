@@ -81,4 +81,6 @@ type TunnelConfig struct {
 	EnableUAPI bool
 
 	OverrideDNS bool
+
+	DisableRelay bool
 }
