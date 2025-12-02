@@ -1,4 +1,4 @@
-package peermonitor
+package monitor
 
 import (
 	"context"

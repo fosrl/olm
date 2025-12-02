@@ -10,6 +10,7 @@ type PeerAction struct {
 type SiteConfig struct {
 	SiteId        int      `json:"siteId"`
 	Endpoint      string   `json:"endpoint,omitempty"`
+	RelayEndpoint string   `json:"relayEndpoint,omitempty"`
 	PublicKey     string   `json:"publicKey,omitempty"`
 	ServerIP      string   `json:"serverIP,omitempty"`
 	ServerPort    uint16   `json:"serverPort,omitempty"`

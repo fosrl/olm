@@ -2,19 +2,16 @@ package peers
 
 import (
 	"fmt"
-	"net"
-	"strconv"
 	"strings"
 
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/util"
-	"github.com/fosrl/olm/peermonitor"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // ConfigurePeer sets up or updates a peer within the WireGuard device
-func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes.Key, endpoint string, peerMonitor *peermonitor.PeerMonitor) error {
+func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes.Key, endpoint string) error {
 	siteHost, err := util.ResolveDomain(formatEndpoint(siteConfig.Endpoint))
 	if err != nil {
 		return fmt.Errorf("failed to resolve endpoint for site %d: %v", siteConfig.SiteId, err)
@@ -68,38 +65,11 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 		return fmt.Errorf("failed to configure WireGuard peer: %v", err)
 	}
 
-	// Set up peer monitoring
-	if peerMonitor != nil {
-		monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
-		monitorPeer := net.JoinHostPort(monitorAddress, strconv.Itoa(int(siteConfig.ServerPort+1))) // +1 for the monitor port
-		logger.Debug("Setting up peer monitor for site %d at %s", siteConfig.SiteId, monitorPeer)
-		logger.Debug("Resolving primary relay %s for peer", endpoint)
-		primaryRelay, err := util.ResolveDomain(endpoint) // Using global endpoint variable
-		if err != nil {
-			logger.Warn("Failed to resolve primary relay endpoint for peer: %v", err)
-		}
-
-		wgConfig := &peermonitor.WireGuardConfig{
-			SiteID:       siteConfig.SiteId,
-			PublicKey:    util.FixKey(siteConfig.PublicKey),
-			ServerIP:     strings.Split(siteConfig.ServerIP, "/")[0],
-			Endpoint:     siteConfig.Endpoint,
-			PrimaryRelay: primaryRelay,
-		}
-
-		err = peerMonitor.AddPeer(siteConfig.SiteId, monitorPeer, wgConfig)
-		if err != nil {
-			logger.Warn("Failed to setup monitoring for site %d: %v", siteConfig.SiteId, err)
-		} else {
-			logger.Info("Started monitoring for site %d at %s", siteConfig.SiteId, monitorPeer)
-		}
-	}
-
 	return nil
 }
 
 // RemovePeer removes a peer from the WireGuard device
-func RemovePeer(dev *device.Device, siteId int, publicKey string, peerMonitor *peermonitor.PeerMonitor) error {
+func RemovePeer(dev *device.Device, siteId int, publicKey string) error {
 	// Construct WireGuard config to remove the peer
 	var configBuilder strings.Builder
 	configBuilder.WriteString(fmt.Sprintf("public_key=%s\n", util.FixKey(publicKey)))
@@ -111,12 +81,6 @@ func RemovePeer(dev *device.Device, siteId int, publicKey string, peerMonitor *p
 	err := dev.IpcSet(config)
 	if err != nil {
 		return fmt.Errorf("failed to remove WireGuard peer: %v", err)
-	}
-
-	// Stop monitoring this peer
-	if peerMonitor != nil {
-		peerMonitor.RemovePeer(siteId)
-		logger.Info("Stopped monitoring for site %d", siteId)
 	}
 
 	return nil
