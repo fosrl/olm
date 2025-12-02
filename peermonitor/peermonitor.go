@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,7 +14,6 @@ import (
 	"github.com/fosrl/newt/util"
 	middleDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/websocket"
-	"golang.zx2c4.com/wireguard/device"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -44,18 +42,15 @@ type WireGuardConfig struct {
 
 // PeerMonitor handles monitoring the connection status to multiple WireGuard peers
 type PeerMonitor struct {
-	monitors          map[int]*Client
-	configs           map[int]*WireGuardConfig
-	callback          PeerMonitorCallback
-	mutex             sync.Mutex
-	running           bool
-	interval          time.Duration
-	timeout           time.Duration
-	maxAttempts       int
-	privateKey        string
-	wsClient          *websocket.Client
-	device            *device.Device
-	handleRelaySwitch bool // Whether to handle relay switching
+	monitors    map[int]*Client
+	configs     map[int]*WireGuardConfig
+	callback    PeerMonitorCallback
+	mutex       sync.Mutex
+	running     bool
+	interval    time.Duration
+	timeout     time.Duration
+	maxAttempts int
+	wsClient    *websocket.Client
 
 	// Netstack fields
 	middleDev   *middleDevice.MiddleDevice
@@ -80,7 +75,7 @@ type PeerMonitor struct {
 }
 
 // NewPeerMonitor creates a new peer monitor with the given callback
-func NewPeerMonitor(callback PeerMonitorCallback, privateKey string, wsClient *websocket.Client, device *device.Device, handleRelaySwitch bool, middleDev *middleDevice.MiddleDevice, localIP string, sharedBind *bind.SharedBind) *PeerMonitor {
+func NewPeerMonitor(callback PeerMonitorCallback, wsClient *websocket.Client, middleDev *middleDevice.MiddleDevice, localIP string, sharedBind *bind.SharedBind) *PeerMonitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	pm := &PeerMonitor{
 		monitors:           make(map[int]*Client),
@@ -89,10 +84,7 @@ func NewPeerMonitor(callback PeerMonitorCallback, privateKey string, wsClient *w
 		interval:           1 * time.Second, // Default check interval
 		timeout:            2500 * time.Millisecond,
 		maxAttempts:        15,
-		privateKey:         privateKey,
 		wsClient:           wsClient,
-		device:             device,
-		handleRelaySwitch:  handleRelaySwitch,
 		middleDev:          middleDev,
 		localIP:            localIP,
 		activePorts:        make(map[uint16]bool),
@@ -245,53 +237,16 @@ func (pm *PeerMonitor) handleConnectionStatusChange(siteID int, status Connectio
 		pm.callback(siteID, status.Connected, status.RTT)
 	}
 
-	// If disconnected, handle failover
+	// If disconnected, send relay message to the server
 	if !status.Connected {
-		// Send relay message to the server
 		if pm.wsClient != nil {
 			pm.sendRelay(siteID)
 		}
 	}
 }
 
-// handleFailover handles failover to the relay server when a peer is disconnected
-func (pm *PeerMonitor) HandleFailover(siteID int, relayEndpoint string) {
-	pm.mutex.Lock()
-	config, exists := pm.configs[siteID]
-	pm.mutex.Unlock()
-
-	if !exists {
-		return
-	}
-
-	// Check for IPv6 and format the endpoint correctly
-	formattedEndpoint := relayEndpoint
-	if strings.Contains(relayEndpoint, ":") {
-		formattedEndpoint = fmt.Sprintf("[%s]", relayEndpoint)
-	}
-
-	// Configure WireGuard to use the relay
-	wgConfig := fmt.Sprintf(`private_key=%s
-public_key=%s
-allowed_ip=%s/32
-endpoint=%s:21820
-persistent_keepalive_interval=1`, pm.privateKey, config.PublicKey, config.ServerIP, formattedEndpoint)
-
-	err := pm.device.IpcSet(wgConfig)
-	if err != nil {
-		logger.Error("Failed to configure WireGuard device: %v\n", err)
-		return
-	}
-
-	logger.Info("Adjusted peer %d to point to relay!\n", siteID)
-}
-
 // sendRelay sends a relay message to the server
 func (pm *PeerMonitor) sendRelay(siteID int) error {
-	if !pm.handleRelaySwitch {
-		return nil
-	}
-
 	if pm.wsClient == nil {
 		return fmt.Errorf("websocket client is nil")
 	}

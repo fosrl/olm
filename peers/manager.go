@@ -3,6 +3,7 @@ package peers
 import (
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/fosrl/newt/logger"
@@ -593,4 +594,35 @@ func (pm *PeerManager) RemoveAlias(siteId int, aliasName string) error {
 	pm.peers[siteId] = peer
 
 	return nil
+}
+
+// HandleFailover handles failover to the relay server when a peer is disconnected
+func (pm *PeerManager) HandleFailover(siteId int, relayEndpoint string) {
+	pm.mu.RLock()
+	peer, exists := pm.peers[siteId]
+	pm.mu.RUnlock()
+
+	if !exists {
+		logger.Error("Cannot handle failover: peer with site ID %d not found", siteId)
+		return
+	}
+
+	// Check for IPv6 and format the endpoint correctly
+	formattedEndpoint := relayEndpoint
+	if strings.Contains(relayEndpoint, ":") {
+		formattedEndpoint = fmt.Sprintf("[%s]", relayEndpoint)
+	}
+
+	// Update only the endpoint for this peer (update_only preserves other settings)
+	wgConfig := fmt.Sprintf(`public_key=%s
+update_only=true
+endpoint=%s:21820`, peer.PublicKey, formattedEndpoint)
+
+	err := pm.device.IpcSet(wgConfig)
+	if err != nil {
+		logger.Error("Failed to configure WireGuard device: %v\n", err)
+		return
+	}
+
+	logger.Info("Adjusted peer %d to point to relay!\n", siteId)
 }
