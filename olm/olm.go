@@ -686,15 +686,41 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
+		primaryRelay, err := util.ResolveDomain(relayData.RelayEndpoint)
+		if err != nil {
+			logger.Warn("Failed to resolve primary relay endpoint: %v", err)
+		}
+
+		// Update HTTP server to mark this peer as using relay
+		apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.RelayEndpoint, true)
+
+		peerManager.RelayPeer(relayData.SiteId, primaryRelay)
+	})
+
+	olm.RegisterHandler("olm/wg/peer/unrelay", func(msg websocket.WSMessage) {
+		logger.Debug("Received unrelay-peer message: %v", msg.Data)
+
+		jsonData, err := json.Marshal(msg.Data)
+		if err != nil {
+			logger.Error("Error marshaling data: %v", err)
+			return
+		}
+
+		var relayData peers.UnRelayPeerData
+		if err := json.Unmarshal(jsonData, &relayData); err != nil {
+			logger.Error("Error unmarshaling relay data: %v", err)
+			return
+		}
+
 		primaryRelay, err := util.ResolveDomain(relayData.Endpoint)
 		if err != nil {
 			logger.Warn("Failed to resolve primary relay endpoint: %v", err)
 		}
 
 		// Update HTTP server to mark this peer as using relay
-		apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.Endpoint, true)
+		apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.Endpoint, false)
 
-		peerManager.HandleFailover(relayData.SiteId, primaryRelay)
+		peerManager.UnRelayPeer(relayData.SiteId, primaryRelay)
 	})
 
 	// Handler for peer handshake - adds exit node to holepunch rotation and notifies server

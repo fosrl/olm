@@ -30,9 +30,13 @@ type PeerRemove struct {
 }
 
 type RelayPeerData struct {
-	SiteId    int    `json:"siteId"`
-	Endpoint  string `json:"endpoint"`
-	PublicKey string `json:"publicKey"`
+	SiteId        int    `json:"siteId"`
+	RelayEndpoint string `json:"relayEndpoint"`
+}
+
+type UnRelayPeerData struct {
+	SiteId   int    `json:"siteId"`
+	Endpoint string `json:"endpoint"`
 }
 
 // PeerAdd represents the data needed to add remote subnets to a peer

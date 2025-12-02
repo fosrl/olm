@@ -25,16 +25,9 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 )
 
-// PeerMonitorCallback is the function type for connection status change callbacks
-type PeerMonitorCallback func(siteID int, connected bool, rtt time.Duration)
-
-// HolepunchStatusCallback is called when holepunch connection status changes
-type HolepunchStatusCallback func(siteID int, endpoint string, connected bool, rtt time.Duration)
-
 // PeerMonitor handles monitoring the connection status to multiple WireGuard peers
 type PeerMonitor struct {
 	monitors    map[int]*Client
-	callback    PeerMonitorCallback
 	mutex       sync.Mutex
 	running     bool
 	interval    time.Duration
@@ -54,36 +47,42 @@ type PeerMonitor struct {
 	nsWg        sync.WaitGroup
 
 	// Holepunch testing fields
-	sharedBind              *bind.SharedBind
-	holepunchTester         *holepunch.HolepunchTester
-	holepunchInterval       time.Duration
-	holepunchTimeout        time.Duration
-	holepunchEndpoints      map[int]string // siteID -> endpoint for holepunch testing
-	holepunchStatus         map[int]bool   // siteID -> connected status
-	holepunchStatusCallback HolepunchStatusCallback
-	holepunchStopChan       chan struct{}
+	sharedBind         *bind.SharedBind
+	holepunchTester    *holepunch.HolepunchTester
+	holepunchInterval  time.Duration
+	holepunchTimeout   time.Duration
+	holepunchEndpoints map[int]string // siteID -> endpoint for holepunch testing
+	holepunchStatus    map[int]bool   // siteID -> connected status
+	holepunchStopChan  chan struct{}
+
+	// Relay tracking fields
+	relayedPeers         map[int]bool // siteID -> whether the peer is currently relayed
+	holepunchMaxAttempts int          // max consecutive failures before triggering relay
+	holepunchFailures    map[int]int  // siteID -> consecutive failure count
 }
 
 // NewPeerMonitor creates a new peer monitor with the given callback
-func NewPeerMonitor(callback PeerMonitorCallback, wsClient *websocket.Client, middleDev *middleDevice.MiddleDevice, localIP string, sharedBind *bind.SharedBind) *PeerMonitor {
+func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDevice, localIP string, sharedBind *bind.SharedBind) *PeerMonitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	pm := &PeerMonitor{
-		monitors:           make(map[int]*Client),
-		callback:           callback,
-		interval:           1 * time.Second, // Default check interval
-		timeout:            2500 * time.Millisecond,
-		maxAttempts:        15,
-		wsClient:           wsClient,
-		middleDev:          middleDev,
-		localIP:            localIP,
-		activePorts:        make(map[uint16]bool),
-		nsCtx:              ctx,
-		nsCancel:           cancel,
-		sharedBind:         sharedBind,
-		holepunchInterval:  5 * time.Second, // Check holepunch every 5 seconds
-		holepunchTimeout:   3 * time.Second,
-		holepunchEndpoints: make(map[int]string),
-		holepunchStatus:    make(map[int]bool),
+		monitors:             make(map[int]*Client),
+		interval:             1 * time.Second, // Default check interval
+		timeout:              2500 * time.Millisecond,
+		maxAttempts:          15,
+		wsClient:             wsClient,
+		middleDev:            middleDev,
+		localIP:              localIP,
+		activePorts:          make(map[uint16]bool),
+		nsCtx:                ctx,
+		nsCancel:             cancel,
+		sharedBind:           sharedBind,
+		holepunchInterval:    5 * time.Second, // Check holepunch every 5 seconds
+		holepunchTimeout:     3 * time.Second,
+		holepunchEndpoints:   make(map[int]string),
+		holepunchStatus:      make(map[int]bool),
+		relayedPeers:         make(map[int]bool),
+		holepunchMaxAttempts: 3, // Trigger relay after 3 consecutive failures
+		holepunchFailures:    make(map[int]int),
 	}
 
 	if err := pm.initNetstack(); err != nil {
@@ -201,6 +200,8 @@ func (pm *PeerMonitor) RemovePeer(siteID int) {
 	// remove the holepunch endpoint info
 	delete(pm.holepunchEndpoints, siteID)
 	delete(pm.holepunchStatus, siteID)
+	delete(pm.relayedPeers, siteID)
+	delete(pm.holepunchFailures, siteID)
 
 	pm.removePeerUnlocked(siteID)
 }
@@ -234,17 +235,6 @@ func (pm *PeerMonitor) Start() {
 
 // handleConnectionStatusChange is called when a peer's connection status changes
 func (pm *PeerMonitor) handleConnectionStatusChange(siteID int, status ConnectionStatus) {
-	// Call the user-provided callback first
-	if pm.callback != nil {
-		pm.callback(siteID, status.Connected, status.RTT)
-	}
-
-	// If disconnected, send relay message to the server
-	if !status.Connected {
-		if pm.wsClient != nil {
-			pm.sendRelay(siteID)
-		}
-	}
 }
 
 // sendRelay sends a relay message to the server
@@ -261,6 +251,23 @@ func (pm *PeerMonitor) sendRelay(siteID int) error {
 		return err
 	}
 	logger.Info("Sent relay message")
+	return nil
+}
+
+// sendRelay sends a relay message to the server
+func (pm *PeerMonitor) sendUnRelay(siteID int) error {
+	if pm.wsClient == nil {
+		return fmt.Errorf("websocket client is nil")
+	}
+
+	err := pm.wsClient.SendMessage("olm/wg/unrelay", map[string]interface{}{
+		"siteId": siteID,
+	})
+	if err != nil {
+		logger.Error("Failed to send registration message: %v", err)
+		return err
+	}
+	logger.Info("Sent unrelay message")
 	return nil
 }
 
@@ -284,11 +291,15 @@ func (pm *PeerMonitor) Stop() {
 	}
 }
 
-// SetHolepunchStatusCallback sets the callback for holepunch status changes
-func (pm *PeerMonitor) SetHolepunchStatusCallback(callback HolepunchStatusCallback) {
+// MarkPeerRelayed marks a peer as currently using relay
+func (pm *PeerMonitor) MarkPeerRelayed(siteID int, relayed bool) {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
-	pm.holepunchStatusCallback = callback
+	pm.relayedPeers[siteID] = relayed
+	if relayed {
+		// Reset failure count when marked as relayed
+		pm.holepunchFailures[siteID] = 0
+	}
 }
 
 // startHolepunchMonitor starts the holepunch connection monitoring
@@ -358,6 +369,7 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 		endpoints[siteID] = endpoint
 	}
 	timeout := pm.holepunchTimeout
+	maxAttempts := pm.holepunchMaxAttempts
 	pm.mutex.Unlock()
 
 	for siteID, endpoint := range endpoints {
@@ -366,7 +378,15 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 		pm.mutex.Lock()
 		previousStatus, exists := pm.holepunchStatus[siteID]
 		pm.holepunchStatus[siteID] = result.Success
-		callback := pm.holepunchStatusCallback
+		isRelayed := pm.relayedPeers[siteID]
+
+		// Track consecutive failures for relay triggering
+		if result.Success {
+			pm.holepunchFailures[siteID] = 0
+		} else {
+			pm.holepunchFailures[siteID]++
+		}
+		failureCount := pm.holepunchFailures[siteID]
 		pm.mutex.Unlock()
 
 		// Log status changes
@@ -382,9 +402,19 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 			}
 		}
 
-		// Call the callback if set
-		if callback != nil {
-			callback(siteID, endpoint, result.Success, result.RTT)
+		// Handle relay logic based on holepunch status
+		if !result.Success && !isRelayed && failureCount >= maxAttempts {
+			// Holepunch failed and we're not relayed - trigger relay
+			logger.Info("Holepunch to site %d failed %d times, triggering relay", siteID, failureCount)
+			if pm.wsClient != nil {
+				pm.sendRelay(siteID)
+			}
+		} else if result.Success && isRelayed {
+			// Holepunch succeeded and we ARE relayed - switch back to direct
+			logger.Info("Holepunch to site %d succeeded while relayed, switching to direct connection", siteID)
+			if pm.wsClient != nil {
+				pm.sendUnRelay(siteID)
+			}
 		}
 	}
 }
