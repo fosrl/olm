@@ -6,11 +6,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/fosrl/newt/bind"
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/network"
+	"github.com/fosrl/newt/util"
 	"github.com/fosrl/olm/api"
 	olmDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/dns"
@@ -19,10 +19,6 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
-
-// HolepunchStatusCallback is called when holepunch connection status changes
-// This is an alias for monitor.HolepunchStatusCallback
-type HolepunchStatusCallback = monitor.HolepunchStatusCallback
 
 // PeerManagerConfig contains the configuration for creating a PeerManager
 type PeerManagerConfig struct {
@@ -71,34 +67,6 @@ func NewPeerManager(config PeerManagerConfig) *PeerManager {
 
 	// Create the peer monitor
 	pm.peerMonitor = monitor.NewPeerMonitor(
-		func(siteID int, connected bool, rtt time.Duration) {
-			// Update API status directly
-			if pm.APIServer != nil {
-				// Find the peer config to get endpoint information
-				pm.mu.RLock()
-				peer, exists := pm.peers[siteID]
-				pm.mu.RUnlock()
-
-				var endpoint string
-				var isRelay bool
-				if exists {
-					if peer.RelayEndpoint != "" {
-						endpoint = peer.RelayEndpoint
-						isRelay = true
-					} else {
-						endpoint = peer.Endpoint
-						isRelay = false
-					}
-				}
-				pm.APIServer.UpdatePeerStatus(siteID, connected, rtt, endpoint, isRelay)
-			}
-
-			if connected {
-				logger.Info("Peer %d is now connected (RTT: %v)", siteID, rtt)
-			} else {
-				logger.Warn("Peer %d is disconnected", siteID)
-			}
-		},
 		config.WSClient,
 		config.MiddleDev,
 		config.LocalIP,
@@ -677,11 +645,16 @@ func (pm *PeerManager) RemoveAlias(siteId int, aliasName string) error {
 	return nil
 }
 
-// HandleFailover handles failover to the relay server when a peer is disconnected
-func (pm *PeerManager) HandleFailover(siteId int, relayEndpoint string) {
-	pm.mu.RLock()
+// RelayPeer handles failover to the relay server when a peer is disconnected
+func (pm *PeerManager) RelayPeer(siteId int, relayEndpoint string) {
+	pm.mu.Lock()
 	peer, exists := pm.peers[siteId]
-	pm.mu.RUnlock()
+	if exists {
+		// Store the relay endpoint
+		peer.RelayEndpoint = relayEndpoint
+		pm.peers[siteId] = peer
+	}
+	pm.mu.Unlock()
 
 	if !exists {
 		logger.Error("Cannot handle failover: peer with site ID %d not found", siteId)
@@ -697,12 +670,17 @@ func (pm *PeerManager) HandleFailover(siteId int, relayEndpoint string) {
 	// Update only the endpoint for this peer (update_only preserves other settings)
 	wgConfig := fmt.Sprintf(`public_key=%s
 update_only=true
-endpoint=%s:21820`, peer.PublicKey, formattedEndpoint)
+endpoint=%s:21820`, util.FixKey(peer.PublicKey), formattedEndpoint)
 
 	err := pm.device.IpcSet(wgConfig)
 	if err != nil {
 		logger.Error("Failed to configure WireGuard device: %v\n", err)
 		return
+	}
+
+	// Mark the peer as relayed in the monitor
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.MarkPeerRelayed(siteId, true)
 	}
 
 	logger.Info("Adjusted peer %d to point to relay!\n", siteId)
@@ -730,9 +708,58 @@ func (pm *PeerManager) Close() {
 	}
 }
 
-// SetHolepunchStatusCallback sets the callback for holepunch status changes
-func (pm *PeerManager) SetHolepunchStatusCallback(callback HolepunchStatusCallback) {
-	if pm.peerMonitor != nil {
-		pm.peerMonitor.SetHolepunchStatusCallback(callback)
+// MarkPeerRelayed marks a peer as currently using relay
+func (pm *PeerManager) MarkPeerRelayed(siteID int, relayed bool) {
+	pm.mu.Lock()
+	if peer, exists := pm.peers[siteID]; exists {
+		if relayed {
+			// We're being relayed, store the current endpoint as the original
+			// (RelayEndpoint is set by HandleFailover)
+		} else {
+			// Clear relay endpoint when switching back to direct
+			peer.RelayEndpoint = ""
+			pm.peers[siteID] = peer
+		}
 	}
+	pm.mu.Unlock()
+
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.MarkPeerRelayed(siteID, relayed)
+	}
+}
+
+// UnRelayPeer switches a peer from relay back to direct connection
+func (pm *PeerManager) UnRelayPeer(siteId int, endpoint string) error {
+	pm.mu.Lock()
+	peer, exists := pm.peers[siteId]
+	if exists {
+		// Store the relay endpoint
+		peer.Endpoint = endpoint
+		pm.peers[siteId] = peer
+	}
+	pm.mu.Unlock()
+
+	if !exists {
+		logger.Error("Cannot handle failover: peer with site ID %d not found", siteId)
+		return nil
+	}
+
+	// Update WireGuard to use the direct endpoint
+	wgConfig := fmt.Sprintf(`public_key=%s
+update_only=true
+endpoint=%s`, util.FixKey(peer.PublicKey), endpoint)
+
+	err := pm.device.IpcSet(wgConfig)
+	if err != nil {
+		logger.Error("Failed to switch peer %d to direct connection: %v", siteId, err)
+		return err
+	}
+
+	// Mark as not relayed in monitor
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.MarkPeerRelayed(siteId, false)
+	}
+
+	logger.Info("Switched peer %d back to direct connection at %s", siteId, endpoint)
+	return nil
 }
