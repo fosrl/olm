@@ -1,4 +1,4 @@
-package peermonitor
+package monitor
 
 import (
 	"context"
@@ -31,19 +31,9 @@ type PeerMonitorCallback func(siteID int, connected bool, rtt time.Duration)
 // HolepunchStatusCallback is called when holepunch connection status changes
 type HolepunchStatusCallback func(siteID int, endpoint string, connected bool, rtt time.Duration)
 
-// WireGuardConfig holds the WireGuard configuration for a peer
-type WireGuardConfig struct {
-	SiteID       int
-	PublicKey    string
-	ServerIP     string
-	Endpoint     string
-	PrimaryRelay string // The primary relay endpoint
-}
-
 // PeerMonitor handles monitoring the connection status to multiple WireGuard peers
 type PeerMonitor struct {
 	monitors    map[int]*Client
-	configs     map[int]*WireGuardConfig
 	callback    PeerMonitorCallback
 	mutex       sync.Mutex
 	running     bool
@@ -79,7 +69,6 @@ func NewPeerMonitor(callback PeerMonitorCallback, wsClient *websocket.Client, mi
 	ctx, cancel := context.WithCancel(context.Background())
 	pm := &PeerMonitor{
 		monitors:           make(map[int]*Client),
-		configs:            make(map[int]*WireGuardConfig),
 		callback:           callback,
 		interval:           1 * time.Second, // Default check interval
 		timeout:            2500 * time.Millisecond,
@@ -149,7 +138,7 @@ func (pm *PeerMonitor) SetMaxAttempts(attempts int) {
 }
 
 // AddPeer adds a new peer to monitor
-func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, wgConfig *WireGuardConfig) error {
+func (pm *PeerMonitor) AddPeer(siteID int, endpoint string) error {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 
@@ -168,7 +157,8 @@ func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, wgConfig *WireGuardC
 	client.SetMaxAttempts(pm.maxAttempts)
 
 	pm.monitors[siteID] = client
-	pm.configs[siteID] = wgConfig
+	pm.holepunchEndpoints[siteID] = endpoint
+	pm.holepunchStatus[siteID] = false // Initially unknown/disconnected
 
 	if pm.running {
 		if err := client.StartMonitor(func(status ConnectionStatus) {
@@ -192,7 +182,6 @@ func (pm *PeerMonitor) removePeerUnlocked(siteID int) {
 	client.StopMonitor()
 	client.Close()
 	delete(pm.monitors, siteID)
-	delete(pm.configs, siteID)
 }
 
 // RemovePeer stops monitoring a peer and removes it from the monitor
@@ -287,26 +276,6 @@ func (pm *PeerMonitor) SetHolepunchStatusCallback(callback HolepunchStatusCallba
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 	pm.holepunchStatusCallback = callback
-}
-
-// AddHolepunchEndpoint adds an endpoint to monitor via holepunch magic packets
-func (pm *PeerMonitor) AddHolepunchEndpoint(siteID int, endpoint string) {
-	pm.mutex.Lock()
-	defer pm.mutex.Unlock()
-
-	pm.holepunchEndpoints[siteID] = endpoint
-	pm.holepunchStatus[siteID] = false // Initially unknown/disconnected
-	logger.Info("Added holepunch monitoring for site %d at %s", siteID, endpoint)
-}
-
-// RemoveHolepunchEndpoint removes an endpoint from holepunch monitoring
-func (pm *PeerMonitor) RemoveHolepunchEndpoint(siteID int) {
-	pm.mutex.Lock()
-	defer pm.mutex.Unlock()
-
-	delete(pm.holepunchEndpoints, siteID)
-	delete(pm.holepunchStatus, siteID)
-	logger.Info("Removed holepunch monitoring for site %d", siteID)
 }
 
 // startHolepunchMonitor starts the holepunch connection monitoring

@@ -20,7 +20,6 @@ import (
 	olmDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/dns"
 	dnsOverride "github.com/fosrl/olm/dns/override"
-	"github.com/fosrl/olm/peermonitor"
 	"github.com/fosrl/olm/peers"
 	"github.com/fosrl/olm/websocket"
 	"golang.zx2c4.com/wireguard/device"
@@ -32,7 +31,6 @@ var (
 	privateKey       wgtypes.Key
 	connected        bool
 	dev              *device.Device
-	wgData           WgData
 	uapiListener     net.Listener
 	tdev             tun.Device
 	middleDev        *olmDevice.MiddleDevice
@@ -43,7 +41,6 @@ var (
 	tunnelRunning    bool
 	sharedBind       *bind.SharedBind
 	holePunchManager *holepunch.Manager
-	peerMonitor      *peermonitor.PeerMonitor
 	globalConfig     GlobalConfig
 	tunnelConfig     TunnelConfig
 	globalCtx        context.Context
@@ -269,6 +266,8 @@ func StartTunnel(config TunnelConfig) {
 	olm.RegisterHandler("olm/wg/connect", func(msg websocket.WSMessage) {
 		logger.Debug("Received message: %v", msg.Data)
 
+		var wgData WgData
+
 		if connected {
 			logger.Info("Already connected. Ignoring new connection request.")
 			return
@@ -398,17 +397,28 @@ func StartTunnel(config TunnelConfig) {
 			wsClientForMonitor = olm
 		}
 
-		peerMonitor = peermonitor.NewPeerMonitor(
-			func(siteID int, connected bool, rtt time.Duration) {
+		// Create peer manager with integrated peer monitoring
+		peerManager = peers.NewPeerManager(peers.PeerManagerConfig{
+			Device:        dev,
+			DNSProxy:      dnsProxy,
+			InterfaceName: interfaceName,
+			PrivateKey:    privateKey,
+			MiddleDev:     middleDev,
+			LocalIP:       interfaceIP,
+			SharedBind:    sharedBind,
+			WSClient:      wsClientForMonitor,
+			StatusCallback: func(siteID int, connected bool, rtt time.Duration) {
 				// Find the site config to get endpoint information
 				var endpoint string
 				var isRelay bool
 				for _, site := range wgData.Sites {
 					if site.SiteId == siteID {
-						endpoint = site.Endpoint
-						// TODO: We'll need to track relay status separately
-						// For now, assume not using relay unless we get relay data
-						isRelay = !config.Holepunch
+						if site.RelayEndpoint != "" {
+							endpoint = site.RelayEndpoint
+						} else {
+							endpoint = site.Endpoint
+						}
+						isRelay = site.RelayEndpoint != ""
 						break
 					}
 				}
@@ -419,43 +429,41 @@ func StartTunnel(config TunnelConfig) {
 					logger.Warn("Peer %d is disconnected", siteID)
 				}
 			},
-			wsClientForMonitor,
-			middleDev,
-			interfaceIP,
-			sharedBind, // Pass sharedBind for holepunch testing
-		)
-
-		peerManager = peers.NewPeerManager(dev, peerMonitor, dnsProxy, interfaceName, privateKey)
+		})
 
 		for i := range wgData.Sites {
 			site := wgData.Sites[i]
-			apiServer.UpdatePeerStatus(site.SiteId, false, 0, site.Endpoint, false)
+			var siteEndpoint string
+			// here we are going to take the relay endpoint if it exists which means we requested a relay for this peer
+			if site.RelayEndpoint != "" {
+				siteEndpoint = site.RelayEndpoint
+			} else {
+				siteEndpoint = site.Endpoint
+			}
+			apiServer.UpdatePeerStatus(site.SiteId, false, 0, siteEndpoint, false)
 
-			if err := peerManager.AddPeer(site, endpoint); err != nil {
+			if err := peerManager.AddPeer(site, siteEndpoint); err != nil {
 				logger.Error("Failed to add peer: %v", err)
 				return
-			}
-
-			// Add holepunch monitoring for this endpoint if holepunching is enabled
-			if config.Holepunch {
-				peerMonitor.AddHolepunchEndpoint(site.SiteId, site.Endpoint)
 			}
 
 			logger.Info("Configured peer %s", site.PublicKey)
 		}
 
-		peerMonitor.SetHolepunchStatusCallback(func(siteID int, endpoint string, connected bool, rtt time.Duration) {
+		peerManager.SetHolepunchStatusCallback(func(siteID int, endpoint string, connected bool, rtt time.Duration) {
 			// This callback is for additional handling if needed
 			// The PeerMonitor already logs status changes
 			logger.Info("+++++++++++++++++++++++++ holepunch monitor callback for site %d, endpoint %s, connected: %v, rtt: %v", siteID, endpoint, connected, rtt)
 		})
 
-		peerMonitor.Start()
+		peerManager.Start()
 
-		// Set up DNS override to use our DNS proxy
-		if err := dnsOverride.SetupDNSOverride(interfaceName, dnsProxy); err != nil {
-			logger.Error("Failed to setup DNS override: %v", err)
-			return
+		if config.OverrideDNS {
+			// Set up DNS override to use our DNS proxy
+			if err := dnsOverride.SetupDNSOverride(interfaceName, dnsProxy); err != nil {
+				logger.Error("Failed to setup DNS override: %v", err)
+				return
+			}
 		}
 
 		if err := dnsProxy.Start(); err != nil {
@@ -906,12 +914,8 @@ func Close() {
 		updateRegister = nil
 	}
 
-	if peerMonitor != nil {
-		peerMonitor.Close() // Close() also calls Stop() internally
-		peerMonitor = nil
-	}
-
 	if peerManager != nil {
+		peerManager.Close() // Close() also calls Stop() internally
 		peerManager = nil
 	}
 

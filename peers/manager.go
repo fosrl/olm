@@ -3,22 +3,50 @@ package peers
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/fosrl/newt/bind"
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/network"
+	olmDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/dns"
-	"github.com/fosrl/olm/peermonitor"
+	"github.com/fosrl/olm/peers/monitor"
+	"github.com/fosrl/olm/websocket"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
+
+// PeerStatusCallback is called when a peer's connection status changes
+type PeerStatusCallback func(siteID int, connected bool, rtt time.Duration)
+
+// HolepunchStatusCallback is called when holepunch connection status changes
+// This is an alias for monitor.HolepunchStatusCallback
+type HolepunchStatusCallback = monitor.HolepunchStatusCallback
+
+// PeerManagerConfig contains the configuration for creating a PeerManager
+type PeerManagerConfig struct {
+	Device        *device.Device
+	DNSProxy      *dns.DNSProxy
+	InterfaceName string
+	PrivateKey    wgtypes.Key
+	// For peer monitoring
+	MiddleDev  *olmDevice.MiddleDevice
+	LocalIP    string
+	SharedBind *bind.SharedBind
+	// WSClient is optional - if nil, relay messages won't be sent
+	WSClient *websocket.Client
+	// StatusCallback is called when peer connection status changes
+	StatusCallback PeerStatusCallback
+}
 
 type PeerManager struct {
 	mu            sync.RWMutex
 	device        *device.Device
 	peers         map[int]SiteConfig
-	peerMonitor   *peermonitor.PeerMonitor
+	peerMonitor   *monitor.PeerMonitor
 	dnsProxy      *dns.DNSProxy
 	interfaceName string
 	privateKey    wgtypes.Key
@@ -28,19 +56,38 @@ type PeerManager struct {
 	// allowedIPClaims tracks all peers that claim each allowed IP
 	// key is the CIDR string, value is a set of siteIds that want this IP
 	allowedIPClaims map[string]map[int]bool
+	// statusCallback is called when peer connection status changes
+	statusCallback PeerStatusCallback
 }
 
-func NewPeerManager(dev *device.Device, monitor *peermonitor.PeerMonitor, dnsProxy *dns.DNSProxy, interfaceName string, privateKey wgtypes.Key) *PeerManager {
-	return &PeerManager{
-		device:          dev,
+// NewPeerManager creates a new PeerManager with an internal PeerMonitor
+func NewPeerManager(config PeerManagerConfig) *PeerManager {
+	pm := &PeerManager{
+		device:          config.Device,
 		peers:           make(map[int]SiteConfig),
-		peerMonitor:     monitor,
-		dnsProxy:        dnsProxy,
-		interfaceName:   interfaceName,
-		privateKey:      privateKey,
+		dnsProxy:        config.DNSProxy,
+		interfaceName:   config.InterfaceName,
+		privateKey:      config.PrivateKey,
 		allowedIPOwners: make(map[string]int),
 		allowedIPClaims: make(map[string]map[int]bool),
+		statusCallback:  config.StatusCallback,
 	}
+
+	// Create the peer monitor
+	pm.peerMonitor = monitor.NewPeerMonitor(
+		func(siteID int, connected bool, rtt time.Duration) {
+			// Call the external status callback if set
+			if pm.statusCallback != nil {
+				pm.statusCallback(siteID, connected, rtt)
+			}
+		},
+		config.WSClient,
+		config.MiddleDev,
+		config.LocalIP,
+		config.SharedBind,
+	)
+
+	return pm
 }
 
 func (pm *PeerManager) GetPeer(siteId int) (SiteConfig, bool) {
@@ -86,7 +133,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig, endpoint string) error {
 	wgConfig := siteConfig
 	wgConfig.AllowedIps = ownedIPs
 
-	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, endpoint, pm.peerMonitor); err != nil {
+	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, endpoint); err != nil {
 		return err
 	}
 
@@ -104,6 +151,16 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig, endpoint string) error {
 		pm.dnsProxy.AddDNSRecord(alias.Alias, address)
 	}
 
+	monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
+	monitorPeer := net.JoinHostPort(monitorAddress, strconv.Itoa(int(siteConfig.ServerPort+1))) // +1 for the monitor port
+
+	err := pm.peerMonitor.AddPeer(siteConfig.SiteId, monitorPeer)
+	if err != nil {
+		logger.Warn("Failed to setup monitoring for site %d: %v", siteConfig.SiteId, err)
+	} else {
+		logger.Info("Started monitoring for site %d at %s", siteConfig.SiteId, monitorPeer)
+	}
+
 	pm.peers[siteConfig.SiteId] = siteConfig
 	return nil
 }
@@ -117,7 +174,7 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 		return fmt.Errorf("peer with site ID %d not found", siteId)
 	}
 
-	if err := RemovePeer(pm.device, siteId, peer.PublicKey, pm.peerMonitor); err != nil {
+	if err := RemovePeer(pm.device, siteId, peer.PublicKey); err != nil {
 		return err
 	}
 
@@ -167,11 +224,15 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 			ownedIPs := pm.getOwnedAllowedIPs(promotedPeerId)
 			wgConfig := promotedPeer
 			wgConfig.AllowedIps = ownedIPs
-			if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, promotedPeer.Endpoint, pm.peerMonitor); err != nil {
+			if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, promotedPeer.Endpoint); err != nil {
 				logger.Error("Failed to update promoted peer %d: %v", promotedPeerId, err)
 			}
 		}
 	}
+
+	// Stop monitoring this peer
+	pm.peerMonitor.RemovePeer(siteId)
+	logger.Info("Stopped monitoring for site %d", siteId)
 
 	delete(pm.peers, siteId)
 	return nil
@@ -188,7 +249,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig, endpoint string) error 
 
 	// If public key changed, remove old peer first
 	if siteConfig.PublicKey != oldPeer.PublicKey {
-		if err := RemovePeer(pm.device, siteConfig.SiteId, oldPeer.PublicKey, pm.peerMonitor); err != nil {
+		if err := RemovePeer(pm.device, siteConfig.SiteId, oldPeer.PublicKey); err != nil {
 			logger.Error("Failed to remove old peer: %v", err)
 		}
 	}
@@ -237,7 +298,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig, endpoint string) error 
 	wgConfig := siteConfig
 	wgConfig.AllowedIps = ownedIPs
 
-	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, endpoint, pm.peerMonitor); err != nil {
+	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, endpoint); err != nil {
 		return err
 	}
 
@@ -247,7 +308,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig, endpoint string) error 
 			promotedOwnedIPs := pm.getOwnedAllowedIPs(promotedPeerId)
 			promotedWgConfig := promotedPeer
 			promotedWgConfig.AllowedIps = promotedOwnedIPs
-			if err := ConfigurePeer(pm.device, promotedWgConfig, pm.privateKey, promotedPeer.Endpoint, pm.peerMonitor); err != nil {
+			if err := ConfigurePeer(pm.device, promotedWgConfig, pm.privateKey, promotedPeer.Endpoint); err != nil {
 				logger.Error("Failed to update promoted peer %d: %v", promotedPeerId, err)
 			}
 		}
@@ -399,7 +460,7 @@ func (pm *PeerManager) addAllowedIp(siteId int, ip string) error {
 
 	// Only update WireGuard if we own this IP
 	if pm.allowedIPOwners[ip] == siteId {
-		if err := ConfigurePeer(pm.device, peer, pm.privateKey, peer.Endpoint, pm.peerMonitor); err != nil {
+		if err := ConfigurePeer(pm.device, peer, pm.privateKey, peer.Endpoint); err != nil {
 			return err
 		}
 	}
@@ -439,14 +500,14 @@ func (pm *PeerManager) removeAllowedIp(siteId int, cidr string) error {
 	newOwner, promoted := pm.releaseAllowedIP(siteId, cidr)
 
 	// Update WireGuard for this peer (to remove the IP from its config)
-	if err := ConfigurePeer(pm.device, peer, pm.privateKey, peer.Endpoint, pm.peerMonitor); err != nil {
+	if err := ConfigurePeer(pm.device, peer, pm.privateKey, peer.Endpoint); err != nil {
 		return err
 	}
 
 	// If another peer was promoted to owner, update their WireGuard config
 	if promoted && newOwner >= 0 {
 		if newOwnerPeer, exists := pm.peers[newOwner]; exists {
-			if err := ConfigurePeer(pm.device, newOwnerPeer, pm.privateKey, newOwnerPeer.Endpoint, pm.peerMonitor); err != nil {
+			if err := ConfigurePeer(pm.device, newOwnerPeer, pm.privateKey, newOwnerPeer.Endpoint); err != nil {
 				logger.Error("Failed to promote peer %d for IP %s: %v", newOwner, cidr, err)
 			} else {
 				logger.Info("Promoted peer %d to owner of IP %s", newOwner, cidr)
@@ -625,4 +686,33 @@ endpoint=%s:21820`, peer.PublicKey, formattedEndpoint)
 	}
 
 	logger.Info("Adjusted peer %d to point to relay!\n", siteId)
+}
+
+// Start starts the peer monitor
+func (pm *PeerManager) Start() {
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.Start()
+	}
+}
+
+// Stop stops the peer monitor
+func (pm *PeerManager) Stop() {
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.Stop()
+	}
+}
+
+// Close stops the peer monitor and cleans up resources
+func (pm *PeerManager) Close() {
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.Close()
+		pm.peerMonitor = nil
+	}
+}
+
+// SetHolepunchStatusCallback sets the callback for holepunch status changes
+func (pm *PeerManager) SetHolepunchStatusCallback(callback HolepunchStatusCallback) {
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.SetHolepunchStatusCallback(callback)
+	}
 }
