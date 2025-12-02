@@ -407,28 +407,7 @@ func StartTunnel(config TunnelConfig) {
 			LocalIP:       interfaceIP,
 			SharedBind:    sharedBind,
 			WSClient:      wsClientForMonitor,
-			StatusCallback: func(siteID int, connected bool, rtt time.Duration) {
-				// Find the site config to get endpoint information
-				var endpoint string
-				var isRelay bool
-				for _, site := range wgData.Sites {
-					if site.SiteId == siteID {
-						if site.RelayEndpoint != "" {
-							endpoint = site.RelayEndpoint
-						} else {
-							endpoint = site.Endpoint
-						}
-						isRelay = site.RelayEndpoint != ""
-						break
-					}
-				}
-				apiServer.UpdatePeerStatus(siteID, connected, rtt, endpoint, isRelay)
-				if connected {
-					logger.Info("Peer %d is now connected (RTT: %v)", siteID, rtt)
-				} else {
-					logger.Warn("Peer %d is disconnected", siteID)
-				}
-			},
+			APIServer:     apiServer,
 		})
 
 		for i := range wgData.Sites {
@@ -450,13 +429,11 @@ func StartTunnel(config TunnelConfig) {
 			logger.Info("Configured peer %s", site.PublicKey)
 		}
 
-		peerManager.SetHolepunchStatusCallback(func(siteID int, endpoint string, connected bool, rtt time.Duration) {
-			// This callback is for additional handling if needed
-			// The PeerMonitor already logs status changes
-			logger.Info("+++++++++++++++++++++++++ holepunch monitor callback for site %d, endpoint %s, connected: %v, rtt: %v", siteID, endpoint, connected, rtt)
-		})
-
 		peerManager.Start()
+
+		if err := dnsProxy.Start(); err != nil { // start DNS proxy first so there is no downtime
+			logger.Error("Failed to start DNS proxy: %v", err)
+		}
 
 		if config.OverrideDNS {
 			// Set up DNS override to use our DNS proxy
@@ -464,10 +441,6 @@ func StartTunnel(config TunnelConfig) {
 				logger.Error("Failed to setup DNS override: %v", err)
 				return
 			}
-		}
-
-		if err := dnsProxy.Start(); err != nil {
-			logger.Error("Failed to start DNS proxy: %v", err)
 		}
 
 		apiServer.SetRegistered(true)

@@ -138,7 +138,7 @@ func (pm *PeerMonitor) SetMaxAttempts(attempts int) {
 }
 
 // AddPeer adds a new peer to monitor
-func (pm *PeerMonitor) AddPeer(siteID int, endpoint string) error {
+func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, holepunchEndpoint string) error {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 
@@ -157,7 +157,8 @@ func (pm *PeerMonitor) AddPeer(siteID int, endpoint string) error {
 	client.SetMaxAttempts(pm.maxAttempts)
 
 	pm.monitors[siteID] = client
-	pm.holepunchEndpoints[siteID] = endpoint
+
+	pm.holepunchEndpoints[siteID] = holepunchEndpoint
 	pm.holepunchStatus[siteID] = false // Initially unknown/disconnected
 
 	if pm.running {
@@ -169,6 +170,14 @@ func (pm *PeerMonitor) AddPeer(siteID int, endpoint string) error {
 	}
 
 	return nil
+}
+
+// update holepunch endpoint for a peer
+func (pm *PeerMonitor) UpdateHolepunchEndpoint(siteID int, endpoint string) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+
+	pm.holepunchEndpoints[siteID] = endpoint
 }
 
 // removePeerUnlocked stops monitoring a peer and removes it from the monitor
@@ -188,6 +197,10 @@ func (pm *PeerMonitor) removePeerUnlocked(siteID int) {
 func (pm *PeerMonitor) RemovePeer(siteID int) {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
+
+	// remove the holepunch endpoint info
+	delete(pm.holepunchEndpoints, siteID)
+	delete(pm.holepunchStatus, siteID)
 
 	pm.removePeerUnlocked(siteID)
 }

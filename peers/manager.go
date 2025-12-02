@@ -11,6 +11,7 @@ import (
 	"github.com/fosrl/newt/bind"
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/network"
+	"github.com/fosrl/olm/api"
 	olmDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/dns"
 	"github.com/fosrl/olm/peers/monitor"
@@ -18,9 +19,6 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
-
-// PeerStatusCallback is called when a peer's connection status changes
-type PeerStatusCallback func(siteID int, connected bool, rtt time.Duration)
 
 // HolepunchStatusCallback is called when holepunch connection status changes
 // This is an alias for monitor.HolepunchStatusCallback
@@ -37,9 +35,8 @@ type PeerManagerConfig struct {
 	LocalIP    string
 	SharedBind *bind.SharedBind
 	// WSClient is optional - if nil, relay messages won't be sent
-	WSClient *websocket.Client
-	// StatusCallback is called when peer connection status changes
-	StatusCallback PeerStatusCallback
+	WSClient  *websocket.Client
+	APIServer *api.API
 }
 
 type PeerManager struct {
@@ -56,8 +53,7 @@ type PeerManager struct {
 	// allowedIPClaims tracks all peers that claim each allowed IP
 	// key is the CIDR string, value is a set of siteIds that want this IP
 	allowedIPClaims map[string]map[int]bool
-	// statusCallback is called when peer connection status changes
-	statusCallback PeerStatusCallback
+	APIServer       *api.API
 }
 
 // NewPeerManager creates a new PeerManager with an internal PeerMonitor
@@ -70,15 +66,37 @@ func NewPeerManager(config PeerManagerConfig) *PeerManager {
 		privateKey:      config.PrivateKey,
 		allowedIPOwners: make(map[string]int),
 		allowedIPClaims: make(map[string]map[int]bool),
-		statusCallback:  config.StatusCallback,
+		APIServer:       config.APIServer,
 	}
 
 	// Create the peer monitor
 	pm.peerMonitor = monitor.NewPeerMonitor(
 		func(siteID int, connected bool, rtt time.Duration) {
-			// Call the external status callback if set
-			if pm.statusCallback != nil {
-				pm.statusCallback(siteID, connected, rtt)
+			// Update API status directly
+			if pm.APIServer != nil {
+				// Find the peer config to get endpoint information
+				pm.mu.RLock()
+				peer, exists := pm.peers[siteID]
+				pm.mu.RUnlock()
+
+				var endpoint string
+				var isRelay bool
+				if exists {
+					if peer.RelayEndpoint != "" {
+						endpoint = peer.RelayEndpoint
+						isRelay = true
+					} else {
+						endpoint = peer.Endpoint
+						isRelay = false
+					}
+				}
+				pm.APIServer.UpdatePeerStatus(siteID, connected, rtt, endpoint, isRelay)
+			}
+
+			if connected {
+				logger.Info("Peer %d is now connected (RTT: %v)", siteID, rtt)
+			} else {
+				logger.Warn("Peer %d is disconnected", siteID)
 			}
 		},
 		config.WSClient,
@@ -154,7 +172,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig, endpoint string) error {
 	monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
 	monitorPeer := net.JoinHostPort(monitorAddress, strconv.Itoa(int(siteConfig.ServerPort+1))) // +1 for the monitor port
 
-	err := pm.peerMonitor.AddPeer(siteConfig.SiteId, monitorPeer)
+	err := pm.peerMonitor.AddPeer(siteConfig.SiteId, monitorPeer, siteConfig.Endpoint) // always use the real site endpoint for hole punch monitoring
 	if err != nil {
 		logger.Warn("Failed to setup monitoring for site %d: %v", siteConfig.SiteId, err)
 	} else {
@@ -370,6 +388,8 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig, endpoint string) error 
 		}
 		pm.dnsProxy.AddDNSRecord(alias.Alias, address)
 	}
+
+	pm.peerMonitor.UpdateHolepunchEndpoint(siteConfig.SiteId, siteConfig.Endpoint)
 
 	pm.peers[siteConfig.SiteId] = siteConfig
 	return nil
