@@ -392,6 +392,12 @@ func StartTunnel(config TunnelConfig) {
 			interfaceIP = strings.Split(interfaceIP, "/")[0]
 		}
 
+		// Determine if we should send relay messages (only when holepunching is enabled and relay is not disabled)
+		var wsClientForMonitor *websocket.Client
+		if config.Holepunch && !config.DisableRelay {
+			wsClientForMonitor = olm
+		}
+
 		peerMonitor = peermonitor.NewPeerMonitor(
 			func(siteID int, connected bool, rtt time.Duration) {
 				// Find the site config to get endpoint information
@@ -413,10 +419,7 @@ func StartTunnel(config TunnelConfig) {
 					logger.Warn("Peer %d is disconnected", siteID)
 				}
 			},
-			util.FixKey(privateKey.String()),
-			olm,
-			dev,
-			config.Holepunch && !config.DisableRelay, // Enable relay only if holepunching is enabled and DisableRelay is false
+			wsClientForMonitor,
 			middleDev,
 			interfaceIP,
 			sharedBind, // Pass sharedBind for holepunch testing
@@ -710,7 +713,7 @@ func StartTunnel(config TunnelConfig) {
 		// Update HTTP server to mark this peer as using relay
 		apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.Endpoint, true)
 
-		peerMonitor.HandleFailover(relayData.SiteId, primaryRelay)
+		peerManager.HandleFailover(relayData.SiteId, primaryRelay)
 	})
 
 	// Handler for peer handshake - adds exit node to holepunch rotation and notifies server

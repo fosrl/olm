@@ -27,9 +27,6 @@ type GlobalConfig struct {
 	OnConnected  func()
 	OnTerminated func()
 	OnAuthError  func(statusCode int, message string) // Called when auth fails (401/403)
-
-	// Source tracking (not in JSON)
-	sources map[string]string
 }
 
 type TunnelConfig struct {
