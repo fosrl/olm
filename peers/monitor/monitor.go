@@ -67,8 +67,8 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 	pm := &PeerMonitor{
 		monitors:             make(map[int]*Client),
 		interval:             1 * time.Second, // Default check interval
-		timeout:              2500 * time.Millisecond,
-		maxAttempts:          15,
+		timeout:              5 * time.Second,
+		maxAttempts:          5,
 		wsClient:             wsClient,
 		middleDev:            middleDev,
 		localIP:              localIP,
@@ -77,11 +77,11 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		nsCancel:             cancel,
 		sharedBind:           sharedBind,
 		holepunchInterval:    5 * time.Second, // Check holepunch every 5 seconds
-		holepunchTimeout:     3 * time.Second,
+		holepunchTimeout:     5 * time.Second,
 		holepunchEndpoints:   make(map[int]string),
 		holepunchStatus:      make(map[int]bool),
 		relayedPeers:         make(map[int]bool),
-		holepunchMaxAttempts: 3, // Trigger relay after 3 consecutive failures
+		holepunchMaxAttempts: 5, // Trigger relay after 5 consecutive failures
 		holepunchFailures:    make(map[int]int),
 	}
 
