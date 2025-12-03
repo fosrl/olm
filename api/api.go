@@ -37,13 +37,14 @@ type SwitchOrgRequest struct {
 
 // PeerStatus represents the status of a peer connection
 type PeerStatus struct {
-	SiteID    int           `json:"siteId"`
-	Connected bool          `json:"connected"`
-	RTT       time.Duration `json:"rtt"`
-	LastSeen  time.Time     `json:"lastSeen"`
-	Endpoint  string        `json:"endpoint,omitempty"`
-	IsRelay   bool          `json:"isRelay"`
-	PeerIP    string        `json:"peerAddress,omitempty"`
+	SiteID             int           `json:"siteId"`
+	Connected          bool          `json:"connected"`
+	RTT                time.Duration `json:"rtt"`
+	LastSeen           time.Time     `json:"lastSeen"`
+	Endpoint           string        `json:"endpoint,omitempty"`
+	IsRelay            bool          `json:"isRelay"`
+	PeerIP             string        `json:"peerAddress,omitempty"`
+	HolepunchConnected bool          `json:"holepunchConnected"`
 }
 
 // StatusResponse is returned by the status endpoint
@@ -250,6 +251,22 @@ func (s *API) UpdatePeerRelayStatus(siteID int, endpoint string, isRelay bool) {
 
 	status.Endpoint = endpoint
 	status.IsRelay = isRelay
+}
+
+// UpdatePeerHolepunchStatus updates the holepunch connection status of a peer
+func (s *API) UpdatePeerHolepunchStatus(siteID int, holepunchConnected bool) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+
+	status, exists := s.peerStatuses[siteID]
+	if !exists {
+		status = &PeerStatus{
+			SiteID: siteID,
+		}
+		s.peerStatuses[siteID] = status
+	}
+
+	status.HolepunchConnected = holepunchConnected
 }
 
 // handleConnect handles the /connect endpoint
