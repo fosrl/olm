@@ -214,10 +214,6 @@ func StartTunnel(config TunnelConfig) {
 	// debug print out the whole config
 	logger.Debug("Starting tunnel with config: %+v", config)
 
-	if config.Holepunch {
-		logger.Warn("Hole punching is enabled. This is EXPERIMENTAL and may not work in all environments.")
-	}
-
 	// Create a cancellable context for this tunnel process
 	tunnelCtx, cancel := context.WithCancel(globalCtx)
 	tunnelCancel = cancel
