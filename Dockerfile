@@ -16,7 +16,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /olm
 
 # Start a new stage from scratch
-FROM alpine:3.22 AS runner
+FROM alpine:3.23 AS runner
 
 RUN apk --no-cache add ca-certificates
 
