@@ -786,12 +786,7 @@ func StartTunnel(config TunnelConfig) {
 				logger.Debug("Exit node %s already in holepunch rotation", exitNode.Endpoint)
 			}
 
-			// Start holepunching if not already running
-			if !holePunchManager.IsRunning() {
-				if err := holePunchManager.Start(); err != nil {
-					logger.Error("Failed to start holepunch manager: %v", err)
-				}
-			}
+			holePunchManager.ResetInterval() // start sending immediately again so we fill in the endpoint on the cloud
 		}
 
 		// Send handshake acknowledgment back to server with retry

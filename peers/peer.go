@@ -92,6 +92,48 @@ func RemovePeer(dev *device.Device, siteId int, publicKey string) error {
 	return nil
 }
 
+// AddAllowedIP adds a single allowed IP to an existing peer without reconfiguring the entire peer
+func AddAllowedIP(dev *device.Device, publicKey string, allowedIP string) error {
+	var configBuilder strings.Builder
+	configBuilder.WriteString(fmt.Sprintf("public_key=%s\n", util.FixKey(publicKey)))
+	configBuilder.WriteString("update_only=true\n")
+	configBuilder.WriteString(fmt.Sprintf("allowed_ip=%s\n", allowedIP))
+
+	config := configBuilder.String()
+	logger.Debug("Adding allowed IP to peer with config: %s", config)
+
+	err := dev.IpcSet(config)
+	if err != nil {
+		return fmt.Errorf("failed to add allowed IP to WireGuard peer: %v", err)
+	}
+
+	return nil
+}
+
+// RemoveAllowedIP removes a single allowed IP from an existing peer by replacing the allowed IPs list
+// This requires providing all the allowed IPs that should remain after removal
+func RemoveAllowedIP(dev *device.Device, publicKey string, remainingAllowedIPs []string) error {
+	var configBuilder strings.Builder
+	configBuilder.WriteString(fmt.Sprintf("public_key=%s\n", util.FixKey(publicKey)))
+	configBuilder.WriteString("update_only=true\n")
+	configBuilder.WriteString("replace_allowed_ips=true\n")
+
+	// Add each remaining allowed IP
+	for _, allowedIP := range remainingAllowedIPs {
+		configBuilder.WriteString(fmt.Sprintf("allowed_ip=%s\n", allowedIP))
+	}
+
+	config := configBuilder.String()
+	logger.Debug("Removing allowed IP from peer with config: %s", config)
+
+	err := dev.IpcSet(config)
+	if err != nil {
+		return fmt.Errorf("failed to remove allowed IP from WireGuard peer: %v", err)
+	}
+
+	return nil
+}
+
 func formatEndpoint(endpoint string) string {
 	if strings.Contains(endpoint, ":") {
 		return endpoint
