@@ -155,14 +155,18 @@ func main() {
 	}
 
 	// Create a context that will be cancelled on interrupt signals
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Create a separate context for programmatic shutdown (e.g., via API exit)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Run in console mode
-	runOlmMainWithArgs(ctx, os.Args[1:])
+	runOlmMainWithArgs(ctx, cancel, signalCtx, os.Args[1:])
 }
 
-func runOlmMainWithArgs(ctx context.Context, args []string) {
+func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCtx context.Context, args []string) {
 	// Setup Windows event logging if on Windows
 	if runtime.GOOS == "windows" {
 		setupWindowsEventLog()
@@ -211,6 +215,7 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		HTTPAddr:   config.HTTPAddr,
 		SocketPath: config.SocketPath,
 		Version:    config.Version,
+		OnExit:     cancel, // Pass cancel function directly to trigger shutdown
 	}
 
 	olm.Init(ctx, olmConfig)
@@ -242,9 +247,13 @@ func runOlmMainWithArgs(ctx context.Context, args []string) {
 		logger.Info("Incomplete tunnel configuration, not starting tunnel")
 	}
 
-	// Wait for context cancellation (from signals or API shutdown)
-	<-ctx.Done()
-	logger.Info("Shutdown signal received, cleaning up...")
+	// Wait for either signal or programmatic shutdown
+	select {
+	case <-signalCtx.Done():
+		logger.Info("Shutdown signal received, cleaning up...")
+	case <-ctx.Done():
+		logger.Info("Shutdown requested via API, cleaning up...")
+	}
 
 	// Clean up resources
 	olm.Close()

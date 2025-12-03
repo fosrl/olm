@@ -27,6 +27,7 @@ type GlobalConfig struct {
 	OnConnected  func()
 	OnTerminated func()
 	OnAuthError  func(statusCode int, message string) // Called when auth fails (401/403)
+	OnExit       func()                               // Called when exit is requested via API
 }
 
 type TunnelConfig struct {

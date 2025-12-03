@@ -97,10 +97,6 @@ func Init(ctx context.Context, config GlobalConfig) {
 	globalConfig = config
 	globalCtx = ctx
 
-	// Create a cancellable context for internal shutdown controconfiguration    GlobalConfigl
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	logger.GetLogger().SetLevel(util.ParseLogLevel(config.LogLevel))
 
 	if config.HTTPAddr != "" {
@@ -194,7 +190,10 @@ func Init(ctx context.Context, config GlobalConfig) {
 		// onExit
 		func() error {
 			logger.Info("Processing shutdown request via API")
-			cancel()
+			Close()
+			if globalConfig.OnExit != nil {
+				globalConfig.OnExit()
+			}
 			return nil
 		},
 	)
@@ -419,6 +418,7 @@ func StartTunnel(config TunnelConfig) {
 			} else {
 				siteEndpoint = site.Endpoint
 			}
+
 			apiServer.UpdatePeerStatus(site.SiteId, false, 0, siteEndpoint, false)
 
 			if err := peerManager.AddPeer(site, siteEndpoint); err != nil {
@@ -482,6 +482,9 @@ func StartTunnel(config TunnelConfig) {
 
 		if updateData.Endpoint != "" {
 			siteConfig.Endpoint = updateData.Endpoint
+		}
+		if updateData.RelayEndpoint != "" {
+			siteConfig.RelayEndpoint = updateData.RelayEndpoint
 		}
 		if updateData.PublicKey != "" {
 			siteConfig.PublicKey = updateData.PublicKey
@@ -674,6 +677,12 @@ func StartTunnel(config TunnelConfig) {
 	olm.RegisterHandler("olm/wg/peer/relay", func(msg websocket.WSMessage) {
 		logger.Debug("Received relay-peer message: %v", msg.Data)
 
+		// Check if peerManager is still valid (may be nil during shutdown)
+		if peerManager == nil {
+			logger.Debug("Ignoring relay message: peerManager is nil (shutdown in progress)")
+			return
+		}
+
 		jsonData, err := json.Marshal(msg.Data)
 		if err != nil {
 			logger.Error("Error marshaling data: %v", err)
@@ -699,6 +708,12 @@ func StartTunnel(config TunnelConfig) {
 
 	olm.RegisterHandler("olm/wg/peer/unrelay", func(msg websocket.WSMessage) {
 		logger.Debug("Received unrelay-peer message: %v", msg.Data)
+
+		// Check if peerManager is still valid (may be nil during shutdown)
+		if peerManager == nil {
+			logger.Debug("Ignoring unrelay message: peerManager is nil (shutdown in progress)")
+			return
+		}
 
 		jsonData, err := json.Marshal(msg.Data)
 		if err != nil {

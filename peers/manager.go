@@ -71,6 +71,7 @@ func NewPeerManager(config PeerManagerConfig) *PeerManager {
 		config.MiddleDev,
 		config.LocalIP,
 		config.SharedBind,
+		config.APIServer,
 	)
 
 	return pm
@@ -233,6 +234,16 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig, endpoint string) error 
 		return fmt.Errorf("peer with site ID %d not found", siteConfig.SiteId)
 	}
 
+	// Determine which endpoint to use based on relay state
+	// If the peer is currently relayed, use the relay endpoint; otherwise use the direct endpoint
+	actualEndpoint := endpoint
+	if pm.peerMonitor != nil && pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId) {
+		if oldPeer.RelayEndpoint != "" {
+			actualEndpoint = oldPeer.RelayEndpoint
+			logger.Info("Peer %d is relayed, using relay endpoint: %s", siteConfig.SiteId, actualEndpoint)
+		}
+	}
+
 	// If public key changed, remove old peer first
 	if siteConfig.PublicKey != oldPeer.PublicKey {
 		if err := RemovePeer(pm.device, siteConfig.SiteId, oldPeer.PublicKey); err != nil {
@@ -284,7 +295,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig, endpoint string) error 
 	wgConfig := siteConfig
 	wgConfig.AllowedIps = ownedIPs
 
-	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, endpoint); err != nil {
+	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, actualEndpoint); err != nil {
 		return err
 	}
 
@@ -358,6 +369,11 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig, endpoint string) error 
 	}
 
 	pm.peerMonitor.UpdateHolepunchEndpoint(siteConfig.SiteId, siteConfig.Endpoint)
+
+	// Preserve the relay endpoint if the peer is relayed
+	if pm.peerMonitor != nil && pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId) && oldPeer.RelayEndpoint != "" {
+		siteConfig.RelayEndpoint = oldPeer.RelayEndpoint
+	}
 
 	pm.peers[siteConfig.SiteId] = siteConfig
 	return nil
