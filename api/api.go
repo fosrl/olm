@@ -361,20 +361,23 @@ func (s *API) handleExit(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info("Received exit request via API")
 
-	// Call the exit handler if set
-	if s.onExit != nil {
-		if err := s.onExit(); err != nil {
-			http.Error(w, fmt.Sprintf("Exit failed: %v", err), http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// Return a success response
+	// Return a success response first
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "shutdown initiated",
 	})
+
+	// Call the exit handler after responding, in a goroutine with a small delay
+	// to ensure the response is fully sent before shutdown begins
+	if s.onExit != nil {
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			if err := s.onExit(); err != nil {
+				logger.Error("Exit handler failed: %v", err)
+			}
+		}()
+	}
 }
 
 // handleSwitchOrg handles the /switch-org endpoint
