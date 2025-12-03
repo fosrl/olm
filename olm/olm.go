@@ -106,6 +106,7 @@ func Init(ctx context.Context, config GlobalConfig) {
 	}
 
 	apiServer.SetVersion(config.Version)
+	apiServer.SetAgent(config.Agent)
 
 	// Set up API handlers
 	apiServer.SetHandlers(
@@ -228,7 +229,6 @@ func StartTunnel(config TunnelConfig) {
 		interfaceName = config.InterfaceName
 		id            = config.ID
 		secret        = config.Secret
-		endpoint      = config.Endpoint
 		userToken     = config.UserToken
 	)
 
@@ -240,7 +240,7 @@ func StartTunnel(config TunnelConfig) {
 		secret,    // Use provided secret
 		userToken, // Use provided user token OPTIONAL
 		config.OrgID,
-		endpoint, // Use provided endpoint
+		config.Endpoint, // Use provided endpoint
 		config.PingIntervalDuration,
 		config.PingTimeoutDuration,
 	)
@@ -417,7 +417,7 @@ func StartTunnel(config TunnelConfig) {
 
 			apiServer.UpdatePeerStatus(site.SiteId, false, 0, siteEndpoint, false)
 
-			if err := peerManager.AddPeer(site, siteEndpoint); err != nil {
+			if err := peerManager.AddPeer(site); err != nil {
 				logger.Error("Failed to add peer: %v", err)
 				return
 			}
@@ -495,7 +495,7 @@ func StartTunnel(config TunnelConfig) {
 			siteConfig.RemoteSubnets = updateData.RemoteSubnets
 		}
 
-		if err := peerManager.UpdatePeer(siteConfig, endpoint); err != nil {
+		if err := peerManager.UpdatePeer(siteConfig); err != nil {
 			logger.Error("Failed to update peer: %v", err)
 			return
 		}
@@ -527,7 +527,7 @@ func StartTunnel(config TunnelConfig) {
 
 		holePunchManager.TriggerHolePunch() // Trigger immediate hole punch attempt so that if the peer decides to relay we have already punched close to when we need it
 
-		if err := peerManager.AddPeer(siteConfig, endpoint); err != nil {
+		if err := peerManager.AddPeer(siteConfig); err != nil {
 			logger.Error("Failed to add peer: %v", err)
 			return
 		}
@@ -822,6 +822,7 @@ func StartTunnel(config TunnelConfig) {
 				"publicKey":  publicKey.String(),
 				"relay":      !config.Holepunch,
 				"olmVersion": globalConfig.Version,
+				"olmAgent":   globalConfig.Agent,
 				"orgId":      config.OrgID,
 				"userToken":  userToken,
 			}, 1*time.Second)

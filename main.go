@@ -194,7 +194,7 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 		fmt.Println("Olm version " + olmVersion)
 		os.Exit(0)
 	}
-	logger.Info("Olm version " + olmVersion)
+	logger.Info("Olm version %s", olmVersion)
 
 	config.Version = olmVersion
 
@@ -215,6 +215,7 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 		HTTPAddr:   config.HTTPAddr,
 		SocketPath: config.SocketPath,
 		Version:    config.Version,
+		Agent:      "olm-cli",
 		OnExit:     cancel, // Pass cancel function directly to trigger shutdown
 	}
 
