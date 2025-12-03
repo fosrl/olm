@@ -74,6 +74,20 @@ func (c *Client) SetMaxAttempts(attempts int) {
 	c.maxAttempts = attempts
 }
 
+// UpdateServerAddr updates the server address and resets the connection
+func (c *Client) UpdateServerAddr(serverAddr string) {
+	c.connLock.Lock()
+	defer c.connLock.Unlock()
+
+	// Close existing connection if any
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
+
+	c.serverAddr = serverAddr
+}
+
 // Close cleans up client resources
 func (c *Client) Close() {
 	c.StopMonitor()
@@ -143,14 +157,14 @@ func (c *Client) TestConnection(ctx context.Context) (bool, time.Duration) {
 				return false, 0
 			}
 
-			// logger.Debug("Attempting to send monitor packet to %s", c.serverAddr)
+			logger.Debug("Attempting to send monitor packet to %s", c.serverAddr)
 			_, err := c.conn.Write(packet)
 			if err != nil {
 				c.connLock.Unlock()
 				logger.Info("Error sending packet: %v", err)
 				continue
 			}
-			// logger.Debug("Successfully sent monitor packet")
+			logger.Debug("Successfully sent monitor packet")
 
 			// Set read deadline
 			c.conn.SetReadDeadline(time.Now().Add(c.timeout))

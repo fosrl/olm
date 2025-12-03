@@ -190,6 +190,12 @@ func (s *API) UpdatePeerStatus(siteID int, connected bool, rtt time.Duration, en
 	status.IsRelay = isRelay
 }
 
+func (s *API) RemovePeerStatus(siteID int) { // remove the peer from the status map
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	delete(s.peerStatuses, siteID)
+}
+
 // SetConnectionStatus sets the overall connection status
 func (s *API) SetConnectionStatus(isConnected bool) {
 	s.statusMu.Lock()

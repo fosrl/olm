@@ -221,6 +221,8 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 	pm.peerMonitor.RemovePeer(siteId)
 	logger.Info("Stopped monitoring for site %d", siteId)
 
+	pm.APIServer.RemovePeerStatus(siteId)
+
 	delete(pm.peers, siteId)
 	return nil
 }
@@ -360,10 +362,9 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 
 	pm.peerMonitor.UpdateHolepunchEndpoint(siteConfig.SiteId, siteConfig.Endpoint)
 
-	// Preserve the relay endpoint if the peer is relayed
-	if pm.peerMonitor != nil && pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId) && oldPeer.RelayEndpoint != "" {
-		siteConfig.RelayEndpoint = oldPeer.RelayEndpoint
-	}
+	monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
+	monitorPeer := net.JoinHostPort(monitorAddress, strconv.Itoa(int(siteConfig.ServerPort+1))) // +1 for the monitor port
+	pm.peerMonitor.UpdatePeerEndpoint(siteConfig.SiteId, monitorPeer)                           // +1 for monitor port
 
 	pm.peers[siteConfig.SiteId] = siteConfig
 	return nil

@@ -577,6 +577,11 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
+		if _, exists := peerManager.GetPeer(addSubnetsData.SiteId); !exists {
+			logger.Debug("Peer %d not found for removing remote subnets and aliases", addSubnetsData.SiteId)
+			return
+		}
+
 		// Add new subnets
 		for _, subnet := range addSubnetsData.RemoteSubnets {
 			if err := peerManager.AddRemoteSubnet(addSubnetsData.SiteId, subnet); err != nil {
@@ -608,6 +613,11 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
+		if _, exists := peerManager.GetPeer(removeSubnetsData.SiteId); !exists {
+			logger.Debug("Peer %d not found for removing remote subnets and aliases", removeSubnetsData.SiteId)
+			return
+		}
+
 		// Remove subnets
 		for _, subnet := range removeSubnetsData.RemoteSubnets {
 			if err := peerManager.RemoveRemoteSubnet(removeSubnetsData.SiteId, subnet); err != nil {
@@ -636,6 +646,11 @@ func StartTunnel(config TunnelConfig) {
 		var updateSubnetsData peers.UpdatePeerData
 		if err := json.Unmarshal(jsonData, &updateSubnetsData); err != nil {
 			logger.Error("Error unmarshaling update-remote-subnets data: %v", err)
+			return
+		}
+
+		if _, exists := peerManager.GetPeer(updateSubnetsData.SiteId); !exists {
+			logger.Debug("Peer %d not found for removing remote subnets and aliases", updateSubnetsData.SiteId)
 			return
 		}
 
@@ -799,6 +814,10 @@ func StartTunnel(config TunnelConfig) {
 		if globalConfig.OnTerminated != nil {
 			go globalConfig.OnTerminated()
 		}
+	})
+
+	olm.RegisterHandler("pong", func(msg websocket.WSMessage) {
+		logger.Debug("Received pong message")
 	})
 
 	olm.OnConnect(func() error {

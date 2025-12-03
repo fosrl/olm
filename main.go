@@ -210,13 +210,14 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 
 	// Create a new olm.Config struct and copy values from the main config
 	olmConfig := olm.GlobalConfig{
-		LogLevel:   config.LogLevel,
-		EnableAPI:  config.EnableAPI,
-		HTTPAddr:   config.HTTPAddr,
-		SocketPath: config.SocketPath,
-		Version:    config.Version,
-		Agent:      "olm-cli",
-		OnExit:     cancel, // Pass cancel function directly to trigger shutdown
+		LogLevel:     config.LogLevel,
+		EnableAPI:    config.EnableAPI,
+		HTTPAddr:     config.HTTPAddr,
+		SocketPath:   config.SocketPath,
+		Version:      config.Version,
+		Agent:        "olm-cli",
+		OnExit:       cancel, // Pass cancel function directly to trigger shutdown
+		OnTerminated: cancel,
 	}
 
 	olm.Init(ctx, olmConfig)

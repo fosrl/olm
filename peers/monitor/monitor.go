@@ -188,6 +188,23 @@ func (pm *PeerMonitor) UpdateHolepunchEndpoint(siteID int, endpoint string) {
 	pm.holepunchEndpoints[siteID] = endpoint
 }
 
+// UpdatePeerEndpoint updates the monitor endpoint for a peer
+func (pm *PeerMonitor) UpdatePeerEndpoint(siteID int, monitorPeer string) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+
+	client, exists := pm.monitors[siteID]
+	if !exists {
+		logger.Warn("Cannot update endpoint: peer %d not found in monitor", siteID)
+		return
+	}
+
+	// Update the client's server address
+	client.UpdateServerAddr(monitorPeer)
+
+	logger.Info("Updated monitor endpoint for site %d to %s", siteID, monitorPeer)
+}
+
 // removePeerUnlocked stops monitoring a peer and removes it from the monitor
 // This function assumes the mutex is already held by the caller
 func (pm *PeerMonitor) removePeerUnlocked(siteID int) {
@@ -417,6 +434,12 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 		result := pm.holepunchTester.TestEndpoint(endpoint, timeout)
 
 		pm.mutex.Lock()
+		// Check if peer was removed while we were testing
+		if _, stillExists := pm.holepunchEndpoints[siteID]; !stillExists {
+			pm.mutex.Unlock()
+			continue // Peer was removed, skip processing
+		}
+
 		previousStatus, exists := pm.holepunchStatus[siteID]
 		pm.holepunchStatus[siteID] = result.Success
 		isRelayed := pm.relayedPeers[siteID]
