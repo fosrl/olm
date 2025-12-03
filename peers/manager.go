@@ -455,7 +455,7 @@ func (pm *PeerManager) addAllowedIp(siteId int, ip string) error {
 
 	// Only update WireGuard if we own this IP
 	if pm.allowedIPOwners[ip] == siteId {
-		if err := ConfigurePeer(pm.device, peer, pm.privateKey, pm.peerMonitor.IsPeerRelayed(peer.SiteId)); err != nil {
+		if err := AddAllowedIP(pm.device, peer.PublicKey, ip); err != nil {
 			return err
 		}
 	}
@@ -494,15 +494,30 @@ func (pm *PeerManager) removeAllowedIp(siteId int, cidr string) error {
 	// Release our claim and check if we need to promote another peer
 	newOwner, promoted := pm.releaseAllowedIP(siteId, cidr)
 
-	// Update WireGuard for this peer (to remove the IP from its config)
-	if err := ConfigurePeer(pm.device, peer, pm.privateKey, pm.peerMonitor.IsPeerRelayed(peer.SiteId)); err != nil {
+	// Build the list of IPs this peer currently owns for the replace operation
+	ownedIPs := pm.getOwnedAllowedIPs(siteId)
+	// Also include the server IP which is always owned
+	serverIP := strings.Split(peer.ServerIP, "/")[0] + "/32"
+	hasServerIP := false
+	for _, ip := range ownedIPs {
+		if ip == serverIP {
+			hasServerIP = true
+			break
+		}
+	}
+	if !hasServerIP {
+		ownedIPs = append([]string{serverIP}, ownedIPs...)
+	}
+
+	// Update WireGuard for this peer using replace_allowed_ips
+	if err := RemoveAllowedIP(pm.device, peer.PublicKey, ownedIPs); err != nil {
 		return err
 	}
 
-	// If another peer was promoted to owner, update their WireGuard config
+	// If another peer was promoted to owner, add the IP to their WireGuard config
 	if promoted && newOwner >= 0 {
 		if newOwnerPeer, exists := pm.peers[newOwner]; exists {
-			if err := ConfigurePeer(pm.device, newOwnerPeer, pm.privateKey, pm.peerMonitor.IsPeerRelayed(peer.SiteId)); err != nil {
+			if err := AddAllowedIP(pm.device, newOwnerPeer.PublicKey, cidr); err != nil {
 				logger.Error("Failed to promote peer %d for IP %s: %v", newOwner, cidr, err)
 			} else {
 				logger.Info("Promoted peer %d to owner of IP %s", newOwner, cidr)
