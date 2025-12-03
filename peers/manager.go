@@ -94,7 +94,7 @@ func (pm *PeerManager) GetAllPeers() []SiteConfig {
 	return peers
 }
 
-func (pm *PeerManager) AddPeer(siteConfig SiteConfig, endpoint string) error {
+func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -120,7 +120,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig, endpoint string) error {
 	wgConfig := siteConfig
 	wgConfig.AllowedIps = ownedIPs
 
-	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, endpoint); err != nil {
+	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId)); err != nil {
 		return err
 	}
 
@@ -211,7 +211,7 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 			ownedIPs := pm.getOwnedAllowedIPs(promotedPeerId)
 			wgConfig := promotedPeer
 			wgConfig.AllowedIps = ownedIPs
-			if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, promotedPeer.Endpoint); err != nil {
+			if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(promotedPeerId)); err != nil {
 				logger.Error("Failed to update promoted peer %d: %v", promotedPeerId, err)
 			}
 		}
@@ -225,23 +225,13 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 	return nil
 }
 
-func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig, endpoint string) error {
+func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
 	oldPeer, exists := pm.peers[siteConfig.SiteId]
 	if !exists {
 		return fmt.Errorf("peer with site ID %d not found", siteConfig.SiteId)
-	}
-
-	// Determine which endpoint to use based on relay state
-	// If the peer is currently relayed, use the relay endpoint; otherwise use the direct endpoint
-	actualEndpoint := endpoint
-	if pm.peerMonitor != nil && pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId) {
-		if oldPeer.RelayEndpoint != "" {
-			actualEndpoint = oldPeer.RelayEndpoint
-			logger.Info("Peer %d is relayed, using relay endpoint: %s", siteConfig.SiteId, actualEndpoint)
-		}
 	}
 
 	// If public key changed, remove old peer first
@@ -295,7 +285,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig, endpoint string) error 
 	wgConfig := siteConfig
 	wgConfig.AllowedIps = ownedIPs
 
-	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, actualEndpoint); err != nil {
+	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId)); err != nil {
 		return err
 	}
 
@@ -305,7 +295,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig, endpoint string) error 
 			promotedOwnedIPs := pm.getOwnedAllowedIPs(promotedPeerId)
 			promotedWgConfig := promotedPeer
 			promotedWgConfig.AllowedIps = promotedOwnedIPs
-			if err := ConfigurePeer(pm.device, promotedWgConfig, pm.privateKey, promotedPeer.Endpoint); err != nil {
+			if err := ConfigurePeer(pm.device, promotedWgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(promotedPeerId)); err != nil {
 				logger.Error("Failed to update promoted peer %d: %v", promotedPeerId, err)
 			}
 		}
@@ -464,7 +454,7 @@ func (pm *PeerManager) addAllowedIp(siteId int, ip string) error {
 
 	// Only update WireGuard if we own this IP
 	if pm.allowedIPOwners[ip] == siteId {
-		if err := ConfigurePeer(pm.device, peer, pm.privateKey, peer.Endpoint); err != nil {
+		if err := ConfigurePeer(pm.device, peer, pm.privateKey, pm.peerMonitor.IsPeerRelayed(peer.SiteId)); err != nil {
 			return err
 		}
 	}
@@ -504,14 +494,14 @@ func (pm *PeerManager) removeAllowedIp(siteId int, cidr string) error {
 	newOwner, promoted := pm.releaseAllowedIP(siteId, cidr)
 
 	// Update WireGuard for this peer (to remove the IP from its config)
-	if err := ConfigurePeer(pm.device, peer, pm.privateKey, peer.Endpoint); err != nil {
+	if err := ConfigurePeer(pm.device, peer, pm.privateKey, pm.peerMonitor.IsPeerRelayed(peer.SiteId)); err != nil {
 		return err
 	}
 
 	// If another peer was promoted to owner, update their WireGuard config
 	if promoted && newOwner >= 0 {
 		if newOwnerPeer, exists := pm.peers[newOwner]; exists {
-			if err := ConfigurePeer(pm.device, newOwnerPeer, pm.privateKey, newOwnerPeer.Endpoint); err != nil {
+			if err := ConfigurePeer(pm.device, newOwnerPeer, pm.privateKey, pm.peerMonitor.IsPeerRelayed(peer.SiteId)); err != nil {
 				logger.Error("Failed to promote peer %d for IP %s: %v", newOwner, cidr, err)
 			} else {
 				logger.Info("Promoted peer %d to owner of IP %s", newOwner, cidr)

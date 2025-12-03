@@ -646,7 +646,9 @@ func (c *Client) readPumpWithDisconnectDetection() {
 
 			c.handlersMux.RLock()
 			if handler, ok := c.handlers[msg.Type]; ok {
+				logger.Debug("***********************************Running handler for message type: %s", msg.Type)
 				handler(msg)
+				logger.Debug("***********************************Finished handler for message type: %s", msg.Type)
 			}
 			c.handlersMux.RUnlock()
 		}

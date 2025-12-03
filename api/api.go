@@ -53,6 +53,7 @@ type StatusResponse struct {
 	Registered      bool                    `json:"registered"`
 	Terminated      bool                    `json:"terminated"`
 	Version         string                  `json:"version,omitempty"`
+	Agent           string                  `json:"agent,omitempty"`
 	OrgID           string                  `json:"orgId,omitempty"`
 	PeerStatuses    map[int]*PeerStatus     `json:"peers,omitempty"`
 	NetworkSettings network.NetworkSettings `json:"networkSettings,omitempty"`
@@ -75,6 +76,7 @@ type API struct {
 	isRegistered bool
 	isTerminated bool
 	version      string
+	agent        string
 	orgID        string
 }
 
@@ -229,6 +231,13 @@ func (s *API) SetVersion(version string) {
 	s.version = version
 }
 
+// SetAgent sets the olm agent
+func (s *API) SetAgent(agent string) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.agent = agent
+}
+
 // SetOrgID sets the organization ID
 func (s *API) SetOrgID(orgID string) {
 	s.statusMu.Lock()
@@ -329,6 +338,7 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Registered:      s.isRegistered,
 		Terminated:      s.isTerminated,
 		Version:         s.version,
+		Agent:           s.agent,
 		OrgID:           s.orgID,
 		PeerStatuses:    s.peerStatuses,
 		NetworkSettings: network.GetSettings(),
@@ -458,6 +468,7 @@ func (s *API) GetStatus() StatusResponse {
 		Registered:      s.isRegistered,
 		Terminated:      s.isTerminated,
 		Version:         s.version,
+		Agent:           s.agent,
 		OrgID:           s.orgID,
 		PeerStatuses:    s.peerStatuses,
 		NetworkSettings: network.GetSettings(),

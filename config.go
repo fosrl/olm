@@ -537,7 +537,7 @@ func SaveConfig(config *OlmConfig) error {
 func (c *OlmConfig) ShowConfig() {
 	configPath := getOlmConfigPath()
 
-	fmt.Println("\n=== Olm Configuration ===\n")
+	fmt.Print("\n=== Olm Configuration ===\n\n")
 	fmt.Printf("Config File: %s\n", configPath)
 
 	// Check if config file exists
@@ -548,7 +548,7 @@ func (c *OlmConfig) ShowConfig() {
 	}
 
 	fmt.Println("\n--- Configuration Values ---")
-	fmt.Println("(Format: Setting = Value [source])\n")
+	fmt.Print("(Format: Setting = Value [source])\n\n")
 
 	// Helper to get source or default
 	getSource := func(key string) string {

@@ -21,6 +21,7 @@ type GlobalConfig struct {
 	HTTPAddr   string
 	SocketPath string
 	Version    string
+	Agent      string
 
 	// Callbacks
 	OnRegistered func()
