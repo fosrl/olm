@@ -61,7 +61,7 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 	}
 
 	configBuilder.WriteString(fmt.Sprintf("endpoint=%s\n", siteHost))
-	configBuilder.WriteString("persistent_keepalive_interval=1\n")
+	configBuilder.WriteString("persistent_keepalive_interval=5\n")
 
 	config := configBuilder.String()
 	logger.Debug("Configuring peer with config: %s", config)
