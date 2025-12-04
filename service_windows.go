@@ -163,6 +163,9 @@ func (s *olmService) runOlm() {
 	// Create a context that can be cancelled when the service stops
 	s.ctx, s.stop = context.WithCancel(context.Background())
 
+	// Create a separate context for programmatic shutdown (e.g., via API exit)
+	ctx, cancel := context.WithCancel(context.Background())
+
 	// Setup logging for service mode
 	s.elog.Info(1, "Starting Olm main logic")
 
@@ -177,7 +180,8 @@ func (s *olmService) runOlm() {
 		}()
 
 		// Call the main olm function with stored arguments
-		runOlmMainWithArgs(s.ctx, s.args)
+		// Use s.ctx as the signal context since the service manages shutdown
+		runOlmMainWithArgs(ctx, cancel, s.ctx, s.args)
 	}()
 
 	// Wait for either context cancellation or main logic completion

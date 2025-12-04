@@ -61,6 +61,11 @@ type PeerMonitor struct {
 	holepunchMaxAttempts int          // max consecutive failures before triggering relay
 	holepunchFailures    map[int]int  // siteID -> consecutive failure count
 
+	// Rapid initial test fields
+	rapidTestInterval    time.Duration // interval between rapid test attempts
+	rapidTestTimeout     time.Duration // timeout for each rapid test attempt
+	rapidTestMaxAttempts int           // max attempts during rapid test phase
+
 	// API server for status updates
 	apiServer *api.API
 
@@ -73,8 +78,8 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 	ctx, cancel := context.WithCancel(context.Background())
 	pm := &PeerMonitor{
 		monitors:             make(map[int]*Client),
-		interval:             3 * time.Second, // Default check interval
-		timeout:              5 * time.Second,
+		interval:             2 * time.Second, // Default check interval (faster)
+		timeout:              3 * time.Second,
 		maxAttempts:          3,
 		wsClient:             wsClient,
 		middleDev:            middleDev,
@@ -83,13 +88,17 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		nsCtx:                ctx,
 		nsCancel:             cancel,
 		sharedBind:           sharedBind,
-		holepunchInterval:    3 * time.Second, // Check holepunch every 5 seconds
-		holepunchTimeout:     5 * time.Second,
+		holepunchInterval:    2 * time.Second, // Check holepunch every 2 seconds
+		holepunchTimeout:     2 * time.Second, // Faster timeout
 		holepunchEndpoints:   make(map[int]string),
 		holepunchStatus:      make(map[int]bool),
 		relayedPeers:         make(map[int]bool),
-		holepunchMaxAttempts: 3, // Trigger relay after 5 consecutive failures
+		holepunchMaxAttempts: 3, // Trigger relay after 3 consecutive failures
 		holepunchFailures:    make(map[int]int),
+		// Rapid initial test settings: complete within ~1.5 seconds
+		rapidTestInterval:    200 * time.Millisecond, // 200ms between attempts
+		rapidTestTimeout:     400 * time.Millisecond, // 400ms timeout per attempt
+		rapidTestMaxAttempts: 5,                      // 5 attempts = ~1-1.5 seconds total
 		apiServer:            apiServer,
 		wgConnectionStatus:   make(map[int]bool),
 	}
@@ -182,10 +191,63 @@ func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, holepunchEndpoint st
 
 // update holepunch endpoint for a peer
 func (pm *PeerMonitor) UpdateHolepunchEndpoint(siteID int, endpoint string) {
-	pm.mutex.Lock()
-	defer pm.mutex.Unlock()
+	go func() {
+		time.Sleep(3 * time.Second)
+		pm.mutex.Lock()
+		defer pm.mutex.Unlock()
+		pm.holepunchEndpoints[siteID] = endpoint
+	}()
+}
 
-	pm.holepunchEndpoints[siteID] = endpoint
+// RapidTestPeer performs a rapid connectivity test for a newly added peer.
+// This is designed to quickly determine if holepunch is viable within ~1-2 seconds.
+// Returns true if the connection is viable (holepunch works), false if it should relay.
+func (pm *PeerMonitor) RapidTestPeer(siteID int, endpoint string) bool {
+	if pm.holepunchTester == nil {
+		logger.Warn("Cannot perform rapid test: holepunch tester not initialized")
+		return false
+	}
+
+	pm.mutex.Lock()
+	interval := pm.rapidTestInterval
+	timeout := pm.rapidTestTimeout
+	maxAttempts := pm.rapidTestMaxAttempts
+	pm.mutex.Unlock()
+
+	logger.Info("Starting rapid holepunch test for site %d at %s (max %d attempts, %v timeout each)",
+		siteID, endpoint, maxAttempts, timeout)
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		result := pm.holepunchTester.TestEndpoint(endpoint, timeout)
+
+		if result.Success {
+			logger.Info("Rapid test: site %d holepunch SUCCEEDED on attempt %d (RTT: %v)",
+				siteID, attempt, result.RTT)
+
+			// Update status
+			pm.mutex.Lock()
+			pm.holepunchStatus[siteID] = true
+			pm.holepunchFailures[siteID] = 0
+			pm.mutex.Unlock()
+
+			return true
+		}
+
+		if attempt < maxAttempts {
+			time.Sleep(interval)
+		}
+	}
+
+	logger.Warn("Rapid test: site %d holepunch FAILED after %d attempts, will relay",
+		siteID, maxAttempts)
+
+	// Update status to reflect failure
+	pm.mutex.Lock()
+	pm.holepunchStatus[siteID] = false
+	pm.holepunchFailures[siteID] = maxAttempts
+	pm.mutex.Unlock()
+
+	return false
 }
 
 // UpdatePeerEndpoint updates the monitor endpoint for a peer
@@ -300,7 +362,13 @@ func (pm *PeerMonitor) sendRelay(siteID int) error {
 	return nil
 }
 
-// sendRelay sends a relay message to the server
+// RequestRelay is a public method to request relay for a peer.
+// This is used when rapid initial testing determines holepunch is not viable.
+func (pm *PeerMonitor) RequestRelay(siteID int) error {
+	return pm.sendRelay(siteID)
+}
+
+// sendUnRelay sends an unrelay message to the server
 func (pm *PeerMonitor) sendUnRelay(siteID int) error {
 	if pm.wsClient == nil {
 		return fmt.Errorf("websocket client is nil")
@@ -431,6 +499,7 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 	pm.mutex.Unlock()
 
 	for siteID, endpoint := range endpoints {
+		logger.Debug("Testing holepunch endpoint for site %d: %s", siteID, endpoint)
 		result := pm.holepunchTester.TestEndpoint(endpoint, timeout)
 
 		pm.mutex.Lock()

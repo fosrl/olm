@@ -149,6 +149,11 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	}
 
 	pm.peers[siteConfig.SiteId] = siteConfig
+
+	// Perform rapid initial holepunch test (outside of lock to avoid blocking)
+	// This quickly determines if holepunch is viable and triggers relay if not
+	go pm.performRapidInitialTest(siteConfig.SiteId, siteConfig.Endpoint)
+
 	return nil
 }
 
@@ -706,6 +711,28 @@ endpoint=%s:21820`, util.FixKey(peer.PublicKey), formattedEndpoint)
 	}
 
 	logger.Info("Adjusted peer %d to point to relay!\n", siteId)
+}
+
+// performRapidInitialTest performs a rapid holepunch test for a newly added peer.
+// If the test fails, it immediately requests relay to minimize connection delay.
+// This runs in a goroutine to avoid blocking AddPeer.
+func (pm *PeerManager) performRapidInitialTest(siteId int, endpoint string) {
+	if pm.peerMonitor == nil {
+		return
+	}
+
+	// Perform rapid test - this takes ~1-2 seconds max
+	holepunchViable := pm.peerMonitor.RapidTestPeer(siteId, endpoint)
+
+	if !holepunchViable {
+		// Holepunch failed rapid test, request relay immediately
+		logger.Info("Rapid test failed for site %d, requesting relay", siteId)
+		if err := pm.peerMonitor.RequestRelay(siteId); err != nil {
+			logger.Error("Failed to request relay for site %d: %v", siteId, err)
+		}
+	} else {
+		logger.Info("Rapid test passed for site %d, using direct connection", siteId)
+	}
 }
 
 // Start starts the peer monitor
