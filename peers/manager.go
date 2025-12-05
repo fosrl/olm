@@ -174,8 +174,28 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 		logger.Error("Failed to remove route for server IP: %v", err)
 	}
 
-	if err := network.RemoveRoutes(peer.RemoteSubnets); err != nil {
-		logger.Error("Failed to remove routes for remote subnets: %v", err)
+	// Only remove routes for subnets that aren't used by other peers
+	for _, subnet := range peer.RemoteSubnets {
+		subnetStillInUse := false
+		for otherSiteId, otherPeer := range pm.peers {
+			if otherSiteId == siteId {
+				continue // Skip the peer being removed
+			}
+			for _, otherSubnet := range otherPeer.RemoteSubnets {
+				if otherSubnet == subnet {
+					subnetStillInUse = true
+					break
+				}
+			}
+			if subnetStillInUse {
+				break
+			}
+		}
+		if !subnetStillInUse {
+			if err := network.RemoveRoutes([]string{subnet}); err != nil {
+				logger.Error("Failed to remove route for remote subnet %s: %v", subnet, err)
+			}
+		}
 	}
 
 	// For aliases
@@ -333,10 +353,27 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 		}
 	}
 
-	// Remove routes for removed subnets
-	if len(removedSubnets) > 0 {
-		if err := network.RemoveRoutes(removedSubnets); err != nil {
-			logger.Error("Failed to remove routes: %v", err)
+	// Remove routes for removed subnets (only if no other peer needs them)
+	for _, subnet := range removedSubnets {
+		subnetStillInUse := false
+		for otherSiteId, otherPeer := range pm.peers {
+			if otherSiteId == siteConfig.SiteId {
+				continue // Skip the current peer (already updated)
+			}
+			for _, otherSubnet := range otherPeer.RemoteSubnets {
+				if otherSubnet == subnet {
+					subnetStillInUse = true
+					break
+				}
+			}
+			if subnetStillInUse {
+				break
+			}
+		}
+		if !subnetStillInUse {
+			if err := network.RemoveRoutes([]string{subnet}); err != nil {
+				logger.Error("Failed to remove route for subnet %s: %v", subnet, err)
+			}
 		}
 	}
 
@@ -600,9 +637,28 @@ func (pm *PeerManager) RemoveRemoteSubnet(siteId int, ip string) error {
 		return err
 	}
 
-	// Remove route
-	if err := network.RemoveRoutes([]string{ip}); err != nil {
-		return err
+	// Check if any other peer still has this subnet before removing the route
+	subnetStillInUse := false
+	for otherSiteId, otherPeer := range pm.peers {
+		if otherSiteId == siteId {
+			continue // Skip the current peer (already updated above)
+		}
+		for _, subnet := range otherPeer.RemoteSubnets {
+			if subnet == ip {
+				subnetStillInUse = true
+				break
+			}
+		}
+		if subnetStillInUse {
+			break
+		}
+	}
+
+	// Only remove route if no other peer needs it
+	if !subnetStillInUse {
+		if err := network.RemoveRoutes([]string{ip}); err != nil {
+			return err
+		}
 	}
 
 	return nil
