@@ -386,12 +386,6 @@ func StartTunnel(config TunnelConfig) {
 			interfaceIP = strings.Split(interfaceIP, "/")[0]
 		}
 
-		// Determine if we should send relay messages (only when holepunching is enabled and relay is not disabled)
-		var wsClientForMonitor *websocket.Client
-		if config.Holepunch && !config.DisableRelay {
-			wsClientForMonitor = olm
-		}
-
 		// Create peer manager with integrated peer monitoring
 		peerManager = peers.NewPeerManager(peers.PeerManagerConfig{
 			Device:        dev,
@@ -401,7 +395,7 @@ func StartTunnel(config TunnelConfig) {
 			MiddleDev:     middleDev,
 			LocalIP:       interfaceIP,
 			SharedBind:    sharedBind,
-			WSClient:      wsClientForMonitor,
+			WSClient:      olm,
 			APIServer:     apiServer,
 		})
 
