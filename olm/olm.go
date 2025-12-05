@@ -656,17 +656,19 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		// Remove old subnets
-		for _, subnet := range updateSubnetsData.OldRemoteSubnets {
-			if err := peerManager.RemoveRemoteSubnet(updateSubnetsData.SiteId, subnet); err != nil {
-				logger.Error("Failed to remove allowed IP %s: %v", subnet, err)
-			}
-		}
-
-		// Add new subnets
+		// Add new subnets BEFORE removing old ones to preserve shared subnets
+		// This ensures that if an old and new subnet are the same on different peers,
+		// the route won't be temporarily removed
 		for _, subnet := range updateSubnetsData.NewRemoteSubnets {
 			if err := peerManager.AddRemoteSubnet(updateSubnetsData.SiteId, subnet); err != nil {
 				logger.Error("Failed to add allowed IP %s: %v", subnet, err)
+			}
+		}
+
+		// Remove old subnets after new ones are added
+		for _, subnet := range updateSubnetsData.OldRemoteSubnets {
+			if err := peerManager.RemoveRemoteSubnet(updateSubnetsData.SiteId, subnet); err != nil {
+				logger.Error("Failed to remove allowed IP %s: %v", subnet, err)
 			}
 		}
 
