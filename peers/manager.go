@@ -661,13 +661,25 @@ func (pm *PeerManager) RemoveAlias(siteId int, aliasName string) error {
 		}
 	}
 
-	// remove the allowed IP for the alias
-	if err := pm.removeAllowedIp(siteId, aliasToRemove.AliasAddress+"/32"); err != nil {
-		return err
-	}
-
 	peer.Aliases = newAliases
 	pm.peers[siteId] = peer
+
+	// Check if any other alias is still using this IP address before removing from allowed IPs
+	ipStillInUse := false
+	aliasIP := aliasToRemove.AliasAddress + "/32"
+	for _, a := range newAliases {
+		if a.AliasAddress+"/32" == aliasIP {
+			ipStillInUse = true
+			break
+		}
+	}
+
+	// Only remove the allowed IP if no other alias is using it
+	if !ipStillInUse {
+		if err := pm.removeAllowedIp(siteId, aliasIP); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
