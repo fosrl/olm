@@ -670,17 +670,19 @@ func StartTunnel(config TunnelConfig) {
 			}
 		}
 
-		// Remove old aliases
-		for _, alias := range updateSubnetsData.OldAliases {
-			if err := peerManager.RemoveAlias(updateSubnetsData.SiteId, alias.Alias); err != nil {
-				logger.Error("Failed to remove alias %s: %v", alias.Alias, err)
-			}
-		}
-
-		// Add new aliases
+		// Add new aliases BEFORE removing old ones to preserve shared IP addresses
+		// This ensures that if an old and new alias share the same IP, the IP won't be
+		// temporarily removed from the allowed IPs list
 		for _, alias := range updateSubnetsData.NewAliases {
 			if err := peerManager.AddAlias(updateSubnetsData.SiteId, alias); err != nil {
 				logger.Error("Failed to add alias %s: %v", alias.Alias, err)
+			}
+		}
+
+		// Remove old aliases after new ones are added
+		for _, alias := range updateSubnetsData.OldAliases {
+			if err := peerManager.RemoveAlias(updateSubnetsData.SiteId, alias.Alias); err != nil {
+				logger.Error("Failed to remove alias %s: %v", alias.Alias, err)
 			}
 		}
 
