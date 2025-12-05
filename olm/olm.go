@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/bind"
+	"github.com/fosrl/newt/clients/permissions"
 	"github.com/fosrl/newt/holepunch"
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/network"
@@ -98,6 +99,13 @@ func Init(ctx context.Context, config GlobalConfig) {
 	globalCtx = ctx
 
 	logger.GetLogger().SetLevel(util.ParseLogLevel(config.LogLevel))
+
+	logger.Debug("Checking permissions for native interface")
+	err := permissions.CheckNativeInterfacePermissions()
+	if err != nil {
+		logger.Fatal("Insufficient permissions to create native TUN interface: %v", err)
+		return
+	}
 
 	if config.HTTPAddr != "" {
 		apiServer = api.NewAPI(config.HTTPAddr)
