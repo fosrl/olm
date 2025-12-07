@@ -38,6 +38,7 @@ type SwitchOrgRequest struct {
 // PeerStatus represents the status of a peer connection
 type PeerStatus struct {
 	SiteID             int           `json:"siteId"`
+	Name               string        `json:"name"`
 	Connected          bool          `json:"connected"`
 	RTT                time.Duration `json:"rtt"`
 	LastSeen           time.Time     `json:"lastSeen"`
@@ -168,6 +169,26 @@ func (s *API) Stop() error {
 	}
 
 	return nil
+}
+
+func (s *API) AddPeerStatus(siteID int, siteName string, connected bool, rtt time.Duration, endpoint string, isRelay bool) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+
+	status, exists := s.peerStatuses[siteID]
+	if !exists {
+		status = &PeerStatus{
+			SiteID: siteID,
+		}
+		s.peerStatuses[siteID] = status
+	}
+
+	status.Name = siteName
+	status.Connected = connected
+	status.RTT = rtt
+	status.LastSeen = time.Now()
+	status.Endpoint = endpoint
+	status.IsRelay = isRelay
 }
 
 // UpdatePeerStatus updates the status of a peer including endpoint and relay info

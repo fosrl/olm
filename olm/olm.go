@@ -417,7 +417,7 @@ func StartTunnel(config TunnelConfig) {
 				siteEndpoint = site.Endpoint
 			}
 
-			apiServer.UpdatePeerStatus(site.SiteId, false, 0, siteEndpoint, false)
+			apiServer.AddPeerStatus(site.SiteId, site.Name, false, 0, siteEndpoint, false)
 
 			if err := peerManager.AddPeer(site); err != nil {
 				logger.Error("Failed to add peer: %v", err)
