@@ -778,22 +778,20 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		// Add exit node to holepunch rotation if we have a holepunch manager
-		if holePunchManager != nil {
-			exitNode := holepunch.ExitNode{
-				Endpoint:  handshakeData.ExitNode.Endpoint,
-				PublicKey: handshakeData.ExitNode.PublicKey,
-			}
-
-			added := holePunchManager.AddExitNode(exitNode)
-			if added {
-				logger.Info("Added exit node %s to holepunch rotation for handshake", exitNode.Endpoint)
-			} else {
-				logger.Debug("Exit node %s already in holepunch rotation", exitNode.Endpoint)
-			}
-
-			holePunchManager.ResetInterval() // start sending immediately again so we fill in the endpoint on the cloud
+		exitNode := holepunch.ExitNode{
+			Endpoint:  handshakeData.ExitNode.Endpoint,
+			PublicKey: handshakeData.ExitNode.PublicKey,
 		}
+
+		added := holePunchManager.AddExitNode(exitNode)
+		if added {
+			logger.Info("Added exit node %s to holepunch rotation for handshake", exitNode.Endpoint)
+		} else {
+			logger.Debug("Exit node %s already in holepunch rotation", exitNode.Endpoint)
+		}
+
+		holePunchManager.TriggerHolePunch() // Trigger immediate hole punch attempt
+		holePunchManager.ResetInterval()    // start sending immediately again so we fill in the endpoint on the cloud
 
 		// Send handshake acknowledgment back to server with retry
 		stopPeerSend, _ = olm.SendMessageInterval("olm/wg/server/peer/add", map[string]interface{}{
@@ -859,27 +857,25 @@ func StartTunnel(config TunnelConfig) {
 	})
 
 	olm.OnTokenUpdate(func(token string, exitNodes []websocket.ExitNode) {
-		if holePunchManager != nil {
-			holePunchManager.SetToken(token)
+		holePunchManager.SetToken(token)
 
-			logger.Debug("Got exit nodes for hole punching: %v", exitNodes)
+		logger.Debug("Got exit nodes for hole punching: %v", exitNodes)
 
-			// Convert websocket.ExitNode to holepunch.ExitNode
-			hpExitNodes := make([]holepunch.ExitNode, len(exitNodes))
-			for i, node := range exitNodes {
-				hpExitNodes[i] = holepunch.ExitNode{
-					Endpoint:  node.Endpoint,
-					PublicKey: node.PublicKey,
-				}
+		// Convert websocket.ExitNode to holepunch.ExitNode
+		hpExitNodes := make([]holepunch.ExitNode, len(exitNodes))
+		for i, node := range exitNodes {
+			hpExitNodes[i] = holepunch.ExitNode{
+				Endpoint:  node.Endpoint,
+				PublicKey: node.PublicKey,
 			}
+		}
 
-			logger.Debug("Updated hole punch exit nodes: %v", hpExitNodes)
+		logger.Debug("Updated hole punch exit nodes: %v", hpExitNodes)
 
-			// Start hole punching using the manager
-			logger.Info("Starting hole punch for %d exit nodes", len(exitNodes))
-			if err := holePunchManager.StartMultipleExitNodes(hpExitNodes); err != nil {
-				logger.Warn("Failed to start hole punch: %v", err)
-			}
+		// Start hole punching using the manager
+		logger.Info("Starting hole punch for %d exit nodes", len(exitNodes))
+		if err := holePunchManager.StartMultipleExitNodes(hpExitNodes); err != nil {
+			logger.Warn("Failed to start hole punch: %v", err)
 		}
 	})
 

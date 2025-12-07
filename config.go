@@ -40,10 +40,10 @@ type OlmConfig struct {
 	PingTimeout  string `json:"pingTimeout"`
 
 	// Advanced
-	Holepunch     bool   `json:"holepunch"`
-	TlsClientCert string `json:"tlsClientCert"`
-	OverrideDNS   bool   `json:"overrideDNS"`
-	DisableRelay  bool   `json:"disableRelay"`
+	DisableHolepunch bool   `json:"disableHolepunch"`
+	TlsClientCert    string `json:"tlsClientCert"`
+	OverrideDNS      bool   `json:"overrideDNS"`
+	DisableRelay     bool   `json:"disableRelay"`
 	// DoNotCreateNewClient bool   `json:"doNotCreateNewClient"`
 
 	// Parsed values (not in JSON)
@@ -78,16 +78,16 @@ func DefaultConfig() *OlmConfig {
 	}
 
 	config := &OlmConfig{
-		MTU:           1280,
-		DNS:           "8.8.8.8",
-		UpstreamDNS:   []string{"8.8.8.8:53"},
-		LogLevel:      "INFO",
-		InterfaceName: "olm",
-		EnableAPI:     false,
-		SocketPath:    socketPath,
-		PingInterval:  "3s",
-		PingTimeout:   "5s",
-		Holepunch:     false,
+		MTU:              1280,
+		DNS:              "8.8.8.8",
+		UpstreamDNS:      []string{"8.8.8.8:53"},
+		LogLevel:         "INFO",
+		InterfaceName:    "olm",
+		EnableAPI:        false,
+		SocketPath:       socketPath,
+		PingInterval:     "3s",
+		PingTimeout:      "5s",
+		DisableHolepunch: false,
 		// DoNotCreateNewClient: false,
 		sources: make(map[string]string),
 	}
@@ -103,7 +103,7 @@ func DefaultConfig() *OlmConfig {
 	config.sources["socketPath"] = string(SourceDefault)
 	config.sources["pingInterval"] = string(SourceDefault)
 	config.sources["pingTimeout"] = string(SourceDefault)
-	config.sources["holepunch"] = string(SourceDefault)
+	config.sources["disableHolepunch"] = string(SourceDefault)
 	config.sources["overrideDNS"] = string(SourceDefault)
 	config.sources["disableRelay"] = string(SourceDefault)
 	// config.sources["doNotCreateNewClient"] = string(SourceDefault)
@@ -253,9 +253,9 @@ func loadConfigFromEnv(config *OlmConfig) {
 		config.SocketPath = val
 		config.sources["socketPath"] = string(SourceEnv)
 	}
-	if val := os.Getenv("HOLEPUNCH"); val == "true" {
-		config.Holepunch = true
-		config.sources["holepunch"] = string(SourceEnv)
+	if val := os.Getenv("DISABLE_HOLEPUNCH"); val == "true" {
+		config.DisableHolepunch = true
+		config.sources["disableHolepunch"] = string(SourceEnv)
 	}
 	if val := os.Getenv("OVERRIDE_DNS"); val == "true" {
 		config.OverrideDNS = true
@@ -277,24 +277,24 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 
 	// Store original values to detect changes
 	origValues := map[string]interface{}{
-		"endpoint":     config.Endpoint,
-		"id":           config.ID,
-		"secret":       config.Secret,
-		"org":          config.OrgID,
-		"userToken":    config.UserToken,
-		"mtu":          config.MTU,
-		"dns":          config.DNS,
-		"upstreamDNS":  fmt.Sprintf("%v", config.UpstreamDNS),
-		"logLevel":     config.LogLevel,
-		"interface":    config.InterfaceName,
-		"httpAddr":     config.HTTPAddr,
-		"socketPath":   config.SocketPath,
-		"pingInterval": config.PingInterval,
-		"pingTimeout":  config.PingTimeout,
-		"enableApi":    config.EnableAPI,
-		"holepunch":    config.Holepunch,
-		"overrideDNS":  config.OverrideDNS,
-		"disableRelay": config.DisableRelay,
+		"endpoint":         config.Endpoint,
+		"id":               config.ID,
+		"secret":           config.Secret,
+		"org":              config.OrgID,
+		"userToken":        config.UserToken,
+		"mtu":              config.MTU,
+		"dns":              config.DNS,
+		"upstreamDNS":      fmt.Sprintf("%v", config.UpstreamDNS),
+		"logLevel":         config.LogLevel,
+		"interface":        config.InterfaceName,
+		"httpAddr":         config.HTTPAddr,
+		"socketPath":       config.SocketPath,
+		"pingInterval":     config.PingInterval,
+		"pingTimeout":      config.PingTimeout,
+		"enableApi":        config.EnableAPI,
+		"disableHolepunch": config.DisableHolepunch,
+		"overrideDNS":      config.OverrideDNS,
+		"disableRelay":     config.DisableRelay,
 		// "doNotCreateNewClient": config.DoNotCreateNewClient,
 	}
 
@@ -315,7 +315,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	serviceFlags.StringVar(&config.PingInterval, "ping-interval", config.PingInterval, "Interval for pinging the server")
 	serviceFlags.StringVar(&config.PingTimeout, "ping-timeout", config.PingTimeout, "Timeout for each ping")
 	serviceFlags.BoolVar(&config.EnableAPI, "enable-api", config.EnableAPI, "Enable API server for receiving connection requests")
-	serviceFlags.BoolVar(&config.Holepunch, "holepunch", config.Holepunch, "Enable hole punching")
+	serviceFlags.BoolVar(&config.DisableHolepunch, "disable-holepunch", config.DisableHolepunch, "Disable hole punching")
 	serviceFlags.BoolVar(&config.OverrideDNS, "override-dns", config.OverrideDNS, "Override system DNS settings")
 	serviceFlags.BoolVar(&config.DisableRelay, "disable-relay", config.DisableRelay, "Disable relay connections")
 	// serviceFlags.BoolVar(&config.DoNotCreateNewClient, "do-not-create-new-client", config.DoNotCreateNewClient, "Do not create new client")
@@ -384,8 +384,8 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	if config.EnableAPI != origValues["enableApi"].(bool) {
 		config.sources["enableApi"] = string(SourceCLI)
 	}
-	if config.Holepunch != origValues["holepunch"].(bool) {
-		config.sources["holepunch"] = string(SourceCLI)
+	if config.DisableHolepunch != origValues["disableHolepunch"].(bool) {
+		config.sources["disableHolepunch"] = string(SourceCLI)
 	}
 	if config.OverrideDNS != origValues["overrideDNS"].(bool) {
 		config.sources["overrideDNS"] = string(SourceCLI)
@@ -505,9 +505,9 @@ func mergeConfigs(dest, src *OlmConfig) {
 		dest.EnableAPI = src.EnableAPI
 		dest.sources["enableApi"] = string(SourceFile)
 	}
-	if src.Holepunch {
-		dest.Holepunch = src.Holepunch
-		dest.sources["holepunch"] = string(SourceFile)
+	if src.DisableHolepunch {
+		dest.DisableHolepunch = src.DisableHolepunch
+		dest.sources["disableHolepunch"] = string(SourceFile)
 	}
 	if src.OverrideDNS {
 		dest.OverrideDNS = src.OverrideDNS
@@ -604,7 +604,7 @@ func (c *OlmConfig) ShowConfig() {
 
 	// Advanced
 	fmt.Println("\nAdvanced:")
-	fmt.Printf("  holepunch             = %v [%s]\n", c.Holepunch, getSource("holepunch"))
+	fmt.Printf("  disable-holepunch     = %v [%s]\n", c.DisableHolepunch, getSource("disableHolepunch"))
 	fmt.Printf("  override-dns          = %v [%s]\n", c.OverrideDNS, getSource("overrideDNS"))
 	fmt.Printf("  disable-relay         = %v [%s]\n", c.DisableRelay, getSource("disableRelay"))
 	// fmt.Printf("  do-not-create-new-client = %v [%s]\n", c.DoNotCreateNewClient, getSource("doNotCreateNewClient"))
