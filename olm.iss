@@ -57,13 +57,13 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 ; The 'Path' variable is located under 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'.
 ; ValueType: expandsz allows for environment variables (like %ProgramFiles%) in the path.
 ; ValueData: "{olddata};{app}" appends the current application directory to the existing PATH.
-; Flags: uninsdeletevalue ensures the entry is removed upon uninstallation.
-; Check: IsWin64 ensures this is applied on 64-bit systems, which matches ArchitecturesAllowed.
+; Note: Removal during uninstallation is handled by CurUninstallStepChanged procedure in [Code] section.
+; Check: NeedsAddPath ensures this is applied only if the path is not already present.
 [Registry]
 ; Add the application's installation directory to the system PATH.
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
     ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; \
-    Flags: uninsdeletevalue; Check: NeedsAddPath(ExpandConstant('{app}'))
+    Check: NeedsAddPath(ExpandConstant('{app}'))
 
 [Code]
 function NeedsAddPath(Path: string): boolean;
@@ -85,4 +85,68 @@ begin
     Result := False
   else
     Result := True;
+end;
+
+procedure RemovePathEntry(PathToRemove: string);
+var
+  OrigPath: string;
+  NewPath: string;
+  PathList: TStringList;
+  I: Integer;
+begin
+  if not RegQueryStringValue(HKEY_LOCAL_MACHINE,
+    'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
+    'Path', OrigPath)
+  then begin
+    // Path variable doesn't exist, nothing to remove
+    exit;
+  end;
+
+  // Create a string list to parse the PATH entries
+  PathList := TStringList.Create;
+  try
+    // Split the PATH by semicolons
+    PathList.Delimiter := ';';
+    PathList.StrictDelimiter := True;
+    PathList.DelimitedText := OrigPath;
+    
+    // Find and remove the matching entry (case-insensitive)
+    for I := PathList.Count - 1 downto 0 do
+    begin
+      if CompareText(Trim(PathList[I]), Trim(PathToRemove)) = 0 then
+      begin
+        Log('Found and removing PATH entry: ' + PathList[I]);
+        PathList.Delete(I);
+      end;
+    end;
+    
+    // Reconstruct the PATH
+    NewPath := PathList.DelimitedText;
+    
+    // Write the new PATH back to the registry
+    if RegWriteExpandStringValue(HKEY_LOCAL_MACHINE,
+      'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
+      'Path', NewPath)
+    then
+      Log('Successfully removed path entry: ' + PathToRemove)
+    else
+      Log('Failed to write modified PATH to registry');
+  finally
+    PathList.Free;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  AppPath: string;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    // Get the application installation path
+    AppPath := ExpandConstant('{app}');
+    Log('Removing PATH entry for: ' + AppPath);
+    
+    // Remove only our path entry from the system PATH
+    RemovePathEntry(AppPath);
+  end;
 end;
