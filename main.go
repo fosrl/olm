@@ -235,7 +235,7 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 			DNS:                  config.DNS,
 			UpstreamDNS:          config.UpstreamDNS,
 			InterfaceName:        config.InterfaceName,
-			Holepunch:            config.Holepunch,
+			Holepunch:            !config.DisableHolepunch,
 			TlsClientCert:        config.TlsClientCert,
 			PingIntervalDuration: config.PingIntervalDuration,
 			PingTimeoutDuration:  config.PingTimeoutDuration,
