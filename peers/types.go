@@ -9,6 +9,7 @@ type PeerAction struct {
 // UpdatePeerData represents the data needed to update a peer
 type SiteConfig struct {
 	SiteId        int      `json:"siteId"`
+	Name          string   `json:"name,omitempty"`
 	Endpoint      string   `json:"endpoint,omitempty"`
 	RelayEndpoint string   `json:"relayEndpoint,omitempty"`
 	PublicKey     string   `json:"publicKey,omitempty"`

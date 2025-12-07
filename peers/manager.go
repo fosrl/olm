@@ -150,6 +150,8 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 
 	pm.peers[siteConfig.SiteId] = siteConfig
 
+	pm.APIServer.AddPeerStatus(siteConfig.SiteId, siteConfig.Name, false, 0, siteConfig.Endpoint, false)
+
 	// Perform rapid initial holepunch test (outside of lock to avoid blocking)
 	// This quickly determines if holepunch is viable and triggers relay if not
 	go pm.performRapidInitialTest(siteConfig.SiteId, siteConfig.Endpoint)
