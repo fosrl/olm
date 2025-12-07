@@ -177,7 +177,8 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 
 	// Load configuration from file, env vars, and CLI args
 	// Priority: CLI args > Env vars > Config file > Defaults
-	config, showVersion, showConfig, err := LoadConfig(os.Args[1:])
+	// Use the passed args parameter instead of os.Args[1:] to support Windows service mode
+	config, showVersion, showConfig, err := LoadConfig(args)
 	if err != nil {
 		fmt.Printf("Failed to load configuration: %v\n", err)
 		return

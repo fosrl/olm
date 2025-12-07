@@ -348,6 +348,9 @@ func (c *Client) getToken() (string, []ExitNode, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-CSRF-Token", "x-csrf-protection")
 
+	// print out the request for debugging
+	logger.Debug("Requesting token from %s with body: %s", req.URL.String(), string(jsonData))
+
 	// Make the request
 	client := &http.Client{}
 	if tlsConfig != nil {
