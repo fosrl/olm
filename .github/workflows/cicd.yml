@@ -12,7 +12,7 @@ jobs:
 
         steps:
             - name: Checkout code
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
 
             - name: Set up QEMU
               uses: docker/setup-qemu-action@v3
@@ -54,7 +54,7 @@ jobs:
                   make go-build-release
 
             - name: Upload artifacts from /bin
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               with:
                   name: binaries
                   path: bin/
