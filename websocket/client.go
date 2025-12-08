@@ -38,8 +38,9 @@ func IsAuthError(err error) bool {
 
 type TokenResponse struct {
 	Data struct {
-		Token     string     `json:"token"`
-		ExitNodes []ExitNode `json:"exitNodes"`
+		Token         string     `json:"token"`
+		ExitNodes     []ExitNode `json:"exitNodes"`
+		ServerVersion string     `json:"serverVersion"`
 	} `json:"data"`
 	Success bool   `json:"success"`
 	Message string `json:"message"`
