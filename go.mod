@@ -4,7 +4,7 @@ go 1.25
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
-	github.com/fosrl/newt v0.0.0
+	github.com/fosrl/newt v0.0.0-20251208171729-6d7985689552
 	github.com/godbus/dbus/v5 v5.2.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/miekg/dns v1.1.68
@@ -17,6 +17,7 @@ require (
 
 require (
 	github.com/google/btree v1.1.3 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/vishvananda/netlink v1.3.1 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	golang.org/x/crypto v0.45.0 // indirect
@@ -29,5 +30,3 @@ require (
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
 )
-
-replace github.com/fosrl/newt => ../newt
