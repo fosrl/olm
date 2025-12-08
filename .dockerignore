@@ -1,9 +1,9 @@
 .gitignore
 .dockerignore
-olm
 *.json
 README.md
 Makefile
 public/
 LICENSE
 CONTRIBUTING.md
+bin/
