@@ -13,6 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Clone fosrl/newt
+        uses: actions/checkout@v6
+        with:
+          repository: fosrl/newt
+          path: ../newt
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
