@@ -99,15 +99,32 @@ func (s *olmService) Execute(args []string, r <-chan svc.ChangeRequest, changes 
 		// Continue with empty args if loading fails
 		savedArgs = []string{}
 	}
+	s.elog.Info(1, fmt.Sprintf("Loaded saved service args: %v", savedArgs))
 
 	// Combine service start args with saved args, giving priority to service start args
+	// Note: When the service is started via SCM, args[0] is the service name
+	// When started via s.Start(args...), the args passed are exactly what we provide
 	finalArgs := []string{}
+
+	// Check if we have args passed directly to Execute (from s.Start())
 	if len(args) > 0 {
-		// Skip the first arg which is typically the service name
-		if len(args) > 1 {
+		// The first arg from SCM is the service name, but when we call s.Start(args...),
+		// the args we pass become args[1:] in Execute. However, if started by SCM without
+		// args, args[0] will be the service name.
+		// We need to check if args[0] looks like the service name or a flag
+		if len(args) == 1 && args[0] == serviceName {
+			// Only service name, no actual args
+			s.elog.Info(1, "Only service name in args, checking saved args")
+		} else if len(args) > 1 && args[0] == serviceName {
+			// Service name followed by actual args
 			finalArgs = append(finalArgs, args[1:]...)
+			s.elog.Info(1, fmt.Sprintf("Using service start parameters (after service name): %v", finalArgs))
+		} else {
+			// Args don't start with service name, use them all
+			// This happens when args are passed via s.Start(args...)
+			finalArgs = append(finalArgs, args...)
+			s.elog.Info(1, fmt.Sprintf("Using service start parameters (direct): %v", finalArgs))
 		}
-		s.elog.Info(1, fmt.Sprintf("Using service start parameters: %v", finalArgs))
 	}
 
 	// If no service start parameters, use saved args
@@ -116,6 +133,7 @@ func (s *olmService) Execute(args []string, r <-chan svc.ChangeRequest, changes 
 		s.elog.Info(1, fmt.Sprintf("Using saved service args: %v", finalArgs))
 	}
 
+	s.elog.Info(1, fmt.Sprintf("Final args to use: %v", finalArgs))
 	s.args = finalArgs
 
 	// Start the main olm functionality
@@ -163,6 +181,9 @@ func (s *olmService) runOlm() {
 	// Create a context that can be cancelled when the service stops
 	s.ctx, s.stop = context.WithCancel(context.Background())
 
+	// Create a separate context for programmatic shutdown (e.g., via API exit)
+	ctx, cancel := context.WithCancel(context.Background())
+
 	// Setup logging for service mode
 	s.elog.Info(1, "Starting Olm main logic")
 
@@ -177,7 +198,8 @@ func (s *olmService) runOlm() {
 		}()
 
 		// Call the main olm function with stored arguments
-		runOlmMainWithArgs(s.ctx, s.args)
+		// Use s.ctx as the signal context since the service manages shutdown
+		runOlmMainWithArgs(ctx, cancel, s.ctx, s.args)
 	}()
 
 	// Wait for either context cancellation or main logic completion
@@ -321,12 +343,15 @@ func removeService() error {
 }
 
 func startService(args []string) error {
-	// Save the service arguments as backup
-	if len(args) > 0 {
-		err := saveServiceArgs(args)
-		if err != nil {
-			return fmt.Errorf("failed to save service args: %v", err)
-		}
+	fmt.Printf("Starting service with args: %v\n", args)
+
+	// Always save the service arguments so they can be loaded on service restart
+	err := saveServiceArgs(args)
+	if err != nil {
+		fmt.Printf("Warning: failed to save service args: %v\n", err)
+		// Continue anyway, args will still be passed directly
+	} else {
+		fmt.Printf("Saved service args to: %s\n", getServiceArgsPath())
 	}
 
 	m, err := mgr.Connect()
@@ -342,6 +367,7 @@ func startService(args []string) error {
 	defer s.Close()
 
 	// Pass arguments directly to the service start call
+	// Note: These args will appear in Execute() after the service name
 	err = s.Start(args...)
 	if err != nil {
 		return fmt.Errorf("failed to start service: %v", err)
