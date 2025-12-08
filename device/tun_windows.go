@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package device
 
 import (
 	"errors"
@@ -11,15 +11,15 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-func createTUNFromFD(tunFdStr string, mtuInt int) (tun.Device, error) {
+func CreateTUNFromFD(tunFd uint32, mtuInt int) (tun.Device, error) {
 	return nil, errors.New("CreateTUNFromFile not supported on Windows")
 }
 
-func uapiOpen(interfaceName string) (*os.File, error) {
+func UapiOpen(interfaceName string) (*os.File, error) {
 	return nil, nil
 }
 
-func uapiListen(interfaceName string, fileUAPI *os.File) (net.Listener, error) {
+func UapiListen(interfaceName string, fileUAPI *os.File) (net.Listener, error) {
 	// On Windows, UAPIListen only takes one parameter
 	return ipc.UAPIListen(interfaceName)
 }

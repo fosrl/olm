@@ -10,7 +10,7 @@ docker-build-release:
 	docker buildx build --platform linux/arm/v7,linux/arm64,linux/amd64 -t fosrl/olm:$(tag) -f Dockerfile --push .
 
 local: 
-	CGO_ENABLED=0 go build -o olm
+	CGO_ENABLED=0 go build -o bin/olm
 
 build:
 	docker build -t fosrl/olm:latest .

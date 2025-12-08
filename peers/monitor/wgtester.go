@@ -1,4 +1,4 @@
-package wgtester
+package monitor
 
 import (
 	"context"
@@ -26,7 +26,7 @@ const (
 
 // Client handles checking connectivity to a server
 type Client struct {
-	conn           *net.UDPConn
+	conn           net.Conn
 	serverAddr     string
 	monitorRunning bool
 	monitorLock    sync.Mutex
@@ -35,7 +35,11 @@ type Client struct {
 	packetInterval time.Duration
 	timeout        time.Duration
 	maxAttempts    int
+	dialer         Dialer
 }
+
+// Dialer is a function that creates a connection
+type Dialer func(network, addr string) (net.Conn, error)
 
 // ConnectionStatus represents the current connection state
 type ConnectionStatus struct {
@@ -44,13 +48,14 @@ type ConnectionStatus struct {
 }
 
 // NewClient creates a new connection test client
-func NewClient(serverAddr string) (*Client, error) {
+func NewClient(serverAddr string, dialer Dialer) (*Client, error) {
 	return &Client{
 		serverAddr:     serverAddr,
 		shutdownCh:     make(chan struct{}),
 		packetInterval: 2 * time.Second,
 		timeout:        500 * time.Millisecond, // Timeout for individual packets
 		maxAttempts:    3,                      // Default max attempts
+		dialer:         dialer,
 	}, nil
 }
 
@@ -67,6 +72,20 @@ func (c *Client) SetTimeout(timeout time.Duration) {
 // SetMaxAttempts changes the maximum number of attempts for TestConnection
 func (c *Client) SetMaxAttempts(attempts int) {
 	c.maxAttempts = attempts
+}
+
+// UpdateServerAddr updates the server address and resets the connection
+func (c *Client) UpdateServerAddr(serverAddr string) {
+	c.connLock.Lock()
+	defer c.connLock.Unlock()
+
+	// Close existing connection if any
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
+
+	c.serverAddr = serverAddr
 }
 
 // Close cleans up client resources
@@ -91,12 +110,14 @@ func (c *Client) ensureConnection() error {
 		return nil
 	}
 
-	serverAddr, err := net.ResolveUDPAddr("udp", c.serverAddr)
-	if err != nil {
-		return err
+	var err error
+	if c.dialer != nil {
+		c.conn, err = c.dialer("udp", c.serverAddr)
+	} else {
+		// Fallback to standard net.Dial
+		c.conn, err = net.Dial("udp", c.serverAddr)
 	}
 
-	c.conn, err = net.DialUDP("udp", nil, serverAddr)
 	if err != nil {
 		return err
 	}
@@ -136,14 +157,14 @@ func (c *Client) TestConnection(ctx context.Context) (bool, time.Duration) {
 				return false, 0
 			}
 
-			logger.Debug("Attempting to send monitor packet to %s", c.serverAddr)
+			// logger.Debug("Attempting to send monitor packet to %s", c.serverAddr)
 			_, err := c.conn.Write(packet)
 			if err != nil {
 				c.connLock.Unlock()
 				logger.Info("Error sending packet: %v", err)
 				continue
 			}
-			logger.Debug("Successfully sent monitor packet")
+			// logger.Debug("Successfully sent monitor packet")
 
 			// Set read deadline
 			c.conn.SetReadDeadline(time.Now().Add(c.timeout))
