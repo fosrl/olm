@@ -192,10 +192,13 @@ func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, holepunchEndpoint st
 // update holepunch endpoint for a peer
 func (pm *PeerMonitor) UpdateHolepunchEndpoint(siteID int, endpoint string) {
 	go func() {
-		time.Sleep(3 * time.Second)
+		// Short delay to allow WireGuard peer reconfiguration to complete
+		// The NAT mapping refresh is handled separately by TriggerHolePunch in olm.go
+		time.Sleep(500 * time.Millisecond)
 		pm.mutex.Lock()
 		defer pm.mutex.Unlock()
 		pm.holepunchEndpoints[siteID] = endpoint
+		logger.Debug("Updated holepunch endpoint for site %d to %s", siteID, endpoint)
 	}()
 }
 

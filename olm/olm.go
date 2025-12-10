@@ -502,6 +502,13 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
+		// If the endpoint changed, trigger holepunch to refresh NAT mappings
+		if updateData.Endpoint != "" && updateData.Endpoint != existingPeer.Endpoint {
+			logger.Info("Endpoint changed for site %d, triggering holepunch to refresh NAT mappings", updateData.SiteId)
+			holePunchManager.TriggerHolePunch()
+			holePunchManager.ResetInterval()
+		}
+
 		// Update successful
 		logger.Info("Successfully updated peer for site %d", updateData.SiteId)
 	})
