@@ -471,7 +471,7 @@ func StartTunnel(config TunnelConfig) {
 		// Get existing peer from PeerManager
 		existingPeer, exists := peerManager.GetPeer(updateData.SiteId)
 		if !exists {
-			logger.Error("Peer with site ID %d not found", updateData.SiteId)
+			logger.Warn("Peer with site ID %d not found", updateData.SiteId)
 			return
 		}
 
@@ -500,6 +500,13 @@ func StartTunnel(config TunnelConfig) {
 		if err := peerManager.UpdatePeer(siteConfig); err != nil {
 			logger.Error("Failed to update peer: %v", err)
 			return
+		}
+
+		// If the endpoint changed, trigger holepunch to refresh NAT mappings
+		if updateData.Endpoint != "" && updateData.Endpoint != existingPeer.Endpoint {
+			logger.Info("Endpoint changed for site %d, triggering holepunch to refresh NAT mappings", updateData.SiteId)
+			holePunchManager.TriggerHolePunch()
+			holePunchManager.ResetInterval()
 		}
 
 		// Update successful
@@ -775,6 +782,13 @@ func StartTunnel(config TunnelConfig) {
 
 		if err := json.Unmarshal(jsonData, &handshakeData); err != nil {
 			logger.Error("Error unmarshaling handshake data: %v", err)
+			return
+		}
+
+		// Get existing peer from PeerManager
+		_, exists := peerManager.GetPeer(handshakeData.SiteId)
+		if exists {
+			logger.Warn("Peer with site ID %d already added", handshakeData.SiteId)
 			return
 		}
 
