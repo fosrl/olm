@@ -191,12 +191,12 @@ func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, holepunchEndpoint st
 
 // update holepunch endpoint for a peer
 func (pm *PeerMonitor) UpdateHolepunchEndpoint(siteID int, endpoint string) {
-	go func() {
-		time.Sleep(3 * time.Second)
-		pm.mutex.Lock()
-		defer pm.mutex.Unlock()
-		pm.holepunchEndpoints[siteID] = endpoint
-	}()
+	// Short delay to allow WireGuard peer reconfiguration to complete
+	// The NAT mapping refresh is handled separately by TriggerHolePunch in olm.go
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+	pm.holepunchEndpoints[siteID] = endpoint
+	logger.Debug("Updated holepunch endpoint for site %d to %s", siteID, endpoint)
 }
 
 // RapidTestPeer performs a rapid connectivity test for a newly added peer.
@@ -292,6 +292,12 @@ func (pm *PeerMonitor) RemovePeer(siteID int) {
 	delete(pm.holepunchFailures, siteID)
 
 	pm.removePeerUnlocked(siteID)
+}
+
+func (pm *PeerMonitor) RemoveHolepunchEndpoint(siteID int) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+	delete(pm.holepunchEndpoints, siteID)
 }
 
 // Start begins monitoring all peers
