@@ -6,7 +6,7 @@ Olm is a [WireGuard](https://www.wireguard.com/) tunnel client designed to secur
 
 Olm is used with Pangolin and Newt as part of the larger system. See documentation below:
 
--   [Full Documentation](https://docs.pangolin.net/manage/clients/add-client)
+-   [Full Documentation](https://docs.pangolin.net/manage/clients/understanding-clients)
 
 ## Key Functions
 
