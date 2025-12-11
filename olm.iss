@@ -44,8 +44,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 ; The 'DestName' flag ensures that 'olm_windows_amd64.exe' is installed as 'olm.exe'
-Source: "C:\Users\Administrator\Downloads\olm_windows_amd64.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
-Source: "C:\Users\Administrator\Downloads\wintun.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "Z:\olm_windows_amd64.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
+Source: "Z:\wintun.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
@@ -78,7 +78,7 @@ begin
     Result := True;
     exit;
   end;
-  
+
   // Perform a case-insensitive check to see if the path is already present.
   // We add semicolons to prevent partial matches (e.g., matching C:\App in C:\App2).
   if Pos(';' + UpperCase(Path) + ';', ';' + UpperCase(OrigPath) + ';') > 0 then
@@ -109,7 +109,7 @@ begin
     PathList.Delimiter := ';';
     PathList.StrictDelimiter := True;
     PathList.DelimitedText := OrigPath;
-    
+
     // Find and remove the matching entry (case-insensitive)
     for I := PathList.Count - 1 downto 0 do
     begin
@@ -119,10 +119,10 @@ begin
         PathList.Delete(I);
       end;
     end;
-    
+
     // Reconstruct the PATH
     NewPath := PathList.DelimitedText;
-    
+
     // Write the new PATH back to the registry
     if RegWriteExpandStringValue(HKEY_LOCAL_MACHINE,
       'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
@@ -145,7 +145,7 @@ begin
     // Get the application installation path
     AppPath := ExpandConstant('{app}');
     Log('Removing PATH entry for: ' + AppPath);
-    
+
     // Remove only our path entry from the system PATH
     RemovePathEntry(AppPath);
   end;
