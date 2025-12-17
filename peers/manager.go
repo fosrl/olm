@@ -743,7 +743,7 @@ func (pm *PeerManager) RemoveAlias(siteId int, aliasName string) error {
 }
 
 // RelayPeer handles failover to the relay server when a peer is disconnected
-func (pm *PeerManager) RelayPeer(siteId int, relayEndpoint string) {
+func (pm *PeerManager) RelayPeer(siteId int, relayEndpoint string, relayPort uint16) {
 	pm.mu.Lock()
 	peer, exists := pm.peers[siteId]
 	if exists {
@@ -764,10 +764,14 @@ func (pm *PeerManager) RelayPeer(siteId int, relayEndpoint string) {
 		formattedEndpoint = fmt.Sprintf("[%s]", relayEndpoint)
 	}
 
+	if relayPort == 0 {
+		relayPort = 21820 // fall back to 21820 for backward compatibility
+	}
+
 	// Update only the endpoint for this peer (update_only preserves other settings)
 	wgConfig := fmt.Sprintf(`public_key=%s
 update_only=true
-endpoint=%s:21820`, util.FixKey(peer.PublicKey), formattedEndpoint)
+endpoint=%s:%d`, util.FixKey(peer.PublicKey), formattedEndpoint, relayPort)
 
 	err := pm.device.IpcSet(wgConfig)
 	if err != nil {

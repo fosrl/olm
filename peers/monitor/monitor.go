@@ -505,7 +505,7 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 	pm.mutex.Unlock()
 
 	for siteID, endpoint := range endpoints {
-		logger.Debug("Testing holepunch endpoint for site %d: %s", siteID, endpoint)
+		// logger.Debug("Testing holepunch endpoint for site %d: %s", siteID, endpoint)
 		result := pm.holepunchTester.TestEndpoint(endpoint, timeout)
 
 		pm.mutex.Lock()

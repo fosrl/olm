@@ -33,6 +33,7 @@ type PeerRemove struct {
 type RelayPeerData struct {
 	SiteId        int    `json:"siteId"`
 	RelayEndpoint string `json:"relayEndpoint"`
+	RelayPort     uint16 `json:"relayPort"`
 }
 
 type UnRelayPeerData struct {

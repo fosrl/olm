@@ -48,6 +48,7 @@ type TokenResponse struct {
 
 type ExitNode struct {
 	Endpoint  string `json:"endpoint"`
+	RelayPort uint16 `json:"relayPort"`
 	PublicKey string `json:"publicKey"`
 }
 
