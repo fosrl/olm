@@ -727,7 +727,7 @@ func StartTunnel(config TunnelConfig) {
 		// Update HTTP server to mark this peer as using relay
 		apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.RelayEndpoint, true)
 
-		peerManager.RelayPeer(relayData.SiteId, primaryRelay)
+		peerManager.RelayPeer(relayData.SiteId, primaryRelay, relayData.RelayPort)
 	})
 
 	olm.RegisterHandler("olm/wg/peer/unrelay", func(msg websocket.WSMessage) {
@@ -777,6 +777,7 @@ func StartTunnel(config TunnelConfig) {
 			ExitNode struct {
 				PublicKey string `json:"publicKey"`
 				Endpoint  string `json:"endpoint"`
+				RelayPort uint16 `json:"relayPort"`
 			} `json:"exitNode"`
 		}
 
@@ -792,8 +793,14 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
+		relayPort := handshakeData.ExitNode.RelayPort
+		if relayPort == 0 {
+			relayPort = 21820 // default relay port
+		}
+
 		exitNode := holepunch.ExitNode{
 			Endpoint:  handshakeData.ExitNode.Endpoint,
+			RelayPort: relayPort,
 			PublicKey: handshakeData.ExitNode.PublicKey,
 		}
 
@@ -878,8 +885,14 @@ func StartTunnel(config TunnelConfig) {
 		// Convert websocket.ExitNode to holepunch.ExitNode
 		hpExitNodes := make([]holepunch.ExitNode, len(exitNodes))
 		for i, node := range exitNodes {
+			relayPort := node.RelayPort
+			if relayPort == 0 {
+				relayPort = 21820 // default relay port
+			}
+
 			hpExitNodes[i] = holepunch.ExitNode{
 				Endpoint:  node.Endpoint,
+				RelayPort: relayPort,
 				PublicKey: node.PublicKey,
 			}
 		}
