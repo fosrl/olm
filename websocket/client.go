@@ -50,6 +50,7 @@ type ExitNode struct {
 	Endpoint  string `json:"endpoint"`
 	RelayPort uint16 `json:"relayPort"`
 	PublicKey string `json:"publicKey"`
+	SiteIds   []int  `json:"siteIds"`
 }
 
 type WSMessage struct {
