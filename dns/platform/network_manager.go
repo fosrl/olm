@@ -50,11 +50,18 @@ func NewNetworkManagerDNSConfigurator(ifaceName string) (*NetworkManagerDNSConfi
 		return nil, fmt.Errorf("NetworkManager conf.d directory not found: %s", networkManagerConfDir)
 	}
 
-	return &NetworkManagerDNSConfigurator{
+	configurator := &NetworkManagerDNSConfigurator{
 		ifaceName:    ifaceName,
 		confPath:     networkManagerConfDir + "/" + networkManagerDNSConfFile,
 		dispatchPath: networkManagerDispatcherDir + "/" + networkManagerDispatcherFile,
-	}, nil
+	}
+
+	// Clean up any stale configuration from a previous unclean shutdown
+	if err := configurator.CleanupUncleanShutdown(); err != nil {
+		return nil, fmt.Errorf("cleanup unclean shutdown: %w", err)
+	}
+
+	return configurator, nil
 }
 
 // Name returns the configurator name
@@ -95,6 +102,30 @@ func (n *NetworkManagerDNSConfigurator) RestoreDNS() error {
 	// Reload NetworkManager to apply the change
 	if err := n.reloadNetworkManager(); err != nil {
 		return fmt.Errorf("reload NetworkManager: %w", err)
+	}
+
+	return nil
+}
+
+// CleanupUncleanShutdown removes any DNS configuration left over from a previous crash
+// For NetworkManager, we check if our config file exists and remove it if so.
+// This ensures that if the process crashed while DNS was configured, the stale
+// configuration is removed on the next startup.
+func (n *NetworkManagerDNSConfigurator) CleanupUncleanShutdown() error {
+	// Check if our config file exists from a previous session
+	if _, err := os.Stat(n.confPath); os.IsNotExist(err) {
+		// No config file, nothing to clean up
+		return nil
+	}
+
+	// Remove the stale configuration file
+	if err := os.Remove(n.confPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale DNS config file: %w", err)
+	}
+
+	// Reload NetworkManager to apply the change
+	if err := n.reloadNetworkManager(); err != nil {
+		return fmt.Errorf("reload NetworkManager after cleanup: %w", err)
 	}
 
 	return nil

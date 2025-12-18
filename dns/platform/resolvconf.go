@@ -31,10 +31,17 @@ func NewResolvconfDNSConfigurator(ifaceName string) (*ResolvconfDNSConfigurator,
 		return nil, fmt.Errorf("detect resolvconf type: %w", err)
 	}
 
-	return &ResolvconfDNSConfigurator{
+	configurator := &ResolvconfDNSConfigurator{
 		ifaceName: ifaceName,
 		implType:  implType,
-	}, nil
+	}
+
+	// Call cleanup function to remove any stale DNS config for this interface
+	if err := configurator.CleanupUncleanShutdown(); err != nil {
+		return nil, fmt.Errorf("cleanup unclean shutdown: %w", err)
+	}
+
+	return configurator, nil
 }
 
 // Name returns the configurator name
@@ -80,6 +87,28 @@ func (r *ResolvconfDNSConfigurator) RestoreDNS() error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("delete resolvconf config: %w, output: %s", err, out)
 	}
+
+	return nil
+}
+
+// CleanupUncleanShutdown removes any DNS configuration left over from a previous crash
+// For resolvconf, we attempt to delete any entry for the interface name.
+// This ensures that if the process crashed while DNS was configured, the stale
+// entry is removed on the next startup.
+func (r *ResolvconfDNSConfigurator) CleanupUncleanShutdown() error {
+	// Try to delete any existing entry for this interface
+	// This is idempotent - if no entry exists, resolvconf will just return success
+	var cmd *exec.Cmd
+
+	switch r.implType {
+	case "openresolv":
+		cmd = exec.Command(resolvconfCommand, "-f", "-d", r.ifaceName)
+	default:
+		cmd = exec.Command(resolvconfCommand, "-d", r.ifaceName)
+	}
+
+	// Ignore errors - the entry may not exist, which is fine
+	_ = cmd.Run()
 
 	return nil
 }
