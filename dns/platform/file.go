@@ -22,7 +22,11 @@ type FileDNSConfigurator struct {
 
 // NewFileDNSConfigurator creates a new file-based DNS configurator
 func NewFileDNSConfigurator() (*FileDNSConfigurator, error) {
-	return &FileDNSConfigurator{}, nil
+	f := &FileDNSConfigurator{}
+	if err := f.CleanupUncleanShutdown(); err != nil {
+		return nil, fmt.Errorf("cleanup unclean shutdown: %w", err)
+	}
+	return f, nil
 }
 
 // Name returns the configurator name
@@ -73,6 +77,30 @@ func (f *FileDNSConfigurator) RestoreDNS() error {
 	// Remove backup file
 	if err := os.Remove(resolvConfBackupPath); err != nil {
 		return fmt.Errorf("remove backup file: %w", err)
+	}
+
+	return nil
+}
+
+// CleanupUncleanShutdown removes any DNS configuration left over from a previous crash
+// For the file-based configurator, we check if a backup file exists (indicating a crash
+// happened while DNS was configured) and restore from it if so.
+func (f *FileDNSConfigurator) CleanupUncleanShutdown() error {
+	// Check if backup file exists from a previous session
+	if !f.isBackupExists() {
+		// No backup file, nothing to clean up
+		return nil
+	}
+
+	// A backup exists, which means we crashed while DNS was configured
+	// Restore the original resolv.conf
+	if err := copyFile(resolvConfBackupPath, resolvConfPath); err != nil {
+		return fmt.Errorf("restore from backup during cleanup: %w", err)
+	}
+
+	// Remove backup file
+	if err := os.Remove(resolvConfBackupPath); err != nil {
+		return fmt.Errorf("remove backup file during cleanup: %w", err)
 	}
 
 	return nil

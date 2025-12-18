@@ -17,6 +17,10 @@ type DNSConfigurator interface {
 
 	// Name returns the name of this configurator implementation
 	Name() string
+
+	// CleanupUncleanShutdown removes any DNS configuration left over from
+	// a previous crash or unclean shutdown. This should be called on startup.
+	CleanupUncleanShutdown() error
 }
 
 // DNSConfig contains the configuration for DNS override

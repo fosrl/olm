@@ -113,6 +113,18 @@ func (w *WindowsDNSConfigurator) RestoreDNS() error {
 	return nil
 }
 
+// CleanupUncleanShutdown removes any DNS configuration left over from a previous crash
+// On Windows, we rely on the registry-based approach which doesn't leave orphaned state
+// in the same way as macOS scutil. The DNS settings are tied to the interface which
+// gets recreated on restart.
+func (w *WindowsDNSConfigurator) CleanupUncleanShutdown() error {
+	// Windows DNS configuration via registry is interface-specific.
+	// When the WireGuard interface is recreated, it gets a new GUID,
+	// so there's no leftover state to clean up from previous sessions.
+	// The old interface's registry keys are effectively orphaned but harmless.
+	return nil
+}
+
 // GetCurrentDNS returns the currently configured DNS servers
 func (w *WindowsDNSConfigurator) GetCurrentDNS() ([]netip.Addr, error) {
 	regKey, err := w.getInterfaceRegistryKey(registry.QUERY_VALUE)
