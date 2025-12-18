@@ -566,6 +566,14 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
+		// Remove any exit nodes associated with this peer from hole punching
+		if holePunchManager != nil {
+			removed := holePunchManager.RemoveExitNodesByPeer(removeData.SiteId)
+			if removed > 0 {
+				logger.Info("Removed %d exit nodes associated with peer %d from hole punch rotation", removed, removeData.SiteId)
+			}
+		}
+
 		// Remove successful
 		logger.Info("Successfully removed peer for site %d", removeData.SiteId)
 	})
@@ -798,10 +806,12 @@ func StartTunnel(config TunnelConfig) {
 			relayPort = 21820 // default relay port
 		}
 
+		siteId := handshakeData.SiteId
 		exitNode := holepunch.ExitNode{
 			Endpoint:  handshakeData.ExitNode.Endpoint,
 			RelayPort: relayPort,
 			PublicKey: handshakeData.ExitNode.PublicKey,
+			SiteIds:  []int{siteId},
 		}
 
 		added := holePunchManager.AddExitNode(exitNode)
@@ -894,6 +904,7 @@ func StartTunnel(config TunnelConfig) {
 				Endpoint:  node.Endpoint,
 				RelayPort: relayPort,
 				PublicKey: node.PublicKey,
+				SiteIds:   node.SiteIds,
 			}
 		}
 
