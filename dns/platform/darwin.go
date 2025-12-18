@@ -5,9 +5,13 @@ package dns
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/netip"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -28,19 +32,38 @@ const (
 	keyServerPort                       = "ServerPort"
 	arraySymbol                         = "* "
 	digitSymbol                         = "# "
+
+	// State file name for crash recovery
+	dnsStateFileName = "dns_state.json"
 )
+
+// DNSPersistentState represents the state saved to disk for crash recovery
+type DNSPersistentState struct {
+	CreatedKeys []string `json:"created_keys"`
+}
 
 // DarwinDNSConfigurator manages DNS settings on macOS using scutil
 type DarwinDNSConfigurator struct {
 	createdKeys   map[string]struct{}
 	originalState *DNSState
+	stateFilePath string
 }
 
 // NewDarwinDNSConfigurator creates a new macOS DNS configurator
 func NewDarwinDNSConfigurator() (*DarwinDNSConfigurator, error) {
-	return &DarwinDNSConfigurator{
-		createdKeys: make(map[string]struct{}),
-	}, nil
+	stateFilePath := getDNSStateFilePath()
+
+	configurator := &DarwinDNSConfigurator{
+		createdKeys:   make(map[string]struct{}),
+		stateFilePath: stateFilePath,
+	}
+
+	// Clean up any leftover state from a previous crash
+	if err := configurator.CleanupUncleanShutdown(); err != nil {
+		logger.Warn("Failed to cleanup previous DNS state: %v", err)
+	}
+
+	return configurator, nil
 }
 
 // Name returns the configurator name
@@ -67,6 +90,11 @@ func (d *DarwinDNSConfigurator) SetDNS(servers []netip.Addr) ([]netip.Addr, erro
 		return nil, fmt.Errorf("apply DNS servers: %w", err)
 	}
 
+	// Persist state to disk for crash recovery
+	if err := d.saveState(); err != nil {
+		logger.Warn("Failed to save DNS state for crash recovery: %v", err)
+	}
+
 	// Flush DNS cache
 	if err := d.flushDNSCache(); err != nil {
 		// Non-fatal, just log
@@ -83,6 +111,11 @@ func (d *DarwinDNSConfigurator) RestoreDNS() error {
 		if err := d.removeKey(key); err != nil {
 			return fmt.Errorf("remove key %s: %w", key, err)
 		}
+	}
+
+	// Clear state file after successful restoration
+	if err := d.clearState(); err != nil {
+		logger.Warn("Failed to clear DNS state file: %v", err)
 	}
 
 	// Flush DNS cache
@@ -110,6 +143,47 @@ func (d *DarwinDNSConfigurator) GetCurrentDNS() ([]netip.Addr, error) {
 
 	servers := d.parseServerAddresses(output)
 	return servers, nil
+}
+
+// CleanupUncleanShutdown removes any DNS keys left over from a previous crash
+func (d *DarwinDNSConfigurator) CleanupUncleanShutdown() error {
+	state, err := d.loadState()
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No state file, nothing to clean up
+			return nil
+		}
+		return fmt.Errorf("load state: %w", err)
+	}
+
+	if len(state.CreatedKeys) == 0 {
+		// No keys to clean up
+		return nil
+	}
+
+	logger.Info("Found DNS state from previous session, cleaning up %d keys", len(state.CreatedKeys))
+
+	// Remove all keys from previous session
+	var lastErr error
+	for _, key := range state.CreatedKeys {
+		logger.Debug("Removing leftover DNS key: %s", key)
+		if err := d.removeKeyDirect(key); err != nil {
+			logger.Warn("Failed to remove DNS key %s: %v", key, err)
+			lastErr = err
+		}
+	}
+
+	// Clear state file
+	if err := d.clearState(); err != nil {
+		logger.Warn("Failed to clear DNS state file: %v", err)
+	}
+
+	// Flush DNS cache after cleanup
+	if err := d.flushDNSCache(); err != nil {
+		logger.Warn("Failed to flush DNS cache after cleanup: %v", err)
+	}
+
+	return lastErr
 }
 
 // applyDNSServers applies the DNS server configuration
@@ -156,15 +230,25 @@ func (d *DarwinDNSConfigurator) addDNSState(state, domains string, dnsServer net
 	return nil
 }
 
-// removeKey removes a DNS configuration key
+// removeKey removes a DNS configuration key and updates internal state
 func (d *DarwinDNSConfigurator) removeKey(key string) error {
+	if err := d.removeKeyDirect(key); err != nil {
+		return err
+	}
+
+	delete(d.createdKeys, key)
+	return nil
+}
+
+// removeKeyDirect removes a DNS configuration key without updating internal state
+// Used for cleanup operations
+func (d *DarwinDNSConfigurator) removeKeyDirect(key string) error {
 	cmd := fmt.Sprintf("remove %s\n", key)
 
 	if _, err := d.runScutil(cmd); err != nil {
 		return fmt.Errorf("remove key: %w", err)
 	}
 
-	delete(d.createdKeys, key)
 	return nil
 }
 
@@ -265,4 +349,71 @@ func (d *DarwinDNSConfigurator) runScutil(commands string) ([]byte, error) {
 	logger.Debug("scutil output:\n%s\n", output)
 
 	return output, nil
+}
+
+// getDNSStateFilePath returns the path to the DNS state file
+func getDNSStateFilePath() string {
+	var stateDir string
+	switch runtime.GOOS {
+	case "darwin":
+		stateDir = filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "olm-client")
+	default:
+		stateDir = filepath.Join(os.Getenv("HOME"), ".config", "olm-client")
+	}
+
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		logger.Warn("Failed to create state directory: %v", err)
+	}
+
+	return filepath.Join(stateDir, dnsStateFileName)
+}
+
+// saveState persists the current DNS state to disk
+func (d *DarwinDNSConfigurator) saveState() error {
+	keys := make([]string, 0, len(d.createdKeys))
+	for key := range d.createdKeys {
+		keys = append(keys, key)
+	}
+
+	state := DNSPersistentState{
+		CreatedKeys: keys,
+	}
+
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal state: %w", err)
+	}
+
+	if err := os.WriteFile(d.stateFilePath, data, 0644); err != nil {
+		return fmt.Errorf("write state file: %w", err)
+	}
+
+	logger.Debug("Saved DNS state to %s", d.stateFilePath)
+	return nil
+}
+
+// loadState loads the DNS state from disk
+func (d *DarwinDNSConfigurator) loadState() (*DNSPersistentState, error) {
+	data, err := os.ReadFile(d.stateFilePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var state DNSPersistentState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("unmarshal state: %w", err)
+	}
+
+	return &state, nil
+}
+
+// clearState removes the DNS state file
+func (d *DarwinDNSConfigurator) clearState() error {
+	err := os.Remove(d.stateFilePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove state file: %w", err)
+	}
+
+	logger.Debug("Cleared DNS state file")
+	return nil
 }

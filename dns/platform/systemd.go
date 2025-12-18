@@ -73,10 +73,17 @@ func NewSystemdResolvedDNSConfigurator(ifaceName string) (*SystemdResolvedDNSCon
 		return nil, fmt.Errorf("get link: %w", err)
 	}
 
-	return &SystemdResolvedDNSConfigurator{
+	config := &SystemdResolvedDNSConfigurator{
 		ifaceName:      ifaceName,
 		dbusLinkObject: dbus.ObjectPath(linkPath),
-	}, nil
+	}
+
+	// Call cleanup function here
+	if err := config.CleanupUncleanShutdown(); err != nil {
+		fmt.Printf("warning: cleanup unclean shutdown failed: %v\n", err)
+	}
+
+	return config, nil
 }
 
 // Name returns the configurator name
@@ -130,6 +137,17 @@ func (s *SystemdResolvedDNSConfigurator) RestoreDNS() error {
 		fmt.Printf("warning: failed to flush DNS cache: %v\n", err)
 	}
 
+	return nil
+}
+
+// CleanupUncleanShutdown removes any DNS configuration left over from a previous crash
+// For systemd-resolved, the DNS configuration is tied to the network interface.
+// When the interface is destroyed and recreated, systemd-resolved automatically
+// clears the per-link DNS settings, so there's nothing to clean up.
+func (s *SystemdResolvedDNSConfigurator) CleanupUncleanShutdown() error {
+	// systemd-resolved DNS configuration is per-link and automatically cleared
+	// when the link (interface) is destroyed. Since the WireGuard interface is
+	// recreated on restart, there's no leftover state to clean up.
 	return nil
 }
 
