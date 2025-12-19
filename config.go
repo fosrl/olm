@@ -43,6 +43,7 @@ type OlmConfig struct {
 	DisableHolepunch bool   `json:"disableHolepunch"`
 	TlsClientCert    string `json:"tlsClientCert"`
 	OverrideDNS      bool   `json:"overrideDNS"`
+	TunnelDNS        bool   `json:"tunnelDNS"`
 	DisableRelay     bool   `json:"disableRelay"`
 	// DoNotCreateNewClient bool   `json:"doNotCreateNewClient"`
 
@@ -88,6 +89,7 @@ func DefaultConfig() *OlmConfig {
 		PingInterval:     "3s",
 		PingTimeout:      "5s",
 		DisableHolepunch: false,
+		TunnelDNS:        false,
 		// DoNotCreateNewClient: false,
 		sources: make(map[string]string),
 	}
@@ -105,6 +107,7 @@ func DefaultConfig() *OlmConfig {
 	config.sources["pingTimeout"] = string(SourceDefault)
 	config.sources["disableHolepunch"] = string(SourceDefault)
 	config.sources["overrideDNS"] = string(SourceDefault)
+	config.sources["tunnelDNS"] = string(SourceDefault)
 	config.sources["disableRelay"] = string(SourceDefault)
 	// config.sources["doNotCreateNewClient"] = string(SourceDefault)
 
@@ -265,6 +268,10 @@ func loadConfigFromEnv(config *OlmConfig) {
 		config.DisableRelay = true
 		config.sources["disableRelay"] = string(SourceEnv)
 	}
+	if val := os.Getenv("TUNNEL_DNS"); val == "true" {
+		config.TunnelDNS = true
+		config.sources["tunnelDNS"] = string(SourceEnv)
+	}
 	// if val := os.Getenv("DO_NOT_CREATE_NEW_CLIENT"); val == "true" {
 	// 	config.DoNotCreateNewClient = true
 	// 	config.sources["doNotCreateNewClient"] = string(SourceEnv)
@@ -295,6 +302,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 		"disableHolepunch": config.DisableHolepunch,
 		"overrideDNS":      config.OverrideDNS,
 		"disableRelay":     config.DisableRelay,
+		"tunnelDNS":        config.TunnelDNS,
 		// "doNotCreateNewClient": config.DoNotCreateNewClient,
 	}
 
@@ -318,6 +326,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	serviceFlags.BoolVar(&config.DisableHolepunch, "disable-holepunch", config.DisableHolepunch, "Disable hole punching")
 	serviceFlags.BoolVar(&config.OverrideDNS, "override-dns", config.OverrideDNS, "Override system DNS settings")
 	serviceFlags.BoolVar(&config.DisableRelay, "disable-relay", config.DisableRelay, "Disable relay connections")
+	serviceFlags.BoolVar(&config.TunnelDNS, "tunnel-dns", config.TunnelDNS, "Use tunnel for DNS traffic")
 	// serviceFlags.BoolVar(&config.DoNotCreateNewClient, "do-not-create-new-client", config.DoNotCreateNewClient, "Do not create new client")
 
 	version := serviceFlags.Bool("version", false, "Print the version")
@@ -392,6 +401,9 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	}
 	if config.DisableRelay != origValues["disableRelay"].(bool) {
 		config.sources["disableRelay"] = string(SourceCLI)
+	}
+	if config.TunnelDNS != origValues["tunnelDNS"].(bool) {
+		config.sources["tunnelDNS"] = string(SourceCLI)
 	}
 	// if config.DoNotCreateNewClient != origValues["doNotCreateNewClient"].(bool) {
 	// 	config.sources["doNotCreateNewClient"] = string(SourceCLI)
@@ -606,6 +618,7 @@ func (c *OlmConfig) ShowConfig() {
 	fmt.Println("\nAdvanced:")
 	fmt.Printf("  disable-holepunch     = %v [%s]\n", c.DisableHolepunch, getSource("disableHolepunch"))
 	fmt.Printf("  override-dns          = %v [%s]\n", c.OverrideDNS, getSource("overrideDNS"))
+	fmt.Printf("  tunnel-dns            = %v [%s]\n", c.TunnelDNS, getSource("tunnelDNS"))
 	fmt.Printf("  disable-relay         = %v [%s]\n", c.DisableRelay, getSource("disableRelay"))
 	// fmt.Printf("  do-not-create-new-client = %v [%s]\n", c.DoNotCreateNewClient, getSource("doNotCreateNewClient"))
 	if c.TlsClientCert != "" {
