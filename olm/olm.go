@@ -374,8 +374,14 @@ func StartTunnel(config TunnelConfig) {
 			logger.Error("Failed to bring up WireGuard device: %v", err)
 		}
 
+		// Extract interface IP (strip CIDR notation if present)
+		interfaceIP := wgData.TunnelIP
+		if strings.Contains(interfaceIP, "/") {
+			interfaceIP = strings.Split(interfaceIP, "/")[0]
+		}
+
 		// Create and start DNS proxy
-		dnsProxy, err = dns.NewDNSProxy(tdev, middleDev, config.MTU, wgData.UtilitySubnet, config.UpstreamDNS)
+		dnsProxy, err = dns.NewDNSProxy(tdev, middleDev, config.MTU, wgData.UtilitySubnet, config.UpstreamDNS, config.TunnelDNS, interfaceIP)
 		if err != nil {
 			logger.Error("Failed to create DNS proxy: %v", err)
 		}
@@ -386,12 +392,6 @@ func StartTunnel(config TunnelConfig) {
 
 		if network.AddRoutes([]string{wgData.UtilitySubnet}, interfaceName); err != nil { // also route the utility subnet
 			logger.Error("Failed to add route for utility subnet: %v", err)
-		}
-
-		// TODO: seperate adding the callback to this so we can init it above with the interface
-		interfaceIP := wgData.TunnelIP
-		if strings.Contains(interfaceIP, "/") {
-			interfaceIP = strings.Split(interfaceIP, "/")[0]
 		}
 
 		// Create peer manager with integrated peer monitoring
