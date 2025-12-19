@@ -54,8 +54,9 @@ type ExitNode struct {
 }
 
 type WSMessage struct {
-	Type string      `json:"type"`
-	Data interface{} `json:"data"`
+	Type          string      `json:"type"`
+	Data          interface{} `json:"data"`
+	ConfigVersion int         `json:"configVersion,omitempty"`
 }
 
 // this is not json anymore
@@ -87,6 +88,8 @@ type Client struct {
 	clientType        string // Type of client (e.g., "newt", "olm")
 	tlsConfig         TLSConfig
 	configNeedsSave   bool // Flag to track if config needs to be saved
+	configVersion     int  // Latest config version received from server
+	configVersionMux  sync.RWMutex
 }
 
 type ClientOption func(*Client)
@@ -590,8 +593,19 @@ func (c *Client) pingMonitor() {
 			if c.conn == nil {
 				return
 			}
+			// Send application-level ping with config version
+			c.configVersionMux.RLock()
+			configVersion := c.configVersion
+			c.configVersionMux.RUnlock()
+
+			pingMsg := WSMessage{
+				Type:          "ping",
+				Data:          map[string]interface{}{},
+				ConfigVersion: configVersion,
+			}
+
 			c.writeMux.Lock()
-			err := c.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(c.pingTimeout))
+			err := c.conn.WriteJSON(pingMsg)
 			c.writeMux.Unlock()
 			if err != nil {
 				// Check if we're shutting down before logging error and reconnecting
@@ -606,6 +620,22 @@ func (c *Client) pingMonitor() {
 				}
 			}
 		}
+	}
+}
+
+// GetConfigVersion returns the current config version
+func (c *Client) GetConfigVersion() int {
+	c.configVersionMux.RLock()
+	defer c.configVersionMux.RUnlock()
+	return c.configVersion
+}
+
+// setConfigVersion updates the config version if the new version is higher
+func (c *Client) setConfigVersion(version int) {
+	c.configVersionMux.Lock()
+	defer c.configVersionMux.Unlock()
+	if version > c.configVersion {
+		c.configVersion = version
 	}
 }
 
@@ -648,6 +678,11 @@ func (c *Client) readPumpWithDisconnectDetection() {
 					}
 					return // triggers reconnect via defer
 				}
+			}
+
+			// Update config version from incoming message
+			if msg.ConfigVersion > 0 {
+				c.setConfigVersion(msg.ConfigVersion)
 			}
 
 			c.handlersMux.RLock()
