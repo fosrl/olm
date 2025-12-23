@@ -4,7 +4,7 @@ go 1.25
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
-	github.com/fosrl/newt v0.0.0-20251222020104-a21a8e90fa01
+	github.com/fosrl/newt v1.8.0
 	github.com/godbus/dbus/v5 v5.2.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/miekg/dns v1.1.68
