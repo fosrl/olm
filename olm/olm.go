@@ -453,6 +453,153 @@ func StartTunnel(config TunnelConfig) {
 		logger.Info("WireGuard device created.")
 	})
 
+	// Handler for syncing peer configuration - reconciles expected state with actual state
+	olm.RegisterHandler("olm/sync", func(msg websocket.WSMessage) {
+		logger.Debug("Received sync message: %v", msg.Data)
+
+		if !connected {
+			logger.Warn("Not connected, ignoring sync request")
+			return
+		}
+
+		if peerManager == nil {
+			logger.Warn("Peer manager not initialized, ignoring sync request")
+			return
+		}
+
+		jsonData, err := json.Marshal(msg.Data)
+		if err != nil {
+			logger.Error("Error marshaling sync data: %v", err)
+			return
+		}
+
+		var wgData WgData
+		if err := json.Unmarshal(jsonData, &wgData); err != nil {
+			logger.Error("Error unmarshaling sync data: %v", err)
+			return
+		}
+
+		// Build a map of expected peers from the incoming data
+		expectedPeers := make(map[int]peers.SiteConfig)
+		for _, site := range wgData.Sites {
+			expectedPeers[site.SiteId] = site
+		}
+
+		// Get all current peers
+		currentPeers := peerManager.GetAllPeers()
+		currentPeerMap := make(map[int]peers.SiteConfig)
+		for _, peer := range currentPeers {
+			currentPeerMap[peer.SiteId] = peer
+		}
+
+		// Find peers to remove (in current but not in expected)
+		for siteId := range currentPeerMap {
+			if _, exists := expectedPeers[siteId]; !exists {
+				logger.Info("Sync: Removing peer for site %d (no longer in expected config)", siteId)
+				if err := peerManager.RemovePeer(siteId); err != nil {
+					logger.Error("Sync: Failed to remove peer %d: %v", siteId, err)
+				} else {
+					// Remove any exit nodes associated with this peer from hole punching
+					if holePunchManager != nil {
+						removed := holePunchManager.RemoveExitNodesByPeer(siteId)
+						if removed > 0 {
+							logger.Info("Sync: Removed %d exit nodes associated with peer %d from hole punch rotation", removed, siteId)
+						}
+					}
+				}
+			}
+		}
+
+		// Find peers to add (in expected but not in current) and peers to update
+		for siteId, expectedSite := range expectedPeers {
+			if _, exists := currentPeerMap[siteId]; !exists {
+				// New peer - add it using the add flow (with holepunch)
+				logger.Info("Sync: Adding new peer for site %d", siteId)
+
+				// Trigger immediate hole punch attempt so that if the peer decides to relay we have already punched close to when we need it
+				holePunchManager.TriggerHolePunch()
+
+				// TODO: do we need to send the message to the cloud to add the peer that way?
+				if err := peerManager.AddPeer(expectedSite); err != nil {
+					logger.Error("Sync: Failed to add peer %d: %v", siteId, err)
+				} else {
+					logger.Info("Sync: Successfully added peer for site %d", siteId)
+				}
+			} else {
+				// Existing peer - check if update is needed
+				currentSite := currentPeerMap[siteId]
+				needsUpdate := false
+
+				// Check if any fields have changed
+				if expectedSite.Endpoint != "" && expectedSite.Endpoint != currentSite.Endpoint {
+					needsUpdate = true
+				}
+				if expectedSite.RelayEndpoint != "" && expectedSite.RelayEndpoint != currentSite.RelayEndpoint {
+					needsUpdate = true
+				}
+				if expectedSite.PublicKey != "" && expectedSite.PublicKey != currentSite.PublicKey {
+					needsUpdate = true
+				}
+				if expectedSite.ServerIP != "" && expectedSite.ServerIP != currentSite.ServerIP {
+					needsUpdate = true
+				}
+				if expectedSite.ServerPort != 0 && expectedSite.ServerPort != currentSite.ServerPort {
+					needsUpdate = true
+				}
+				// Check remote subnets
+				if expectedSite.RemoteSubnets != nil && !slicesEqual(expectedSite.RemoteSubnets, currentSite.RemoteSubnets) {
+					needsUpdate = true
+				}
+				// Check aliases
+				if expectedSite.Aliases != nil && !aliasesEqual(expectedSite.Aliases, currentSite.Aliases) {
+					needsUpdate = true
+				}
+
+				if needsUpdate {
+					logger.Info("Sync: Updating peer for site %d", siteId)
+
+					// Merge expected data with current data
+					siteConfig := currentSite
+					if expectedSite.Endpoint != "" {
+						siteConfig.Endpoint = expectedSite.Endpoint
+					}
+					if expectedSite.RelayEndpoint != "" {
+						siteConfig.RelayEndpoint = expectedSite.RelayEndpoint
+					}
+					if expectedSite.PublicKey != "" {
+						siteConfig.PublicKey = expectedSite.PublicKey
+					}
+					if expectedSite.ServerIP != "" {
+						siteConfig.ServerIP = expectedSite.ServerIP
+					}
+					if expectedSite.ServerPort != 0 {
+						siteConfig.ServerPort = expectedSite.ServerPort
+					}
+					if expectedSite.RemoteSubnets != nil {
+						siteConfig.RemoteSubnets = expectedSite.RemoteSubnets
+					}
+					if expectedSite.Aliases != nil {
+						siteConfig.Aliases = expectedSite.Aliases
+					}
+
+					if err := peerManager.UpdatePeer(siteConfig); err != nil {
+						logger.Error("Sync: Failed to update peer %d: %v", siteId, err)
+					} else {
+						// If the endpoint changed, trigger holepunch to refresh NAT mappings
+						if expectedSite.Endpoint != "" && expectedSite.Endpoint != currentSite.Endpoint {
+							logger.Info("Sync: Endpoint changed for site %d, triggering holepunch to refresh NAT mappings", siteId)
+							holePunchManager.TriggerHolePunch()
+							holePunchManager.ResetInterval()
+						}
+						logger.Info("Sync: Successfully updated peer for site %d", siteId)
+					}
+				}
+			}
+		}
+
+		logger.Info("Sync completed: processed %d expected peers, had %d current peers", len(expectedPeers), len(currentPeers))
+	})
+
 	olm.RegisterHandler("olm/wg/peer/update", func(msg websocket.WSMessage) {
 		logger.Debug("Received update-peer message: %v", msg.Data)
 
