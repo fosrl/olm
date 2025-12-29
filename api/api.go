@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -358,7 +359,6 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.statusMu.RLock()
-	defer s.statusMu.RUnlock()
 
 	resp := StatusResponse{
 		Connected:       s.isConnected,
@@ -371,8 +371,18 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		NetworkSettings: network.GetSettings(),
 	}
 
+	s.statusMu.RUnlock()
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 // handleHealth handles the /health endpoint
