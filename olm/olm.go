@@ -111,6 +111,9 @@ func Init(ctx context.Context, config GlobalConfig) {
 		apiServer = api.NewAPI(config.HTTPAddr)
 	} else if config.SocketPath != "" {
 		apiServer = api.NewAPISocket(config.SocketPath)
+	} else {
+		// this is so is not null but it cant be started without either the socket path or http addr
+		apiServer = api.NewAPIStub()
 	}
 
 	apiServer.SetVersion(config.Version)
@@ -304,7 +307,12 @@ func StartTunnel(config TunnelConfig) {
 
 		tdev, err = func() (tun.Device, error) {
 			if config.FileDescriptorTun != 0 {
-				return olmDevice.CreateTUNFromFD(config.FileDescriptorTun, config.MTU)
+				if runtime.GOOS == "android" { // otherwise we get a permission denied
+					theTun, _, err := tun.CreateUnmonitoredTUNFromFD(int(config.FileDescriptorTun))
+					return theTun, err
+				} else {
+					return olmDevice.CreateTUNFromFD(config.FileDescriptorTun, config.MTU)
+				}
 			}
 			var ifName = interfaceName
 			if runtime.GOOS == "darwin" { // this is if we dont pass a fd
@@ -811,7 +819,7 @@ func StartTunnel(config TunnelConfig) {
 			Endpoint:  handshakeData.ExitNode.Endpoint,
 			RelayPort: relayPort,
 			PublicKey: handshakeData.ExitNode.PublicKey,
-			SiteIds:  []int{siteId},
+			SiteIds:   []int{siteId},
 		}
 
 		added := holePunchManager.AddExitNode(exitNode)
