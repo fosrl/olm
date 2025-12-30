@@ -1,10 +1,10 @@
-## HTTP API
+## API
 
-Olm can be controlled with an embedded HTTP server when using `--enable-http`. This allows you to start it as a daemon and trigger it with the following endpoints. The API can listen on either a TCP address or a Unix socket/Windows named pipe.
+Olm can be controlled with an embedded API server when using `--enable-api`. This allows you to start it as a daemon and trigger it with the following endpoints. The API can listen on either a TCP address or a Unix socket/Windows named pipe.
 
 ### Socket vs TCP
 
-By default, when `--enable-http` is used, Olm listens on a TCP address (configured via `--http-addr`, default `:9452`). Alternatively, Olm can listen on a Unix socket (Linux/macOS) or Windows named pipe for local-only communication with better security.
+When `--enable-api` is used, Olm can listen on a TCP address when configured via `--http-addr` (like `:9452`). Alternatively, Olm can listen on a Unix socket (Linux/macOS) or Windows named pipe for local-only communication with better security when using `--socket-path` (like `/var/run/olm.sock`).
 
 **Unix Socket (Linux/macOS):**
 - Socket path example: `/var/run/olm/olm.sock`
