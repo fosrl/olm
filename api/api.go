@@ -102,6 +102,14 @@ func NewAPISocket(socketPath string) *API {
 	return s
 }
 
+func NewAPIStub() *API {
+	s := &API{
+		peerStatuses: make(map[int]*PeerStatus),
+	}
+
+	return s
+}
+
 // SetHandlers sets the callback functions for handling API requests
 func (s *API) SetHandlers(
 	onConnect func(ConnectionRequest) error,
@@ -117,6 +125,10 @@ func (s *API) SetHandlers(
 
 // Start starts the HTTP server
 func (s *API) Start() error {
+	if s.socketPath == "" && s.addr == "" {
+		return fmt.Errorf("either socketPath or addr must be provided to start the API server")
+	}
+	
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", s.handleConnect)
 	mux.HandleFunc("/status", s.handleStatus)
