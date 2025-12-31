@@ -14,7 +14,8 @@ type WgData struct {
 
 type GlobalConfig struct {
 	// Logging
-	LogLevel string
+	LogLevel    string
+	LogFilePath string
 
 	// HTTP server
 	EnableAPI  bool
