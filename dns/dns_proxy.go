@@ -12,7 +12,6 @@ import (
 	"github.com/fosrl/newt/util"
 	"github.com/fosrl/olm/device"
 	"github.com/miekg/dns"
-	"golang.zx2c4.com/wireguard/tun"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -36,8 +35,7 @@ type DNSProxy struct {
 	upstreamDNS  []string
 	tunnelDNS    bool                 // Whether to tunnel DNS queries over WireGuard or to spit them out locally
 	mtu          int
-	tunDevice    tun.Device           // Direct reference to underlying TUN device for responses
-	middleDevice *device.MiddleDevice // Reference to MiddleDevice for packet filtering
+	middleDevice *device.MiddleDevice // Reference to MiddleDevice for packet filtering and TUN writes
 	recordStore  *DNSRecordStore      // Local DNS records
 
 	// Tunnel DNS fields - for sending queries over WireGuard
@@ -53,7 +51,7 @@ type DNSProxy struct {
 }
 
 // NewDNSProxy creates a new DNS proxy
-func NewDNSProxy(tunDevice tun.Device, middleDevice *device.MiddleDevice, mtu int, utilitySubnet string, upstreamDns []string, tunnelDns bool, tunnelIP string) (*DNSProxy, error) {
+func NewDNSProxy(middleDevice *device.MiddleDevice, mtu int, utilitySubnet string, upstreamDns []string, tunnelDns bool, tunnelIP string) (*DNSProxy, error) {
 	proxyIP, err := PickIPFromSubnet(utilitySubnet)
 	if err != nil {
 		return nil, fmt.Errorf("failed to pick DNS proxy IP from subnet: %v", err)
@@ -68,7 +66,6 @@ func NewDNSProxy(tunDevice tun.Device, middleDevice *device.MiddleDevice, mtu in
 	proxy := &DNSProxy{
 		proxyIP:           proxyIP,
 		mtu:               mtu,
-		tunDevice:         tunDevice,
 		middleDevice:      middleDevice,
 		upstreamDNS:       upstreamDns,
 		tunnelDNS:         tunnelDns,
@@ -694,9 +691,9 @@ func (p *DNSProxy) runPacketSender() {
 				pos += len(slice)
 			}
 
-			// Write packet to TUN device
+			// Write packet to TUN device via MiddleDevice
 			// offset=16 indicates packet data starts at position 16 in the buffer
-			_, err := p.tunDevice.Write([][]byte{buf}, offset)
+			_, err := p.middleDevice.WriteToTun([][]byte{buf}, offset)
 			if err != nil {
 				logger.Error("Failed to write DNS response to TUN: %v", err)
 			}
