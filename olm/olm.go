@@ -952,22 +952,20 @@ func StartTunnel(config TunnelConfig) {
 	logger.Info("Tunnel process context cancelled, cleaning up")
 }
 
-func AddDevice(fd uint32) {
+func AddDevice(fd uint32) error {
 	if middleDev == nil {
-		logger.Error("MiddleDevice is nil, cannot add device")
-		return
+		return fmt.Errorf("middle device is not initialized")
 	}
 
 	if tunnelConfig.MTU == 0 {
-		logger.Error("No MTU configured, cannot create device")
-		return
+		// error
+		return fmt.Errorf("tunnel MTU is not set")
 	}
 
 	tdev, err := olmDevice.CreateTUNFromFD(fd, tunnelConfig.MTU)
 
 	if err != nil {
-		logger.Error("Failed to create TUN device: %v", err)
-		return
+		return fmt.Errorf("failed to create TUN device from fd: %v", err)
 	}
 
 	// if config.FileDescriptorTun == 0 {
@@ -977,6 +975,8 @@ func AddDevice(fd uint32) {
 
 	// Here we replace the existing TUN device in the middle device with the new one
 	middleDev.AddDevice(tdev)
+	
+	return nil
 }
 
 func Close() {
