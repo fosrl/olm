@@ -35,6 +35,7 @@ var (
 	uapiListener     net.Listener
 	tdev             tun.Device
 	middleDev        *olmDevice.MiddleDevice
+	interfaceName    string
 	dnsProxy         *dns.DNSProxy
 	apiServer        *api.API
 	olmClient        *websocket.Client
@@ -237,11 +238,11 @@ func StartTunnel(config TunnelConfig) {
 	stopPing = make(chan struct{})
 
 	var (
-		interfaceName = config.InterfaceName
-		id            = config.ID
-		secret        = config.Secret
-		userToken     = config.UserToken
+		id        = config.ID
+		secret    = config.Secret
+		userToken = config.UserToken
 	)
+	interfaceName = config.InterfaceName
 
 	apiServer.SetOrgID(config.OrgID)
 
@@ -307,12 +308,7 @@ func StartTunnel(config TunnelConfig) {
 
 		tdev, err = func() (tun.Device, error) {
 			if config.FileDescriptorTun != 0 {
-				if runtime.GOOS == "android" { // otherwise we get a permission denied
-					theTun, _, err := tun.CreateUnmonitoredTUNFromFD(int(config.FileDescriptorTun))
-					return theTun, err
-				} else {
-					return olmDevice.CreateTUNFromFD(config.FileDescriptorTun, config.MTU)
-				}
+				return olmDevice.CreateTUNFromFD(config.FileDescriptorTun, config.MTU)
 			}
 			var ifName = interfaceName
 			if runtime.GOOS == "darwin" { // this is if we dont pass a fd
@@ -329,11 +325,11 @@ func StartTunnel(config TunnelConfig) {
 			return
 		}
 
-		if config.FileDescriptorTun == 0 {
-			if realInterfaceName, err2 := tdev.Name(); err2 == nil {
-				interfaceName = realInterfaceName
-			}
+		// if config.FileDescriptorTun == 0 {
+		if realInterfaceName, err2 := tdev.Name(); err2 == nil { // if the interface is defined then this should not really do anything?
+			interfaceName = realInterfaceName
 		}
+		// }
 
 		// Wrap TUN device with packet filter for DNS proxy
 		middleDev = olmDevice.NewMiddleDevice(tdev)
@@ -389,7 +385,7 @@ func StartTunnel(config TunnelConfig) {
 		}
 
 		// Create and start DNS proxy
-		dnsProxy, err = dns.NewDNSProxy(tdev, middleDev, config.MTU, wgData.UtilitySubnet, config.UpstreamDNS, config.TunnelDNS, interfaceIP)
+		dnsProxy, err = dns.NewDNSProxy(middleDev, config.MTU, wgData.UtilitySubnet, config.UpstreamDNS, config.TunnelDNS, interfaceIP)
 		if err != nil {
 			logger.Error("Failed to create DNS proxy: %v", err)
 		}
@@ -954,6 +950,33 @@ func StartTunnel(config TunnelConfig) {
 	// Wait for context cancellation
 	<-tunnelCtx.Done()
 	logger.Info("Tunnel process context cancelled, cleaning up")
+}
+
+func AddDevice(fd uint32) {
+	if middleDev == nil {
+		logger.Error("MiddleDevice is nil, cannot add device")
+		return
+	}
+
+	if tunnelConfig.MTU == 0 {
+		logger.Error("No MTU configured, cannot create device")
+		return
+	}
+
+	tdev, err := olmDevice.CreateTUNFromFD(fd, tunnelConfig.MTU)
+
+	if err != nil {
+		logger.Error("Failed to create TUN device: %v", err)
+		return
+	}
+
+	// if config.FileDescriptorTun == 0 {
+	if realInterfaceName, err2 := tdev.Name(); err2 == nil { // if the interface is defined then this should not really do anything?
+		interfaceName = realInterfaceName
+	}
+
+	// Here we replace the existing TUN device in the middle device with the new one
+	middleDev.AddDevice(tdev)
 }
 
 func Close() {
