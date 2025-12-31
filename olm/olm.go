@@ -811,7 +811,7 @@ func StartTunnel(config TunnelConfig) {
 			Endpoint:  handshakeData.ExitNode.Endpoint,
 			RelayPort: relayPort,
 			PublicKey: handshakeData.ExitNode.PublicKey,
-			SiteIds:  []int{siteId},
+			SiteIds:   []int{siteId},
 		}
 
 		added := holePunchManager.AddExitNode(exitNode)
