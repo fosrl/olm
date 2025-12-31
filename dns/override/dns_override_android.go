@@ -2,13 +2,11 @@
 
 package olm
 
-import (
-	"github.com/fosrl/olm/dns"
-)
+import "net/netip"
 
 // SetupDNSOverride is a no-op on Android
 // Android handles DNS through the VpnService API at the Java/Kotlin layer
-func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
+func SetupDNSOverride(interfaceName string, proxyIp netip.Addr) error {
 	return nil
 }
 

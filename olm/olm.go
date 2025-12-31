@@ -439,10 +439,12 @@ func StartTunnel(config TunnelConfig) {
 
 		if config.OverrideDNS {
 			// Set up DNS override to use our DNS proxy
-			if err := dnsOverride.SetupDNSOverride(interfaceName, dnsProxy); err != nil {
+			if err := dnsOverride.SetupDNSOverride(interfaceName, dnsProxy.GetProxyIP()); err != nil {
 				logger.Error("Failed to setup DNS override: %v", err)
 				return
 			}
+
+			network.SetDNSServers([]string{dnsProxy.GetProxyIP().String()})
 		}
 
 		apiServer.SetRegistered(true)
@@ -975,7 +977,7 @@ func AddDevice(fd uint32) error {
 
 	// Here we replace the existing TUN device in the middle device with the new one
 	middleDev.AddDevice(tdev)
-	
+
 	return nil
 }
 

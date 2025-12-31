@@ -2,12 +2,10 @@
 
 package olm
 
-import (
-	"github.com/fosrl/olm/dns"
-)
+import "net/netip"
 
 // SetupDNSOverride is a no-op on iOS as DNS configuration is handled by the system
-func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
+func SetupDNSOverride(interfaceName string, proxyIp netip.Addr) error {
 	return nil
 }
 
