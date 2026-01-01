@@ -26,7 +26,7 @@ func CreateTUNFromFD(tunFd uint32, mtuInt int) (tun.Device, error) {
 	}
 
 	file := os.NewFile(uintptr(dupTunFd), "/dev/tun")
-	device, err := tun.CreateTUNFromFile(file, mtuInt)
+	device, err := tun.CreateTUNFromFile(file, 0)
 	if err != nil {
 		file.Close()
 		return nil, err
