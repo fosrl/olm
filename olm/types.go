@@ -12,7 +12,7 @@ type WgData struct {
 	UtilitySubnet string             `json:"utilitySubnet"` // this is for things like the DNS server, and alias addresses
 }
 
-type GlobalConfig struct {
+type OlmConfig struct {
 	// Logging
 	LogLevel    string
 	LogFilePath string
