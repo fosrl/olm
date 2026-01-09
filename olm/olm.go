@@ -356,12 +356,14 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		if o.stopRegister == nil {
 			logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !config.Holepunch)
 			o.stopRegister, o.updateRegister = olmClient.SendMessageInterval("olm/wg/register", map[string]any{
-				"publicKey":  publicKey.String(),
-				"relay":      !config.Holepunch,
-				"olmVersion": o.olmConfig.Version,
-				"olmAgent":   o.olmConfig.Agent,
-				"orgId":      config.OrgID,
-				"userToken":  userToken,
+				"publicKey":   publicKey.String(),
+				"relay":       !config.Holepunch,
+				"olmVersion":  o.olmConfig.Version,
+				"olmAgent":    o.olmConfig.Agent,
+				"orgId":       config.OrgID,
+				"userToken":   userToken,
+				"fingerprint": o.fingerprint,
+				"postures":    o.postures,
 			}, 1*time.Second)
 
 			// Invoke onRegistered callback if configured
