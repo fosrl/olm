@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/fosrl/newt/bind"
@@ -48,6 +49,11 @@ type Olm struct {
 
 	olmConfig    OlmConfig
 	tunnelConfig TunnelConfig
+
+	// Metadata to send alongside pings
+	fingerprint map[string]any
+	postures    map[string]any
+	metaMu      sync.Mutex
 
 	stopRegister   func()
 	stopPeerSend   func()
@@ -213,6 +219,20 @@ func (o *Olm) registerAPICallbacks() {
 		func(req api.SwitchOrgRequest) error {
 			logger.Info("Received switch organization request via HTTP: orgID=%s", req.OrgID)
 			return o.SwitchOrg(req.OrgID)
+		},
+		// onMetadataChange
+		func(req api.MetadataChangeRequest) error {
+			logger.Info("Received change metadata request via API")
+
+			if req.Fingerprint != nil {
+				o.SetFingerprint(req.Fingerprint)
+			}
+
+			if req.Postures != nil {
+				o.SetPostures(req.Postures)
+			}
+
+			return nil
 		},
 		// onDisconnect
 		func() error {
@@ -387,6 +407,19 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		}
 	})
 
+	fingerprint := config.InitialFingerprint
+	if fingerprint == nil {
+		fingerprint = make(map[string]any)
+	}
+
+	postures := config.InitialPostures
+	if postures == nil {
+		postures = make(map[string]any)
+	}
+
+	o.SetFingerprint(fingerprint)
+	o.SetPostures(postures)
+
 	// Connect to the WebSocket server
 	if err := olmClient.Connect(); err != nil {
 		logger.Error("Failed to connect to server: %v", err)
@@ -558,4 +591,18 @@ func (o *Olm) SwitchOrg(orgID string) error {
 	go o.StartTunnel(o.tunnelConfig)
 
 	return nil
+}
+
+func (o *Olm) SetFingerprint(data map[string]any) {
+	o.metaMu.Lock()
+	defer o.metaMu.Unlock()
+
+	o.fingerprint = data
+}
+
+func (o *Olm) SetPostures(data map[string]any) {
+	o.metaMu.Lock()
+	defer o.metaMu.Unlock()
+
+	o.postures = data
 }
