@@ -61,6 +61,11 @@ type StatusResponse struct {
 	NetworkSettings network.NetworkSettings `json:"networkSettings,omitempty"`
 }
 
+type MetadataChangeRequest struct {
+	Fingerprint map[string]any `json:"fingerprint"`
+	Postures    map[string]any `json:"postures"`
+}
+
 // API represents the HTTP server and its state
 type API struct {
 	addr       string
@@ -68,10 +73,11 @@ type API struct {
 	listener   net.Listener
 	server     *http.Server
 
-	onConnect    func(ConnectionRequest) error
-	onSwitchOrg  func(SwitchOrgRequest) error
-	onDisconnect func() error
-	onExit       func() error
+	onConnect        func(ConnectionRequest) error
+	onSwitchOrg      func(SwitchOrgRequest) error
+	onMetadataChange func(MetadataChangeRequest) error
+	onDisconnect     func() error
+	onExit           func() error
 
 	statusMu     sync.RWMutex
 	peerStatuses map[int]*PeerStatus
@@ -117,6 +123,7 @@ func NewAPIStub() *API {
 func (s *API) SetHandlers(
 	onConnect func(ConnectionRequest) error,
 	onSwitchOrg func(SwitchOrgRequest) error,
+	onMetadataChange func(MetadataChangeRequest) error,
 	onDisconnect func() error,
 	onExit func() error,
 ) {
@@ -136,6 +143,7 @@ func (s *API) Start() error {
 	mux.HandleFunc("/connect", s.handleConnect)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/switch-org", s.handleSwitchOrg)
+	mux.HandleFunc("/metadata", s.handleMetadataChange)
 	mux.HandleFunc("/disconnect", s.handleDisconnect)
 	mux.HandleFunc("/exit", s.handleExit)
 	mux.HandleFunc("/health", s.handleHealth)
@@ -511,6 +519,32 @@ func (s *API) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "disconnect initiated",
+	})
+}
+
+// handleMetadataChange handles the /metadata endpoint
+func (s *API) handleMetadataChange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req MetadataChangeRequest
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	logger.Info("Received metadata change request via API: %v", req)
+
+	_ = s.onMetadataChange(req)
+
+	// Return a success response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status": "metadata updated",
 	})
 }
 
