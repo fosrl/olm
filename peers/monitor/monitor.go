@@ -61,6 +61,13 @@ type PeerMonitor struct {
 	holepunchMaxAttempts int          // max consecutive failures before triggering relay
 	holepunchFailures    map[int]int  // siteID -> consecutive failure count
 
+	// Exponential backoff fields for holepunch monitor
+	holepunchMinInterval      time.Duration // Minimum interval (initial)
+	holepunchMaxInterval      time.Duration // Maximum interval (cap for backoff)
+	holepunchBackoffMultiplier float64      // Multiplier for each stable check
+	holepunchStableCount      map[int]int   // siteID -> consecutive stable status count
+	holepunchCurrentInterval  time.Duration // Current interval with backoff applied
+
 	// Rapid initial test fields
 	rapidTestInterval    time.Duration // interval between rapid test attempts
 	rapidTestTimeout     time.Duration // timeout for each rapid test attempt
@@ -101,6 +108,12 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		rapidTestMaxAttempts: 5,                      // 5 attempts = ~1-1.5 seconds total
 		apiServer:            apiServer,
 		wgConnectionStatus:   make(map[int]bool),
+		// Exponential backoff settings for holepunch monitor
+		holepunchMinInterval:       2 * time.Second,
+		holepunchMaxInterval:       30 * time.Second,
+		holepunchBackoffMultiplier: 1.5,
+		holepunchStableCount:       make(map[int]int),
+		holepunchCurrentInterval:   2 * time.Second,
 	}
 
 	if err := pm.initNetstack(); err != nil {
@@ -172,6 +185,7 @@ func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, holepunchEndpoint st
 	client.SetPacketInterval(pm.interval)
 	client.SetTimeout(pm.timeout)
 	client.SetMaxAttempts(pm.maxAttempts)
+	client.SetMaxInterval(30 * time.Second) // Allow backoff up to 30 seconds when stable
 
 	pm.monitors[siteID] = client
 
@@ -470,31 +484,50 @@ func (pm *PeerMonitor) stopHolepunchMonitor() {
 	logger.Info("Stopped holepunch connection monitor")
 }
 
-// runHolepunchMonitor runs the holepunch monitoring loop
+// runHolepunchMonitor runs the holepunch monitoring loop with exponential backoff
 func (pm *PeerMonitor) runHolepunchMonitor() {
-	ticker := time.NewTicker(pm.holepunchInterval)
-	defer ticker.Stop()
+	pm.mutex.Lock()
+	pm.holepunchCurrentInterval = pm.holepunchMinInterval
+	pm.mutex.Unlock()
 
-	// Do initial check immediately
-	pm.checkHolepunchEndpoints()
+	timer := time.NewTimer(0) // Fire immediately for initial check
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-pm.holepunchStopChan:
 			return
-		case <-ticker.C:
-			pm.checkHolepunchEndpoints()
+		case <-timer.C:
+			anyStatusChanged := pm.checkHolepunchEndpoints()
+
+			pm.mutex.Lock()
+			if anyStatusChanged {
+				// Reset to minimum interval on any status change
+				pm.holepunchCurrentInterval = pm.holepunchMinInterval
+			} else {
+				// Apply exponential backoff when stable
+				newInterval := time.Duration(float64(pm.holepunchCurrentInterval) * pm.holepunchBackoffMultiplier)
+				if newInterval > pm.holepunchMaxInterval {
+					newInterval = pm.holepunchMaxInterval
+				}
+				pm.holepunchCurrentInterval = newInterval
+			}
+			currentInterval := pm.holepunchCurrentInterval
+			pm.mutex.Unlock()
+
+			timer.Reset(currentInterval)
 		}
 	}
 }
 
 // checkHolepunchEndpoints tests all holepunch endpoints
-func (pm *PeerMonitor) checkHolepunchEndpoints() {
+// Returns true if any endpoint's status changed
+func (pm *PeerMonitor) checkHolepunchEndpoints() bool {
 	pm.mutex.Lock()
 	// Check if we're still running before doing any work
 	if !pm.running {
 		pm.mutex.Unlock()
-		return
+		return false
 	}
 	endpoints := make(map[int]string, len(pm.holepunchEndpoints))
 	for siteID, endpoint := range pm.holepunchEndpoints {
@@ -503,6 +536,8 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 	timeout := pm.holepunchTimeout
 	maxAttempts := pm.holepunchMaxAttempts
 	pm.mutex.Unlock()
+
+	anyStatusChanged := false
 
 	for siteID, endpoint := range endpoints {
 		// logger.Debug("Testing holepunch endpoint for site %d: %s", siteID, endpoint)
@@ -529,7 +564,9 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 		pm.mutex.Unlock()
 
 		// Log status changes
-		if !exists || previousStatus != result.Success {
+		statusChanged := !exists || previousStatus != result.Success
+		if statusChanged {
+			anyStatusChanged = true
 			if result.Success {
 				logger.Info("Holepunch to site %d (%s) is CONNECTED (RTT: %v)", siteID, endpoint, result.RTT)
 			} else {
@@ -562,7 +599,7 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 		pm.mutex.Unlock()
 
 		if !stillRunning {
-			return // Stop processing if shutdown is in progress
+			return anyStatusChanged // Stop processing if shutdown is in progress
 		}
 
 		if !result.Success && !isRelayed && failureCount >= maxAttempts {
@@ -579,6 +616,8 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 			}
 		}
 	}
+
+	return anyStatusChanged
 }
 
 // GetHolepunchStatus returns the current holepunch status for all endpoints
