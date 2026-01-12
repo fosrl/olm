@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"runtime"
 	"strconv"
@@ -100,6 +102,16 @@ func Init(ctx context.Context, config GlobalConfig) {
 	globalCtx = ctx
 
 	logger.GetLogger().SetLevel(util.ParseLogLevel(config.LogLevel))
+
+	// Start pprof server if enabled
+	if config.PprofAddr != "" {
+		go func() {
+			logger.Info("Starting pprof server on %s", config.PprofAddr)
+			if err := http.ListenAndServe(config.PprofAddr, nil); err != nil {
+				logger.Error("Failed to start pprof server: %v", err)
+			}
+		}()
+	}
 
 	logger.Debug("Checking permissions for native interface")
 	err := permissions.CheckNativeInterfacePermissions()

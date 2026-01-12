@@ -219,6 +219,7 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 		Agent:        "Olm CLI",
 		OnExit:       cancel, // Pass cancel function directly to trigger shutdown
 		OnTerminated: cancel,
+		PprofAddr:    ":4444", // TODO: REMOVE OR MAKE CONFIGURABLE
 	}
 
 	olm.Init(ctx, olmConfig)

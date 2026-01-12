@@ -23,6 +23,9 @@ type GlobalConfig struct {
 	Version    string
 	Agent      string
 
+	// Debugging
+	PprofAddr string // Address to serve pprof on (e.g., "localhost:6060")
+
 	// Callbacks
 	OnRegistered func()
 	OnConnected  func()
