@@ -599,12 +599,12 @@ func (p *DNSProxy) runTunnelPacketSender() {
 	defer p.wg.Done()
 	logger.Debug("DNS tunnel packet sender goroutine started")
 
-	ticker := time.NewTicker(1 * time.Millisecond)
-	defer ticker.Stop()
-
 	for {
-		select {
-		case <-p.ctx.Done():
+		// Use blocking ReadContext instead of polling - much more CPU efficient
+		// This will block until a packet is available or context is cancelled
+		pkt := p.tunnelEp.ReadContext(p.ctx)
+		if pkt == nil {
+			// Context was cancelled or endpoint closed
 			logger.Debug("DNS tunnel packet sender exiting")
 			// Drain any remaining packets
 			for {
@@ -615,36 +615,28 @@ func (p *DNSProxy) runTunnelPacketSender() {
 				pkt.DecRef()
 			}
 			return
-		case <-ticker.C:
-			// Try to read packets
-			for i := 0; i < 10; i++ {
-				pkt := p.tunnelEp.Read()
-				if pkt == nil {
-					break
-				}
-
-				// Extract packet data
-				slices := pkt.AsSlices()
-				if len(slices) > 0 {
-					var totalSize int
-					for _, slice := range slices {
-						totalSize += len(slice)
-					}
-
-					buf := make([]byte, totalSize)
-					pos := 0
-					for _, slice := range slices {
-						copy(buf[pos:], slice)
-						pos += len(slice)
-					}
-
-					// Inject into MiddleDevice (outbound to WG)
-					p.middleDevice.InjectOutbound(buf)
-				}
-
-				pkt.DecRef()
-			}
 		}
+
+		// Extract packet data
+		slices := pkt.AsSlices()
+		if len(slices) > 0 {
+			var totalSize int
+			for _, slice := range slices {
+				totalSize += len(slice)
+			}
+
+			buf := make([]byte, totalSize)
+			pos := 0
+			for _, slice := range slices {
+				copy(buf[pos:], slice)
+				pos += len(slice)
+			}
+
+			// Inject into MiddleDevice (outbound to WG)
+			p.middleDevice.InjectOutbound(buf)
+		}
+
+		pkt.DecRef()
 	}
 }
 
@@ -657,18 +649,12 @@ func (p *DNSProxy) runPacketSender() {
 	const offset = 16
 
 	for {
-		select {
-		case <-p.ctx.Done():
-			return
-		default:
-		}
-
-		// Read packets from netstack endpoint
-		pkt := p.ep.Read()
+		// Use blocking ReadContext instead of polling - much more CPU efficient
+		// This will block until a packet is available or context is cancelled
+		pkt := p.ep.ReadContext(p.ctx)
 		if pkt == nil {
-			// No packet available, small sleep to avoid busy loop
-			time.Sleep(1 * time.Millisecond)
-			continue
+			// Context was cancelled or endpoint closed
+			return
 		}
 
 		// Extract packet data as slices

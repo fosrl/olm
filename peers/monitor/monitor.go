@@ -42,7 +42,7 @@ type PeerMonitor struct {
 	stack       *stack.Stack
 	ep          *channel.Endpoint
 	activePorts map[uint16]bool
-	portsLock   sync.Mutex
+	portsLock   sync.RWMutex
 	nsCtx       context.Context
 	nsCancel    context.CancelFunc
 	nsWg        sync.WaitGroup
@@ -809,9 +809,9 @@ func (pm *PeerMonitor) handlePacket(packet []byte) bool {
 	}
 
 	// Check if we are listening on this port
-	pm.portsLock.Lock()
+	pm.portsLock.RLock()
 	active := pm.activePorts[uint16(port)]
-	pm.portsLock.Unlock()
+	pm.portsLock.RUnlock()
 
 	if !active {
 		return false
@@ -842,13 +842,12 @@ func (pm *PeerMonitor) runPacketSender() {
 	defer pm.nsWg.Done()
 	logger.Debug("PeerMonitor: Packet sender goroutine started")
 
-	// Use a ticker to periodically check for packets without blocking indefinitely
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-
 	for {
-		select {
-		case <-pm.nsCtx.Done():
+		// Use blocking ReadContext instead of polling - much more CPU efficient
+		// This will block until a packet is available or context is cancelled
+		pkt := pm.ep.ReadContext(pm.nsCtx)
+		if pkt == nil {
+			// Context was cancelled or endpoint closed
 			logger.Debug("PeerMonitor: Packet sender context cancelled, draining packets")
 			// Drain any remaining packets before exiting
 			for {
@@ -860,36 +859,28 @@ func (pm *PeerMonitor) runPacketSender() {
 			}
 			logger.Debug("PeerMonitor: Packet sender goroutine exiting")
 			return
-		case <-ticker.C:
-			// Try to read packets in batches
-			for i := 0; i < 10; i++ {
-				pkt := pm.ep.Read()
-				if pkt == nil {
-					break
-				}
-
-				// Extract packet data
-				slices := pkt.AsSlices()
-				if len(slices) > 0 {
-					var totalSize int
-					for _, slice := range slices {
-						totalSize += len(slice)
-					}
-
-					buf := make([]byte, totalSize)
-					pos := 0
-					for _, slice := range slices {
-						copy(buf[pos:], slice)
-						pos += len(slice)
-					}
-
-					// Inject into MiddleDevice (outbound to WG)
-					pm.middleDev.InjectOutbound(buf)
-				}
-
-				pkt.DecRef()
-			}
 		}
+
+		// Extract packet data
+		slices := pkt.AsSlices()
+		if len(slices) > 0 {
+			var totalSize int
+			for _, slice := range slices {
+				totalSize += len(slice)
+			}
+
+			buf := make([]byte, totalSize)
+			pos := 0
+			for _, slice := range slices {
+				copy(buf[pos:], slice)
+				pos += len(slice)
+			}
+
+			// Inject into MiddleDevice (outbound to WG)
+			pm.middleDev.InjectOutbound(buf)
+		}
+
+		pkt.DecRef()
 	}
 }
 
