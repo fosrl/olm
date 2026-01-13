@@ -84,6 +84,13 @@ func (pm *PeerManager) GetPeer(siteId int) (SiteConfig, bool) {
 	return peer, ok
 }
 
+// GetPeerMonitor returns the internal peer monitor instance
+func (pm *PeerManager) GetPeerMonitor() *monitor.PeerMonitor {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return pm.peerMonitor
+}
+
 func (pm *PeerManager) GetAllPeers() []SiteConfig {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()

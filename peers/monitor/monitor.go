@@ -62,11 +62,11 @@ type PeerMonitor struct {
 	holepunchFailures    map[int]int  // siteID -> consecutive failure count
 
 	// Exponential backoff fields for holepunch monitor
-	holepunchMinInterval      time.Duration // Minimum interval (initial)
-	holepunchMaxInterval      time.Duration // Maximum interval (cap for backoff)
-	holepunchBackoffMultiplier float64      // Multiplier for each stable check
-	holepunchStableCount      map[int]int   // siteID -> consecutive stable status count
-	holepunchCurrentInterval  time.Duration // Current interval with backoff applied
+	holepunchMinInterval       time.Duration // Minimum interval (initial)
+	holepunchMaxInterval       time.Duration // Maximum interval (cap for backoff)
+	holepunchBackoffMultiplier float64       // Multiplier for each stable check
+	holepunchStableCount       map[int]int   // siteID -> consecutive stable status count
+	holepunchCurrentInterval   time.Duration // Current interval with backoff applied
 
 	// Rapid initial test fields
 	rapidTestInterval    time.Duration // interval between rapid test attempts
@@ -165,6 +165,25 @@ func (pm *PeerMonitor) SetMaxAttempts(attempts int) {
 	for _, client := range pm.monitors {
 		client.SetMaxAttempts(attempts)
 	}
+}
+
+// SetHolepunchInterval sets both the minimum and maximum intervals for holepunch monitoring
+func (pm *PeerMonitor) SetHolepunchInterval(minInterval, maxInterval time.Duration) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+
+	pm.holepunchMinInterval = minInterval
+	pm.holepunchMaxInterval = maxInterval
+	// Reset current interval to the new minimum
+	pm.holepunchCurrentInterval = minInterval
+}
+
+// GetHolepunchIntervals returns the current minimum and maximum intervals for holepunch monitoring
+func (pm *PeerMonitor) GetHolepunchIntervals() (minInterval, maxInterval time.Duration) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+
+	return pm.holepunchMinInterval, pm.holepunchMaxInterval
 }
 
 // AddPeer adds a new peer to monitor
