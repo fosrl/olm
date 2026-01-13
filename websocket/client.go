@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -414,7 +415,8 @@ func (c *Client) connectWithRetry() {
 			err := c.establishConnection()
 			if err != nil {
 				// Check if this is an auth error (401/403)
-				if authErr, ok := err.(*AuthError); ok {
+				var authErr *AuthError
+				if errors.As(err, &authErr) {
 					logger.Error("Authentication failed: %v. Terminating tunnel and retrying...", authErr)
 					// Trigger auth error callback if set (this should terminate the tunnel)
 					if c.onAuthError != nil {
