@@ -33,17 +33,17 @@ type DNSProxy struct {
 	ep           *channel.Endpoint
 	proxyIP      netip.Addr
 	upstreamDNS  []string
-	tunnelDNS    bool                 // Whether to tunnel DNS queries over WireGuard or to spit them out locally
+	tunnelDNS    bool // Whether to tunnel DNS queries over WireGuard or to spit them out locally
 	mtu          int
 	middleDevice *device.MiddleDevice // Reference to MiddleDevice for packet filtering and TUN writes
 	recordStore  *DNSRecordStore      // Local DNS records
 
 	// Tunnel DNS fields - for sending queries over WireGuard
-	tunnelIP         netip.Addr       // WireGuard interface IP (source for tunneled queries)
-	tunnelStack      *stack.Stack     // Separate netstack for outbound tunnel queries
-	tunnelEp         *channel.Endpoint
+	tunnelIP          netip.Addr   // WireGuard interface IP (source for tunneled queries)
+	tunnelStack       *stack.Stack // Separate netstack for outbound tunnel queries
+	tunnelEp          *channel.Endpoint
 	tunnelActivePorts map[uint16]bool
-	tunnelPortsLock  sync.Mutex
+	tunnelPortsLock   sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc

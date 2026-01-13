@@ -112,6 +112,17 @@ func Init(ctx context.Context, config GlobalConfig) {
 			}
 		}()
 	}
+	
+	if config.LogFilePath != "" {
+		logFile, err := os.OpenFile(config.LogFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			logger.Fatal("Failed to open log file: %v", err)
+		}
+
+		// TODO: figure out how to close file, if set
+		logger.SetOutput(logFile)
+		return
+	}
 
 	logger.Debug("Checking permissions for native interface")
 	err := permissions.CheckNativeInterfacePermissions()
@@ -322,7 +333,7 @@ func StartTunnel(config TunnelConfig) {
 			if config.FileDescriptorTun != 0 {
 				return olmDevice.CreateTUNFromFD(config.FileDescriptorTun, config.MTU)
 			}
-			var ifName = interfaceName
+			ifName := interfaceName
 			if runtime.GOOS == "darwin" { // this is if we dont pass a fd
 				ifName, err = network.FindUnusedUTUN()
 				if err != nil {
@@ -331,7 +342,6 @@ func StartTunnel(config TunnelConfig) {
 			}
 			return tun.CreateTUN(ifName, config.MTU)
 		}()
-
 		if err != nil {
 			logger.Error("Failed to create TUN device: %v", err)
 			return
@@ -377,7 +387,6 @@ func StartTunnel(config TunnelConfig) {
 				for {
 					conn, err := uapiListener.Accept()
 					if err != nil {
-
 						return
 					}
 					go dev.IpcHandle(conn)
