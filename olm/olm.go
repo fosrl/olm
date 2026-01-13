@@ -53,6 +53,11 @@ var (
 	updateRegister   func(newData interface{})
 	stopPing         chan struct{}
 	peerManager      *peers.PeerManager
+	// Power mode management
+	currentPowerMode             string
+	originalPeerInterval         time.Duration
+	originalHolepunchMinInterval time.Duration
+	originalHolepunchMaxInterval time.Duration
 )
 
 // initTunnelInfo creates the shared UDP socket and holepunch manager.
@@ -112,7 +117,7 @@ func Init(ctx context.Context, config GlobalConfig) {
 			}
 		}()
 	}
-	
+
 	if config.LogFilePath != "" {
 		logFile, err := os.OpenFile(config.LogFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
@@ -431,6 +436,18 @@ func StartTunnel(config TunnelConfig) {
 			WSClient:      olm,
 			APIServer:     apiServer,
 		})
+
+		// Capture original intervals for power mode management
+		if peerManager != nil {
+			peerMonitor := peerManager.GetPeerMonitor()
+			if peerMonitor != nil {
+				originalPeerInterval = 2 * time.Second // Default peer interval
+				originalHolepunchMinInterval, originalHolepunchMaxInterval = peerMonitor.GetHolepunchIntervals()
+			}
+		}
+
+		// Initialize power mode to normal
+		currentPowerMode = "normal"
 
 		for i := range wgData.Sites {
 			site := wgData.Sites[i]
@@ -1153,6 +1170,175 @@ func SwitchOrg(orgID string) error {
 
 	// Restart the tunnel with the same config but new org ID
 	go StartTunnel(tunnelConfig)
+
+	return nil
+}
+
+// SetPowerMode switches between normal and low power modes
+// In low power mode: websocket is closed (stopping pings) and monitoring intervals are set to 10 minutes
+// In normal power mode: websocket is reconnected (restarting pings) and monitoring intervals are restored
+func SetPowerMode(mode string) error {
+	// Validate mode
+	if mode != "normal" && mode != "low" {
+		return fmt.Errorf("invalid power mode: %s (must be 'normal' or 'low')", mode)
+	}
+
+	// If already in the requested mode, return early
+	if currentPowerMode == mode {
+		logger.Debug("Already in %s power mode", mode)
+		return nil
+	}
+
+	logger.Info("Switching to %s power mode", mode)
+
+	if mode == "low" {
+		// Low Power Mode: Close websocket and reduce monitoring frequency
+
+		// Close websocket connection - this stops:
+		// - WebSocket ping monitor (via pingMonitor() goroutine)
+		// - Application ping messages (via keepSendingPing() goroutine)
+		if olmClient != nil {
+			logger.Info("Closing websocket connection for low power mode")
+			if err := olmClient.Close(); err != nil {
+				logger.Error("Error closing websocket: %v", err)
+			}
+		}
+
+		// Stop application ping goroutine
+		if stopPing != nil {
+			select {
+			case <-stopPing:
+				// Channel already closed
+			default:
+				close(stopPing)
+			}
+		}
+
+		// Stop peer monitoring
+		if peerManager != nil {
+			peerManager.Stop()
+		}
+
+		// Store original intervals if not already stored
+		if originalPeerInterval == 0 && peerManager != nil {
+			peerMonitor := peerManager.GetPeerMonitor()
+			if peerMonitor != nil {
+				originalPeerInterval = 2 * time.Second // Default peer interval
+				originalHolepunchMinInterval, originalHolepunchMaxInterval = peerMonitor.GetHolepunchIntervals()
+			}
+		}
+
+		// Set monitoring intervals to 10 minutes
+		if peerManager != nil {
+			peerMonitor := peerManager.GetPeerMonitor()
+			if peerMonitor != nil {
+				lowPowerInterval := 10 * time.Minute
+				peerMonitor.SetInterval(lowPowerInterval)
+				peerMonitor.SetHolepunchInterval(lowPowerInterval, lowPowerInterval)
+				logger.Info("Set monitoring intervals to 10 minutes for low power mode")
+			}
+		}
+
+		// Restart peer monitoring with new intervals (but websocket remains closed)
+		if peerManager != nil {
+			peerManager.Start()
+		}
+
+		currentPowerMode = "low"
+		logger.Info("Switched to low power mode")
+
+	} else {
+		// Normal Power Mode: Restore intervals and reconnect websocket
+
+		// Restore monitoring intervals to original values
+		if peerManager != nil {
+			peerMonitor := peerManager.GetPeerMonitor()
+			if peerMonitor != nil {
+				// Restore peer interval
+				if originalPeerInterval == 0 {
+					originalPeerInterval = 2 * time.Second // Default if not captured
+				}
+				peerMonitor.SetInterval(originalPeerInterval)
+
+				// Restore holepunch intervals
+				if originalHolepunchMinInterval == 0 {
+					originalHolepunchMinInterval = 2 * time.Second // Default if not captured
+				}
+				if originalHolepunchMaxInterval == 0 {
+					originalHolepunchMaxInterval = 30 * time.Second // Default if not captured
+				}
+				peerMonitor.SetHolepunchInterval(originalHolepunchMinInterval, originalHolepunchMaxInterval)
+				logger.Info("Restored monitoring intervals to normal (peer: %v, holepunch: %v-%v)",
+					originalPeerInterval, originalHolepunchMinInterval, originalHolepunchMaxInterval)
+			}
+		}
+
+		// Restart peer monitoring with restored intervals
+		if peerManager != nil {
+			peerManager.Start()
+		}
+
+		// Reconnect websocket - this restarts:
+		// - WebSocket ping monitor
+		// - Application ping messages (via OnConnect callback)
+		// Note: Since websocket client's Close() permanently closes the done channel,
+		// we need to create a new client instance and re-register handlers
+		if tunnelConfig.ID != "" && tunnelConfig.Secret != "" && tunnelConfig.Endpoint != "" {
+			logger.Info("Reconnecting websocket for normal power mode")
+
+			// Close old client if it exists
+			if olmClient != nil {
+				olmClient.Close()
+			}
+
+			// Recreate stopPing channel for application pings
+			stopPing = make(chan struct{})
+
+			// Create a new websocket client
+			var (
+				id        = tunnelConfig.ID
+				secret    = tunnelConfig.Secret
+				userToken = tunnelConfig.UserToken
+			)
+
+			olm, err := websocket.NewClient(
+				id,
+				secret,
+				userToken,
+				tunnelConfig.OrgID,
+				tunnelConfig.Endpoint,
+				tunnelConfig.PingIntervalDuration,
+				tunnelConfig.PingTimeoutDuration,
+			)
+			if err != nil {
+				logger.Error("Failed to create new websocket client: %v", err)
+				return fmt.Errorf("failed to create new websocket client: %w", err)
+			}
+
+			// Store the new client
+			olmClient = olm
+
+			// Re-register essential handlers (simplified - only the most critical ones)
+			// The full handler registration happens in StartTunnel, so this is just for reconnection
+			olm.OnConnect(func() error {
+				logger.Info("Websocket Reconnected")
+				apiServer.SetConnectionStatus(true)
+				go keepSendingPing(olm)
+				return nil
+			})
+
+			// Connect to the WebSocket server
+			if err := olm.Connect(); err != nil {
+				logger.Error("Failed to reconnect websocket: %v", err)
+				return fmt.Errorf("failed to reconnect websocket: %w", err)
+			}
+		} else {
+			logger.Warn("Cannot reconnect websocket: tunnel config not available")
+		}
+
+		currentPowerMode = "normal"
+		logger.Info("Switched to normal power mode")
+	}
 
 	return nil
 }
