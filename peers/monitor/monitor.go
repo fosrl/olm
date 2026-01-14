@@ -28,13 +28,14 @@ import (
 
 // PeerMonitor handles monitoring the connection status to multiple WireGuard peers
 type PeerMonitor struct {
-	monitors    map[int]*Client
-	mutex       sync.Mutex
-	running     bool
-	interval    time.Duration
-	timeout     time.Duration
-	maxAttempts int
-	wsClient    *websocket.Client
+	monitors        map[int]*Client
+	mutex           sync.Mutex
+	running         bool
+	defaultInterval time.Duration
+	interval        time.Duration
+	timeout         time.Duration
+	maxAttempts     int
+	wsClient        *websocket.Client
 
 	// Netstack fields
 	middleDev   *middleDevice.MiddleDevice
@@ -50,7 +51,6 @@ type PeerMonitor struct {
 	// Holepunch testing fields
 	sharedBind         *bind.SharedBind
 	holepunchTester    *holepunch.HolepunchTester
-	holepunchInterval  time.Duration
 	holepunchTimeout   time.Duration
 	holepunchEndpoints map[int]string // siteID -> endpoint for holepunch testing
 	holepunchStatus    map[int]bool   // siteID -> connected status
@@ -62,11 +62,13 @@ type PeerMonitor struct {
 	holepunchFailures    map[int]int  // siteID -> consecutive failure count
 
 	// Exponential backoff fields for holepunch monitor
-	holepunchMinInterval       time.Duration // Minimum interval (initial)
-	holepunchMaxInterval       time.Duration // Maximum interval (cap for backoff)
-	holepunchBackoffMultiplier float64       // Multiplier for each stable check
-	holepunchStableCount       map[int]int   // siteID -> consecutive stable status count
-	holepunchCurrentInterval   time.Duration // Current interval with backoff applied
+	defaultHolepunchMinInterval time.Duration // Minimum interval (initial)
+	defaultHolepunchMaxInterval time.Duration
+	holepunchMinInterval        time.Duration // Minimum interval (initial)
+	holepunchMaxInterval        time.Duration // Maximum interval (cap for backoff)
+	holepunchBackoffMultiplier  float64       // Multiplier for each stable check
+	holepunchStableCount        map[int]int   // siteID -> consecutive stable status count
+	holepunchCurrentInterval    time.Duration // Current interval with backoff applied
 
 	// Rapid initial test fields
 	rapidTestInterval    time.Duration // interval between rapid test attempts
@@ -85,6 +87,7 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 	ctx, cancel := context.WithCancel(context.Background())
 	pm := &PeerMonitor{
 		monitors:             make(map[int]*Client),
+		defaultInterval:      2 * time.Second,
 		interval:             2 * time.Second, // Default check interval (faster)
 		timeout:              3 * time.Second,
 		maxAttempts:          3,
@@ -95,7 +98,6 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		nsCtx:                ctx,
 		nsCancel:             cancel,
 		sharedBind:           sharedBind,
-		holepunchInterval:    2 * time.Second, // Check holepunch every 2 seconds
 		holepunchTimeout:     2 * time.Second, // Faster timeout
 		holepunchEndpoints:   make(map[int]string),
 		holepunchStatus:      make(map[int]bool),
@@ -109,11 +111,13 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		apiServer:            apiServer,
 		wgConnectionStatus:   make(map[int]bool),
 		// Exponential backoff settings for holepunch monitor
-		holepunchMinInterval:       2 * time.Second,
-		holepunchMaxInterval:       30 * time.Second,
-		holepunchBackoffMultiplier: 1.5,
-		holepunchStableCount:       make(map[int]int),
-		holepunchCurrentInterval:   2 * time.Second,
+		defaultHolepunchMinInterval: 2 * time.Second,
+		defaultHolepunchMaxInterval: 30 * time.Second,
+		holepunchMinInterval:        2 * time.Second,
+		holepunchMaxInterval:        30 * time.Second,
+		holepunchBackoffMultiplier:  1.5,
+		holepunchStableCount:        make(map[int]int),
+		holepunchCurrentInterval:    2 * time.Second,
 	}
 
 	if err := pm.initNetstack(); err != nil {
@@ -138,6 +142,18 @@ func (pm *PeerMonitor) SetInterval(interval time.Duration) {
 	// Update interval for all existing monitors
 	for _, client := range pm.monitors {
 		client.SetPacketInterval(interval)
+	}
+}
+
+func (pm *PeerMonitor) ResetInterval() {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+
+	pm.interval = pm.defaultInterval
+
+	// Update interval for all existing monitors
+	for _, client := range pm.monitors {
+		client.SetPacketInterval(pm.defaultInterval)
 	}
 }
 
@@ -184,6 +200,15 @@ func (pm *PeerMonitor) GetHolepunchIntervals() (minInterval, maxInterval time.Du
 	defer pm.mutex.Unlock()
 
 	return pm.holepunchMinInterval, pm.holepunchMaxInterval
+}
+
+func (pm *PeerMonitor) ResetHolepunchInterval() {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+
+	pm.holepunchMinInterval = pm.defaultHolepunchMinInterval
+	pm.holepunchMaxInterval = pm.defaultHolepunchMaxInterval
+	pm.holepunchCurrentInterval = pm.defaultHolepunchMinInterval
 }
 
 // AddPeer adds a new peer to monitor
