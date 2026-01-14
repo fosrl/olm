@@ -7,6 +7,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/fosrl/newt/bind"
@@ -46,9 +47,9 @@ type Olm struct {
 	peerManager      *peers.PeerManager
 	// Power mode management
 	currentPowerMode             string
-	originalPeerInterval         time.Duration
-	originalHolepunchMinInterval time.Duration
-	originalHolepunchMaxInterval time.Duration
+	powerModeMu                  sync.Mutex
+	wakeUpTimer                  *time.Timer
+	wakeUpDebounce               time.Duration
 
 	olmCtx       context.Context
 	tunnelCancel context.CancelFunc
@@ -132,6 +133,10 @@ func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 
 		logger.SetOutput(file)
 		logFile = file
+	}
+	
+	if config.WakeUpDebounce == 0 {
+		config.WakeUpDebounce = 3 * time.Second
 	}
 
 	logger.Debug("Checking permissions for native interface")
@@ -589,35 +594,43 @@ func (o *Olm) SwitchOrg(orgID string) error {
 // SetPowerMode switches between normal and low power modes
 // In low power mode: websocket is closed (stopping pings) and monitoring intervals are set to 10 minutes
 // In normal power mode: websocket is reconnected (restarting pings) and monitoring intervals are restored
+// Wake-up has a 3-second debounce to prevent rapid flip-flopping; sleep is immediate
 func (o *Olm) SetPowerMode(mode string) error {
 	// Validate mode
 	if mode != "normal" && mode != "low" {
 		return fmt.Errorf("invalid power mode: %s (must be 'normal' or 'low')", mode)
 	}
 
+	o.powerModeMu.Lock()
+	defer o.powerModeMu.Unlock()
+
 	// If already in the requested mode, return early
 	if o.currentPowerMode == mode {
+		// Cancel any pending wake-up timer if we're already in normal mode
+		if mode == "normal" && o.wakeUpTimer != nil {
+			o.wakeUpTimer.Stop()
+			o.wakeUpTimer = nil
+		}
 		logger.Debug("Already in %s power mode", mode)
 		return nil
 	}
 
-	logger.Info("Switching to %s power mode", mode)
-
 	if mode == "low" {
-		// Low Power Mode: Close websocket and reduce monitoring frequency
+		// Low Power Mode: Cancel any pending wake-up and immediately go to sleep
+
+		// Cancel pending wake-up timer if any
+		if o.wakeUpTimer != nil {
+			logger.Debug("Cancelling pending wake-up timer")
+			o.wakeUpTimer.Stop()
+			o.wakeUpTimer = nil
+		}
+
+		logger.Info("Switching to low power mode")
 
 		if o.websocket != nil {
 			logger.Info("Closing websocket connection for low power mode")
 			if err := o.websocket.Close(); err != nil {
 				logger.Error("Error closing websocket: %v", err)
-			}
-		}
-
-		if o.originalPeerInterval == 0 && o.peerManager != nil {
-			peerMonitor := o.peerManager.GetPeerMonitor()
-			if peerMonitor != nil {
-				o.originalPeerInterval = 2 * time.Second
-				o.originalHolepunchMinInterval, o.originalHolepunchMaxInterval = peerMonitor.GetHolepunchIntervals()
 			}
 		}
 
@@ -629,45 +642,61 @@ func (o *Olm) SetPowerMode(mode string) error {
 				peerMonitor.SetHolepunchInterval(lowPowerInterval, lowPowerInterval)
 				logger.Info("Set monitoring intervals to 10 minutes for low power mode")
 			}
+			o.peerManager.UpdateAllPeersPersistentKeepalive(0) // disable
 		}
 
 		o.currentPowerMode = "low"
 		logger.Info("Switched to low power mode")
 
 	} else {
-		// Normal Power Mode: Restore intervals and reconnect websocket
+		// Normal Power Mode: Start debounce timer before actually waking up
 
-		if o.peerManager != nil {
-			peerMonitor := o.peerManager.GetPeerMonitor()
-			if peerMonitor != nil {
-				if o.originalPeerInterval == 0 {
-					o.originalPeerInterval = 2 * time.Second
-				}
-				peerMonitor.SetInterval(o.originalPeerInterval)
-
-				if o.originalHolepunchMinInterval == 0 {
-					o.originalHolepunchMinInterval = 2 * time.Second
-				}
-				if o.originalHolepunchMaxInterval == 0 {
-					o.originalHolepunchMaxInterval = 30 * time.Second
-				}
-				peerMonitor.SetHolepunchInterval(o.originalHolepunchMinInterval, o.originalHolepunchMaxInterval)
-				logger.Info("Restored monitoring intervals to normal (peer: %v, holepunch: %v-%v)",
-					o.originalPeerInterval, o.originalHolepunchMinInterval, o.originalHolepunchMaxInterval)
-			}
+		// If there's already a pending wake-up timer, don't start another
+		if o.wakeUpTimer != nil {
+			logger.Debug("Wake-up already pending, ignoring duplicate request")
+			return nil
 		}
 
-		logger.Info("Reconnecting websocket for normal power mode")
+		logger.Info("Wake-up requested, starting %v debounce timer", o.wakeUpDebounce)
 
-		if o.websocket != nil {
-			if err := o.websocket.Connect(); err != nil {
-				logger.Error("Failed to reconnect websocket: %v", err)
-				return fmt.Errorf("failed to reconnect websocket: %w", err)
+		o.wakeUpTimer = time.AfterFunc(o.wakeUpDebounce, func() {
+			o.powerModeMu.Lock()
+			defer o.powerModeMu.Unlock()
+
+			// Clear the timer reference
+			o.wakeUpTimer = nil
+
+			// Double-check we're still in low power mode (could have changed)
+			if o.currentPowerMode == "normal" {
+				logger.Debug("Already in normal mode after debounce, skipping wake-up")
+				return
 			}
-		}
 
-		o.currentPowerMode = "normal"
-		logger.Info("Switched to normal power mode")
+			logger.Info("Debounce complete, switching to normal power mode")
+
+			// Restore intervals and reconnect websocket
+			if o.peerManager != nil {
+				peerMonitor := o.peerManager.GetPeerMonitor()
+				if peerMonitor != nil {
+					peerMonitor.ResetHolepunchInterval()
+					peerMonitor.ResetInterval()
+				}
+				
+				o.peerManager.UpdateAllPeersPersistentKeepalive(5)
+			}
+
+			logger.Info("Reconnecting websocket for normal power mode")
+
+			if o.websocket != nil {
+				if err := o.websocket.Connect(); err != nil {
+					logger.Error("Failed to reconnect websocket: %v", err)
+					return
+				}
+			}
+
+			o.currentPowerMode = "normal"
+			logger.Info("Switched to normal power mode")
+		})
 	}
 
 	return nil
