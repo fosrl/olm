@@ -41,7 +41,7 @@ type Olm struct {
 
 	dnsProxy         *dns.DNSProxy
 	apiServer        *api.API
-	olmClient        *websocket.Client
+	websocket        *websocket.Client
 	holePunchManager *holepunch.Manager
 	peerManager      *peers.PeerManager
 	// Power mode management
@@ -57,10 +57,11 @@ type Olm struct {
 	tunnelConfig TunnelConfig
 
 	stopRegister   func()
-	stopPeerSend   func()
 	updateRegister func(newData any)
 
-	stopPing chan struct{}
+	stopServerPing func()
+
+	stopPeerSend func()
 }
 
 // initTunnelInfo creates the shared UDP socket and holepunch manager.
@@ -270,9 +271,6 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	tunnelCtx, cancel := context.WithCancel(o.olmCtx)
 	o.tunnelCancel = cancel
 
-	// Recreate channels for this tunnel session
-	o.stopPing = make(chan struct{})
-
 	var (
 		id        = config.ID
 		secret    = config.Secret
@@ -328,6 +326,14 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 		o.apiServer.SetConnectionStatus(true)
 
+		// restart the ping if we need to
+		if o.stopServerPing == nil {
+			o.stopServerPing, _ = olmClient.SendMessageInterval("olm/ping", map[string]any{
+				"timestamp": time.Now().Unix(),
+				"userToken": olmClient.GetConfig().UserToken,
+			}, 30*time.Second, -1) // -1 means dont time out with the max attempts
+		}
+
 		if o.connected {
 			logger.Debug("Already connected, skipping registration")
 			return nil
@@ -347,15 +353,13 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 				"olmAgent":   o.olmConfig.Agent,
 				"orgId":      config.OrgID,
 				"userToken":  userToken,
-			}, 1*time.Second)
+			}, 1*time.Second, 10)
 
 			// Invoke onRegistered callback if configured
 			if o.olmConfig.OnRegistered != nil {
 				go o.olmConfig.OnRegistered()
 			}
 		}
-
-		go o.keepSendingPing(olmClient)
 
 		return nil
 	})
@@ -416,7 +420,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	}
 	defer func() { _ = olmClient.Close() }()
 
-	o.olmClient = olmClient
+	o.websocket = olmClient
 
 	// Wait for context cancellation
 	<-tunnelCtx.Done()
@@ -435,9 +439,9 @@ func (o *Olm) Close() {
 		o.holePunchManager = nil
 	}
 
-	if o.stopPing != nil {
-		close(o.stopPing)
-		o.stopPing = nil
+	if o.stopServerPing != nil {
+		o.stopServerPing()
+		o.stopServerPing = nil
 	}
 
 	if o.stopRegister != nil {
@@ -515,9 +519,9 @@ func (o *Olm) StopTunnel() error {
 	}
 
 	// Close the websocket connection
-	if o.olmClient != nil {
-		_ = o.olmClient.Close()
-		o.olmClient = nil
+	if o.websocket != nil {
+		_ = o.websocket.Close()
+		o.websocket = nil
 	}
 
 	o.Close()
@@ -602,23 +606,11 @@ func (o *Olm) SetPowerMode(mode string) error {
 	if mode == "low" {
 		// Low Power Mode: Close websocket and reduce monitoring frequency
 
-		if o.olmClient != nil {
+		if o.websocket != nil {
 			logger.Info("Closing websocket connection for low power mode")
-			if err := o.olmClient.Close(); err != nil {
+			if err := o.websocket.Close(); err != nil {
 				logger.Error("Error closing websocket: %v", err)
 			}
-		}
-
-		if o.stopPing != nil {
-			select {
-			case <-o.stopPing:
-			default:
-				close(o.stopPing)
-			}
-		}
-
-		if o.peerManager != nil {
-			o.peerManager.Stop()
 		}
 
 		if o.originalPeerInterval == 0 && o.peerManager != nil {
@@ -637,10 +629,6 @@ func (o *Olm) SetPowerMode(mode string) error {
 				peerMonitor.SetHolepunchInterval(lowPowerInterval, lowPowerInterval)
 				logger.Info("Set monitoring intervals to 10 minutes for low power mode")
 			}
-		}
-
-		if o.peerManager != nil {
-			o.peerManager.Start()
 		}
 
 		o.currentPowerMode = "low"
@@ -669,60 +657,19 @@ func (o *Olm) SetPowerMode(mode string) error {
 			}
 		}
 
-		if o.peerManager != nil {
-			o.peerManager.Start()
-		}
+		logger.Info("Reconnecting websocket for normal power mode")
 
-		if o.tunnelConfig.ID != "" && o.tunnelConfig.Secret != "" && o.tunnelConfig.Endpoint != "" {
-			logger.Info("Reconnecting websocket for normal power mode")
-
-			if o.olmClient != nil {
-				o.olmClient.Close()
-			}
-
-			o.stopPing = make(chan struct{})
-
-			var (
-				id        = o.tunnelConfig.ID
-				secret    = o.tunnelConfig.Secret
-				userToken = o.tunnelConfig.UserToken
-			)
-
-			olm, err := websocket.NewClient(
-				id,
-				secret,
-				userToken,
-				o.tunnelConfig.OrgID,
-				o.tunnelConfig.Endpoint,
-				o.tunnelConfig.PingIntervalDuration,
-				o.tunnelConfig.PingTimeoutDuration,
-			)
-			if err != nil {
-				logger.Error("Failed to create new websocket client: %v", err)
-				return fmt.Errorf("failed to create new websocket client: %w", err)
-			}
-
-			o.olmClient = olm
-
-			olm.OnConnect(func() error {
-				logger.Info("Websocket Reconnected")
-				o.apiServer.SetConnectionStatus(true)
-				go o.keepSendingPing(olm)
-				return nil
-			})
-
-			if err := olm.Connect(); err != nil {
+		if o.websocket != nil {
+			if err := o.websocket.Connect(); err != nil {
 				logger.Error("Failed to reconnect websocket: %v", err)
 				return fmt.Errorf("failed to reconnect websocket: %w", err)
 			}
-		} else {
-			logger.Warn("Cannot reconnect websocket: tunnel config not available")
 		}
 
 		o.currentPowerMode = "normal"
 		logger.Info("Switched to normal power mode")
 	}
-	
+
 	return nil
 }
 
@@ -749,6 +696,14 @@ func (o *Olm) AddDevice(fd uint32) error {
 	o.middleDev.AddDevice(tdev)
 
 	logger.Info("Added device from file descriptor %d", fd)
-	
+
 	return nil
+}
+
+func GetNetworkSettingsJSON() (string, error) {
+	return network.GetJSON()
+}
+
+func GetNetworkSettingsIncrementor() int {
+	return network.GetIncrementor()
 }

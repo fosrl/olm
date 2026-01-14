@@ -77,6 +77,7 @@ type Client struct {
 	handlersMux       sync.RWMutex
 	reconnectInterval time.Duration
 	isConnected       bool
+	isDisconnected    bool // Flag to track if client is intentionally disconnected
 	reconnectMux      sync.RWMutex
 	pingInterval      time.Duration
 	pingTimeout       time.Duration
@@ -173,6 +174,9 @@ func (c *Client) GetConfig() *Config {
 
 // Connect establishes the WebSocket connection
 func (c *Client) Connect() error {
+	if c.isDisconnected {
+		c.isDisconnected = false
+	}
 	go c.connectWithRetry()
 	return nil
 }
@@ -205,9 +209,25 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// Disconnect cleanly closes the websocket connection and suspends message intervals, but allows reconnecting later.
+func (c *Client) Disconnect() error {
+	c.isDisconnected = true
+	c.setConnected(false)
+
+	if c.conn != nil {
+		c.writeMux.Lock()
+		c.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		c.writeMux.Unlock()
+		err := c.conn.Close()
+		c.conn = nil
+		return err
+	}
+	return nil
+}
+
 // SendMessage sends a message through the WebSocket connection
 func (c *Client) SendMessage(messageType string, data interface{}) error {
-	if c.conn == nil {
+	if c.isDisconnected || c.conn == nil {
 		return fmt.Errorf("not connected")
 	}
 
@@ -223,7 +243,7 @@ func (c *Client) SendMessage(messageType string, data interface{}) error {
 	return c.conn.WriteJSON(msg)
 }
 
-func (c *Client) SendMessageInterval(messageType string, data interface{}, interval time.Duration) (stop func(), update func(newData interface{})) {
+func (c *Client) SendMessageInterval(messageType string, data interface{}, interval time.Duration, maxAttempts int) (stop func(), update func(newData interface{})) {
 	stopChan := make(chan struct{})
 	updateChan := make(chan interface{})
 	var dataMux sync.Mutex
@@ -231,30 +251,32 @@ func (c *Client) SendMessageInterval(messageType string, data interface{}, inter
 
 	go func() {
 		count := 0
-		maxAttempts := 10
 
-		err := c.SendMessage(messageType, currentData) // Send immediately
-		if err != nil {
-			logger.Error("Failed to send initial message: %v", err)
+		send := func() {
+			if c.isDisconnected || c.conn == nil {
+				return
+			}
+			err := c.SendMessage(messageType, currentData)
+			if err != nil {
+				logger.Error("Failed to send message: %v", err)
+			}
+			count++
 		}
-		count++
+
+		send() // Send immediately
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				if count >= maxAttempts {
+				if maxAttempts != -1 && count >= maxAttempts {
 					logger.Info("SendMessageInterval timed out after %d attempts for message type: %s", maxAttempts, messageType)
 					return
 				}
 				dataMux.Lock()
-				err = c.SendMessage(messageType, currentData)
+				send()
 				dataMux.Unlock()
-				if err != nil {
-					logger.Error("Failed to send message: %v", err)
-				}
-				count++
 			case newData := <-updateChan:
 				dataMux.Lock()
 				// Merge newData into currentData if both are maps
@@ -276,6 +298,14 @@ func (c *Client) SendMessageInterval(messageType string, data interface{}, inter
 				dataMux.Unlock()
 			case <-stopChan:
 				return
+			}
+			// Suspend sending if disconnected
+			for c.isDisconnected {
+				select {
+				case <-stopChan:
+					return
+				case <-time.After(500 * time.Millisecond):
+				}
 			}
 		}
 	}()
@@ -587,7 +617,7 @@ func (c *Client) pingMonitor() {
 		case <-c.done:
 			return
 		case <-ticker.C:
-			if c.conn == nil {
+			if c.isDisconnected || c.conn == nil {
 				return
 			}
 			c.writeMux.Lock()

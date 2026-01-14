@@ -154,7 +154,7 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		MiddleDev:     o.middleDev,
 		LocalIP:       interfaceIP,
 		SharedBind:    o.sharedBind,
-		WSClient:      o.olmClient,
+		WSClient:      o.websocket,
 		APIServer:     o.apiServer,
 	})
 
