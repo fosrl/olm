@@ -576,3 +576,29 @@ func (o *Olm) SwitchOrg(orgID string) error {
 
 	return nil
 }
+
+func (o *Olm) AddDevice(fd uint32) error {
+	if o.middleDev == nil {
+		return fmt.Errorf("middle device is not initialized")
+	}
+
+	if o.tunnelConfig.MTU == 0 {
+		return fmt.Errorf("tunnel MTU is not set")
+	}
+
+	tdev, err := olmDevice.CreateTUNFromFD(fd, o.tunnelConfig.MTU)
+	if err != nil {
+		return fmt.Errorf("failed to create TUN device from fd: %v", err)
+	}
+
+	// Update interface name if available
+	if realInterfaceName, err2 := tdev.Name(); err2 == nil {
+		o.tunnelConfig.InterfaceName = realInterfaceName
+	}
+
+	// Replace the existing TUN device in the middle device with the new one
+	o.middleDev.AddDevice(tdev)
+
+	logger.Info("Added device from file descriptor %d", fd)
+	return nil
+}
