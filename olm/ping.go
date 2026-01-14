@@ -9,6 +9,7 @@ import (
 )
 
 func sendPing(olm *websocket.Client) error {
+	logger.Debug("Sending ping message")
 	err := olm.SendMessage("olm/ping", map[string]any{
 		"timestamp": time.Now().Unix(),
 		"userToken": olm.GetConfig().UserToken,
@@ -30,7 +31,7 @@ func (o *Olm) keepSendingPing(olm *websocket.Client) {
 	}
 
 	// Set up ticker for one minute intervals
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
