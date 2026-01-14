@@ -189,9 +189,9 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 	o.holePunchManager.ResetInterval()    // start sending immediately again so we fill in the endpoint on the cloud
 
 	// Send handshake acknowledgment back to server with retry
-	o.stopPeerSend, _ = o.olmClient.SendMessageInterval("olm/wg/server/peer/add", map[string]interface{}{
+	o.stopPeerSend, _ = o.websocket.SendMessageInterval("olm/wg/server/peer/add", map[string]interface{}{
 		"siteId": handshakeData.SiteId,
-	}, 1*time.Second)
+	}, 1*time.Second, 10)
 
 	logger.Info("Initiated handshake for site %d with exit node %s", handshakeData.SiteId, handshakeData.ExitNode.Endpoint)
 }
