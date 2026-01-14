@@ -63,23 +63,26 @@ type StatusResponse struct {
 
 // API represents the HTTP server and its state
 type API struct {
-	addr         string
-	socketPath   string
-	listener     net.Listener
-	server       *http.Server
+	addr       string
+	socketPath string
+	listener   net.Listener
+	server     *http.Server
+
 	onConnect    func(ConnectionRequest) error
 	onSwitchOrg  func(SwitchOrgRequest) error
 	onDisconnect func() error
 	onExit       func() error
+
 	statusMu     sync.RWMutex
 	peerStatuses map[int]*PeerStatus
 	connectedAt  time.Time
 	isConnected  bool
 	isRegistered bool
 	isTerminated bool
-	version      string
-	agent        string
-	orgID        string
+
+	version string
+	agent   string
+	orgID   string
 }
 
 // NewAPI creates a new HTTP server that listens on a TCP address
@@ -173,7 +176,7 @@ func (s *API) Stop() error {
 
 	// Close the server first, which will also close the listener gracefully
 	if s.server != nil {
-		s.server.Close()
+		_ = s.server.Close()
 	}
 
 	// Clean up socket file if using Unix socket
@@ -358,7 +361,7 @@ func (s *API) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Return a success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "connection request accepted",
 	})
 }
@@ -406,7 +409,7 @@ func (s *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "ok",
 	})
 }
@@ -423,7 +426,7 @@ func (s *API) handleExit(w http.ResponseWriter, r *http.Request) {
 	// Return a success response first
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "shutdown initiated",
 	})
 
@@ -472,7 +475,7 @@ func (s *API) handleSwitchOrg(w http.ResponseWriter, r *http.Request) {
 	// Return a success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "org switch request accepted",
 	})
 }
@@ -506,7 +509,7 @@ func (s *API) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	// Return a success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "disconnect initiated",
 	})
 }
