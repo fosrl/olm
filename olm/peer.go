@@ -123,7 +123,7 @@ func (o *Olm) handleWgPeerUpdate(msg websocket.WSMessage) {
 	if updateData.Endpoint != "" && updateData.Endpoint != existingPeer.Endpoint {
 		logger.Info("Endpoint changed for site %d, triggering holepunch to refresh NAT mappings", updateData.SiteId)
 		_ = o.holePunchManager.TriggerHolePunch()
-		o.holePunchManager.ResetInterval()
+		o.holePunchManager.ResetServerHolepunchInterval()
 	}
 
 	logger.Info("Successfully updated peer for site %d", updateData.SiteId)

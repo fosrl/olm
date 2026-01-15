@@ -46,10 +46,10 @@ type Olm struct {
 	holePunchManager *holepunch.Manager
 	peerManager      *peers.PeerManager
 	// Power mode management
-	currentPowerMode             string
-	powerModeMu                  sync.Mutex
-	wakeUpTimer                  *time.Timer
-	wakeUpDebounce               time.Duration
+	currentPowerMode string
+	powerModeMu      sync.Mutex
+	wakeUpTimer      *time.Timer
+	wakeUpDebounce   time.Duration
 
 	olmCtx       context.Context
 	tunnelCancel context.CancelFunc
@@ -134,7 +134,7 @@ func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 		logger.SetOutput(file)
 		logFile = file
 	}
-	
+
 	if config.WakeUpDebounce == 0 {
 		config.WakeUpDebounce = 3 * time.Second
 	}
@@ -628,21 +628,26 @@ func (o *Olm) SetPowerMode(mode string) error {
 		logger.Info("Switching to low power mode")
 
 		if o.websocket != nil {
-			logger.Info("Closing websocket connection for low power mode")
-			if err := o.websocket.Close(); err != nil {
-				logger.Error("Error closing websocket: %v", err)
+			logger.Info("Disconnecting websocket for low power mode")
+			if err := o.websocket.Disconnect(); err != nil {
+				logger.Error("Error disconnecting websocket: %v", err)
 			}
 		}
 
+		lowPowerInterval := 10 * time.Minute
+		
 		if o.peerManager != nil {
 			peerMonitor := o.peerManager.GetPeerMonitor()
 			if peerMonitor != nil {
-				lowPowerInterval := 10 * time.Minute
-				peerMonitor.SetInterval(lowPowerInterval)
-				peerMonitor.SetHolepunchInterval(lowPowerInterval, lowPowerInterval)
+				peerMonitor.SetPeerInterval(lowPowerInterval, lowPowerInterval)
+				peerMonitor.SetPeerHolepunchInterval(lowPowerInterval, lowPowerInterval)
 				logger.Info("Set monitoring intervals to 10 minutes for low power mode")
 			}
 			o.peerManager.UpdateAllPeersPersistentKeepalive(0) // disable
+		}
+
+		if o.holePunchManager != nil {
+			o.holePunchManager.SetServerHolepunchInterval(lowPowerInterval, lowPowerInterval)
 		}
 
 		o.currentPowerMode = "low"
@@ -673,25 +678,28 @@ func (o *Olm) SetPowerMode(mode string) error {
 			}
 
 			logger.Info("Debounce complete, switching to normal power mode")
-
-			// Restore intervals and reconnect websocket
-			if o.peerManager != nil {
-				peerMonitor := o.peerManager.GetPeerMonitor()
-				if peerMonitor != nil {
-					peerMonitor.ResetHolepunchInterval()
-					peerMonitor.ResetInterval()
-				}
-				
-				o.peerManager.UpdateAllPeersPersistentKeepalive(5)
-			}
-
+			
 			logger.Info("Reconnecting websocket for normal power mode")
-
 			if o.websocket != nil {
 				if err := o.websocket.Connect(); err != nil {
 					logger.Error("Failed to reconnect websocket: %v", err)
 					return
 				}
+			}
+
+			// Restore intervals and reconnect websocket
+			if o.peerManager != nil {
+				peerMonitor := o.peerManager.GetPeerMonitor()
+				if peerMonitor != nil {
+					peerMonitor.ResetPeerHolepunchInterval()
+					peerMonitor.ResetPeerInterval()
+				}
+
+				o.peerManager.UpdateAllPeersPersistentKeepalive(5)
+			}
+
+			if o.holePunchManager != nil {
+				o.holePunchManager.ResetServerHolepunchInterval()
 			}
 
 			o.currentPowerMode = "normal"
