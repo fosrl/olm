@@ -216,15 +216,15 @@ func (o *Olm) handleSync(msg websocket.WSMessage) {
 		return
 	}
 
-	var wgData WgData
-	if err := json.Unmarshal(jsonData, &wgData); err != nil {
+	var syncData SyncData
+	if err := json.Unmarshal(jsonData, &syncData); err != nil {
 		logger.Error("Error unmarshaling sync data: %v", err)
 		return
 	}
 
 	// Build a map of expected peers from the incoming data
 	expectedPeers := make(map[int]peers.SiteConfig)
-	for _, site := range wgData.Sites {
+	for _, site := range syncData.Sites {
 		expectedPeers[site.SiteId] = site
 	}
 

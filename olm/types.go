@@ -12,6 +12,10 @@ type WgData struct {
 	UtilitySubnet string             `json:"utilitySubnet"` // this is for things like the DNS server, and alias addresses
 }
 
+type SyncData struct {
+	Sites []peers.SiteConfig `json:"sites"`
+}
+
 type OlmConfig struct {
 	// Logging
 	LogLevel    string
@@ -23,7 +27,7 @@ type OlmConfig struct {
 	SocketPath string
 	Version    string
 	Agent      string
-	
+
 	WakeUpDebounce time.Duration
 
 	// Debugging
