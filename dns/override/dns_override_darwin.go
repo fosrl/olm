@@ -7,7 +7,6 @@ import (
 	"net/netip"
 
 	"github.com/fosrl/newt/logger"
-	"github.com/fosrl/olm/dns"
 	platform "github.com/fosrl/olm/dns/platform"
 )
 
@@ -15,11 +14,7 @@ var configurator platform.DNSConfigurator
 
 // SetupDNSOverride configures the system DNS to use the DNS proxy on macOS
 // Uses scutil for DNS configuration
-func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
-	if dnsProxy == nil {
-		return fmt.Errorf("DNS proxy is nil")
-	}
-
+func SetupDNSOverride(interfaceName string, proxyIp netip.Addr) error {
 	var err error
 	configurator, err = platform.NewDarwinDNSConfigurator()
 	if err != nil {
@@ -38,7 +33,7 @@ func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
 
 	// Set new DNS servers to point to our proxy
 	newDNS := []netip.Addr{
-		dnsProxy.GetProxyIP(),
+		proxyIp,
 	}
 
 	logger.Info("Setting DNS servers to: %v", newDNS)

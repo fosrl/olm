@@ -12,9 +12,10 @@ type WgData struct {
 	UtilitySubnet string             `json:"utilitySubnet"` // this is for things like the DNS server, and alias addresses
 }
 
-type GlobalConfig struct {
+type OlmConfig struct {
 	// Logging
-	LogLevel string
+	LogLevel    string
+	LogFilePath string
 
 	// HTTP server
 	EnableAPI  bool
@@ -22,6 +23,11 @@ type GlobalConfig struct {
 	SocketPath string
 	Version    string
 	Agent      string
+	
+	WakeUpDebounce time.Duration
+
+	// Debugging
+	PprofAddr string // Address to serve pprof on (e.g., "localhost:6060")
 
 	// Callbacks
 	OnRegistered func()
