@@ -88,6 +88,10 @@ type Client struct {
 	clientType        string // Type of client (e.g., "newt", "olm")
 	tlsConfig         TLSConfig
 	configNeedsSave   bool // Flag to track if config needs to be saved
+	token             string // Cached authentication token
+	exitNodes         []ExitNode // Cached exit nodes from token response
+	tokenMux          sync.RWMutex // Protects token and exitNodes
+	forceNewToken     bool // Flag to force fetching a new token on next connection
 }
 
 type ClientOption func(*Client)
@@ -462,15 +466,25 @@ func (c *Client) connectWithRetry() {
 }
 
 func (c *Client) establishConnection() error {
-	// Get token for authentication
-	token, exitNodes, err := c.getToken()
-	if err != nil {
-		return fmt.Errorf("failed to get token: %w", err)
+	// Get token for authentication - reuse cached token unless forced to get new one
+	c.tokenMux.Lock()
+	needNewToken := c.token == "" || c.forceNewToken
+	if needNewToken {
+		token, exitNodes, err := c.getToken()
+		if err != nil {
+			c.tokenMux.Unlock()
+			return fmt.Errorf("failed to get token: %w", err)
+		}
+		c.token = token
+		c.exitNodes = exitNodes
+		c.forceNewToken = false
+		
+		if c.onTokenUpdate != nil {
+			c.onTokenUpdate(token, exitNodes)
+		}
 	}
-
-	if c.onTokenUpdate != nil {
-		c.onTokenUpdate(token, exitNodes)
-	}
+	token := c.token
+	c.tokenMux.Unlock()
 
 	// Parse the base URL to determine protocol and hostname
 	baseURL, err := url.Parse(c.baseURL)
@@ -522,8 +536,20 @@ func (c *Client) establishConnection() error {
 		logger.Debug("websocket: WebSocket TLS certificate verification disabled via SKIP_TLS_VERIFY environment variable")
 	}
 
-	conn, _, err := dialer.Dial(u.String(), nil)
+	conn, resp, err := dialer.Dial(u.String(), nil)
 	if err != nil {
+		// Check if this is an unauthorized error (401)
+		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
+			logger.Error("websocket: WebSocket connection rejected with 401 Unauthorized")
+			// Force getting a new token on next reconnect attempt
+			c.tokenMux.Lock()
+			c.forceNewToken = true
+			c.tokenMux.Unlock()
+			return &AuthError{
+				StatusCode: http.StatusUnauthorized,
+				Message:    "WebSocket connection unauthorized",
+			}
+		}
 		return fmt.Errorf("failed to connect to WebSocket: %w", err)
 	}
 
@@ -675,6 +701,7 @@ func (c *Client) readPumpWithDisconnectDetection() {
 						logger.Debug("websocket:  connection closed: client was explicitly disconnected")
 						return
 					}
+					
 					// Unexpected error during normal operation
 					if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNormalClosure) {
 						logger.Error("websocket: read error: %v", err)
