@@ -20,13 +20,7 @@ When Olm receives WireGuard control messages, it will use the information encode
 
 ## Hole Punching
 
-In the default mode, olm uses both relaying through Gerbil and NAT hole punching to connect to newt. If you want to disable hole punching, use the `--disable-holepunch` flag. Hole punching attempts to orchestrate a NAT hole punch between the two sites so that traffic flows directly, which can save data costs and improve speed. If hole punching fails, traffic will fall back to relaying through Gerbil.
-
-Right now, basic NAT hole punching is supported. We plan to add:
-
--   [ ] Birthday paradox
--   [ ] UPnP
--   [ ] LAN detection
+In the default mode, olm uses both relaying through Gerbil and NAT hole punching to connect to Newt. Hole punching attempts to orchestrate a NAT traversal between the two sites so that traffic flows directly, which can save data costs and improve speed. If hole punching fails, traffic will fall back to relaying through Gerbil.
 
 ## Build
 

@@ -11,7 +11,7 @@ import (
 )
 
 // ConfigurePeer sets up or updates a peer within the WireGuard device
-func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes.Key, relay bool) error {
+func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes.Key, relay bool, persistentKeepalive int) error {
 	var endpoint string
 	if relay && siteConfig.RelayEndpoint != "" {
 		endpoint = formatEndpoint(siteConfig.RelayEndpoint)
@@ -61,7 +61,7 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 	}
 
 	configBuilder.WriteString(fmt.Sprintf("endpoint=%s\n", siteHost))
-	configBuilder.WriteString("persistent_keepalive_interval=5\n")
+	configBuilder.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", persistentKeepalive))
 
 	config := configBuilder.String()
 	logger.Debug("Configuring peer with config: %s", config)
@@ -129,6 +129,24 @@ func RemoveAllowedIP(dev *device.Device, publicKey string, remainingAllowedIPs [
 	err := dev.IpcSet(config)
 	if err != nil {
 		return fmt.Errorf("failed to remove allowed IP from WireGuard peer: %v", err)
+	}
+
+	return nil
+}
+
+// UpdatePersistentKeepalive updates the persistent keepalive interval for a peer without recreating it
+func UpdatePersistentKeepalive(dev *device.Device, publicKey string, interval int) error {
+	var configBuilder strings.Builder
+	configBuilder.WriteString(fmt.Sprintf("public_key=%s\n", util.FixKey(publicKey)))
+	configBuilder.WriteString("update_only=true\n")
+	configBuilder.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", interval))
+
+	config := configBuilder.String()
+	logger.Debug("Updating persistent keepalive for peer with config: %s", config)
+
+	err := dev.IpcSet(config)
+	if err != nil {
+		return fmt.Errorf("failed to update persistent keepalive for WireGuard peer: %v", err)
 	}
 
 	return nil

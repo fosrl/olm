@@ -7,7 +7,6 @@ import (
 	"net/netip"
 
 	"github.com/fosrl/newt/logger"
-	"github.com/fosrl/olm/dns"
 	platform "github.com/fosrl/olm/dns/platform"
 )
 
@@ -15,11 +14,7 @@ var configurator platform.DNSConfigurator
 
 // SetupDNSOverride configures the system DNS to use the DNS proxy on Linux/FreeBSD
 // Detects the DNS manager by reading /etc/resolv.conf and verifying runtime availability
-func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
-	if dnsProxy == nil {
-		return fmt.Errorf("DNS proxy is nil")
-	}
-
+func SetupDNSOverride(interfaceName string, proxyIp netip.Addr) error {
 	var err error
 
 	// Detect which DNS manager is in use by checking /etc/resolv.conf and runtime availability
@@ -32,7 +27,7 @@ func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
 		configurator, err = platform.NewSystemdResolvedDNSConfigurator(interfaceName)
 		if err == nil {
 			logger.Info("Using systemd-resolved DNS configurator")
-			return setDNS(dnsProxy, configurator)
+			return setDNS(proxyIp, configurator)
 		}
 		logger.Warn("Failed to create systemd-resolved configurator: %v, falling back", err)
 
@@ -40,7 +35,7 @@ func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
 		configurator, err = platform.NewNetworkManagerDNSConfigurator(interfaceName)
 		if err == nil {
 			logger.Info("Using NetworkManager DNS configurator")
-			return setDNS(dnsProxy, configurator)
+			return setDNS(proxyIp, configurator)
 		}
 		logger.Warn("Failed to create NetworkManager configurator: %v, falling back", err)
 
@@ -48,7 +43,7 @@ func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
 		configurator, err = platform.NewResolvconfDNSConfigurator(interfaceName)
 		if err == nil {
 			logger.Info("Using resolvconf DNS configurator")
-			return setDNS(dnsProxy, configurator)
+			return setDNS(proxyIp, configurator)
 		}
 		logger.Warn("Failed to create resolvconf configurator: %v, falling back", err)
 	}
@@ -60,11 +55,11 @@ func SetupDNSOverride(interfaceName string, dnsProxy *dns.DNSProxy) error {
 	}
 
 	logger.Info("Using file-based DNS configurator")
-	return setDNS(dnsProxy, configurator)
+	return setDNS(proxyIp, configurator)
 }
 
 // setDNS is a helper function to set DNS and log the results
-func setDNS(dnsProxy *dns.DNSProxy, conf platform.DNSConfigurator) error {
+func setDNS(proxyIp netip.Addr, conf platform.DNSConfigurator) error {
 	// Get current DNS servers before changing
 	currentDNS, err := conf.GetCurrentDNS()
 	if err != nil {
@@ -75,7 +70,7 @@ func setDNS(dnsProxy *dns.DNSProxy, conf platform.DNSConfigurator) error {
 
 	// Set new DNS servers to point to our proxy
 	newDNS := []netip.Addr{
-		dnsProxy.GetProxyIP(),
+		proxyIp,
 	}
 
 	logger.Info("Setting DNS servers to: %v", newDNS)
