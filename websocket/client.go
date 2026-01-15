@@ -657,8 +657,11 @@ func (c *Client) pingMonitor() {
 			c.configVersionMux.RUnlock()
 
 			pingMsg := WSMessage{
-				Type:          "ping",
-				Data:          map[string]interface{}{},
+				Type: "olm/ping",
+				Data: map[string]any{
+					"timestamp": time.Now().Unix(),
+					"userToken": c.config.UserToken,
+				},
 				ConfigVersion: configVersion,
 			}
 

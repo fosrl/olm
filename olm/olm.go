@@ -60,8 +60,6 @@ type Olm struct {
 	stopRegister   func()
 	updateRegister func(newData any)
 
-	stopServerPing func()
-
 	stopPeerSend func()
 }
 
@@ -332,14 +330,6 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 		o.apiServer.SetConnectionStatus(true)
 
-		// restart the ping if we need to
-		if o.stopServerPing == nil {
-			o.stopServerPing, _ = olmClient.SendMessageInterval("olm/ping", map[string]any{
-				"timestamp": time.Now().Unix(),
-				"userToken": olmClient.GetConfig().UserToken,
-			}, 30*time.Second, -1) // -1 means dont time out with the max attempts
-		}
-
 		if o.connected {
 			logger.Debug("Already connected, skipping registration")
 			return nil
@@ -443,11 +433,6 @@ func (o *Olm) Close() {
 	if o.holePunchManager != nil {
 		o.holePunchManager.Stop()
 		o.holePunchManager = nil
-	}
-
-	if o.stopServerPing != nil {
-		o.stopServerPing()
-		o.stopServerPing = nil
 	}
 
 	if o.stopRegister != nil {
