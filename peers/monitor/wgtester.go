@@ -32,16 +32,19 @@ type Client struct {
 	monitorLock    sync.Mutex
 	connLock       sync.Mutex // Protects connection operations
 	shutdownCh     chan struct{}
+	updateCh       chan struct{}
 	packetInterval time.Duration
 	timeout        time.Duration
 	maxAttempts    int
 	dialer         Dialer
 
 	// Exponential backoff fields
-	minInterval        time.Duration // Minimum interval (initial)
-	maxInterval        time.Duration // Maximum interval (cap for backoff)
-	backoffMultiplier  float64       // Multiplier for each stable check
-	stableCountToBackoff int         // Number of stable checks before backing off
+	defaultMinInterval   time.Duration // Default minimum interval (initial)
+	defaultMaxInterval   time.Duration // Default maximum interval (cap for backoff)
+	minInterval          time.Duration // Minimum interval (initial)
+	maxInterval          time.Duration // Maximum interval (cap for backoff)
+	backoffMultiplier    float64       // Multiplier for each stable check
+	stableCountToBackoff int           // Number of stable checks before backing off
 }
 
 // Dialer is a function that creates a connection
@@ -56,43 +59,59 @@ type ConnectionStatus struct {
 // NewClient creates a new connection test client
 func NewClient(serverAddr string, dialer Dialer) (*Client, error) {
 	return &Client{
-		serverAddr:          serverAddr,
-		shutdownCh:          make(chan struct{}),
-		packetInterval:      2 * time.Second,
-		minInterval:         2 * time.Second,
-		maxInterval:         30 * time.Second,
-		backoffMultiplier:   1.5,
-		stableCountToBackoff: 3, // After 3 consecutive same-state results, start backing off
-		timeout:             500 * time.Millisecond, // Timeout for individual packets
-		maxAttempts:         3,                      // Default max attempts
-		dialer:              dialer,
+		serverAddr:           serverAddr,
+		shutdownCh:           make(chan struct{}),
+		updateCh:             make(chan struct{}, 1),
+		packetInterval:       2 * time.Second,
+		defaultMinInterval:   2 * time.Second,
+		defaultMaxInterval:   30 * time.Second,
+		minInterval:          2 * time.Second,
+		maxInterval:          30 * time.Second,
+		backoffMultiplier:    1.5,
+		stableCountToBackoff: 3,                      // After 3 consecutive same-state results, start backing off
+		timeout:              500 * time.Millisecond, // Timeout for individual packets
+		maxAttempts:          3,                      // Default max attempts
+		dialer:               dialer,
 	}, nil
 }
 
 // SetPacketInterval changes how frequently packets are sent in monitor mode
-func (c *Client) SetPacketInterval(interval time.Duration) {
-	c.packetInterval = interval
-	c.minInterval = interval
+func (c *Client) SetPacketInterval(minInterval, maxInterval time.Duration) {
+	c.monitorLock.Lock()
+	c.packetInterval = minInterval
+	c.minInterval = minInterval
+	c.maxInterval = maxInterval
+	updateCh := c.updateCh
+	monitorRunning := c.monitorRunning
+	c.monitorLock.Unlock()
+
+	// Signal the goroutine to apply the new interval if running
+	if monitorRunning && updateCh != nil {
+		select {
+		case updateCh <- struct{}{}:
+		default:
+			// Channel full or closed, skip
+		}
+	}
 }
 
-// SetTimeout changes the timeout for waiting for responses
-func (c *Client) SetTimeout(timeout time.Duration) {
-	c.timeout = timeout
-}
+func (c *Client) ResetPacketInterval() {
+	c.monitorLock.Lock()
+	c.packetInterval = c.defaultMinInterval
+	c.minInterval = c.defaultMinInterval
+	c.maxInterval = c.defaultMaxInterval
+	updateCh := c.updateCh
+	monitorRunning := c.monitorRunning
+	c.monitorLock.Unlock()
 
-// SetMaxAttempts changes the maximum number of attempts for TestConnection
-func (c *Client) SetMaxAttempts(attempts int) {
-	c.maxAttempts = attempts
-}
-
-// SetMaxInterval sets the maximum backoff interval
-func (c *Client) SetMaxInterval(interval time.Duration) {
-	c.maxInterval = interval
-}
-
-// SetBackoffMultiplier sets the multiplier for exponential backoff
-func (c *Client) SetBackoffMultiplier(multiplier float64) {
-	c.backoffMultiplier = multiplier
+	// Signal the goroutine to apply the new interval if running
+	if monitorRunning && updateCh != nil {
+		select {
+		case updateCh <- struct{}{}:
+		default:
+			// Channel full or closed, skip
+		}
+	}
 }
 
 // UpdateServerAddr updates the server address and resets the connection
@@ -146,9 +165,10 @@ func (c *Client) ensureConnection() error {
 	return nil
 }
 
-// TestConnection checks if the connection to the server is working
+// TestPeerConnection checks if the connection to the server is working
 // Returns true if connected, false otherwise
-func (c *Client) TestConnection(ctx context.Context) (bool, time.Duration) {
+func (c *Client) TestPeerConnection(ctx context.Context) (bool, time.Duration) {
+	logger.Debug("wgtester: testing connection to peer %s", c.serverAddr)
 	if err := c.ensureConnection(); err != nil {
 		logger.Warn("Failed to ensure connection: %v", err)
 		return false, 0
@@ -232,7 +252,7 @@ func (c *Client) TestConnection(ctx context.Context) (bool, time.Duration) {
 func (c *Client) TestConnectionWithTimeout(timeout time.Duration) (bool, time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return c.TestConnection(ctx)
+	return c.TestPeerConnection(ctx)
 }
 
 // MonitorCallback is the function type for connection status change callbacks
@@ -269,9 +289,20 @@ func (c *Client) StartMonitor(callback MonitorCallback) error {
 			select {
 			case <-c.shutdownCh:
 				return
+			case <-c.updateCh:
+				// Interval settings changed, reset to minimum
+				c.monitorLock.Lock()
+				currentInterval = c.minInterval
+				c.monitorLock.Unlock()
+				
+				// Reset backoff state
+				stableCount = 0
+				
+				timer.Reset(currentInterval)
+				logger.Debug("Packet interval updated, reset to %v", currentInterval)
 			case <-timer.C:
 				ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
-				connected, rtt := c.TestConnection(ctx)
+				connected, rtt := c.TestPeerConnection(ctx)
 				cancel()
 
 				statusChanged := connected != lastConnected
