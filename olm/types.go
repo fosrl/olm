@@ -13,7 +13,15 @@ type WgData struct {
 }
 
 type SyncData struct {
-	Sites []peers.SiteConfig `json:"sites"`
+	Sites     []peers.SiteConfig `json:"sites"`
+	ExitNodes []SyncExitNode     `json:"exitNodes"`
+}
+
+type SyncExitNode struct {
+	Endpoint  string `json:"endpoint"`
+	RelayPort uint16 `json:"relayPort"`
+	PublicKey string `json:"publicKey"`
+	SiteIds   []int  `json:"siteIds"`
 }
 
 type OlmConfig struct {
