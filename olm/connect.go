@@ -241,10 +241,25 @@ func (o *Olm) handleOlmError(msg websocket.WSMessage) {
 
 func (o *Olm) handleTerminate(msg websocket.WSMessage) {
 	logger.Info("Received terminate message")
+
+	var errorData OlmErrorData
+
+	jsonData, err := json.Marshal(msg.Data)
+	if err != nil {
+		logger.Error("Error marshaling terminate error data: %v", err)
+	} else {
+		if err := json.Unmarshal(jsonData, &errorData); err != nil {
+			logger.Error("Error unmarshaling terminate error data: %v", err)
+		} else {
+			logger.Info("Terminate reason (code: %s): %s", errorData.Code, errorData.Message)
+			// Set the olm error in the API server so it can be exposed via status
+			o.apiServer.SetOlmError(errorData.Code, errorData.Message)
+		}
+	}
+
 	o.apiServer.SetTerminated(true)
 	o.apiServer.SetConnectionStatus(false)
 	o.apiServer.SetRegistered(false)
-	o.apiServer.ClearOlmError()
 	o.apiServer.ClearPeerStatuses()
 
 	network.ClearNetworkSettings()
