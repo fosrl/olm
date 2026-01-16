@@ -19,6 +19,12 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
+// OlmErrorData represents the error data sent from the server
+type OlmErrorData struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	logger.Debug("Received message: %v", msg.Data)
 
@@ -206,11 +212,39 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	logger.Info("WireGuard device created.")
 }
 
+func (o *Olm) handleOlmError(msg websocket.WSMessage) {
+	logger.Debug("Received olm error message: %v", msg.Data)
+
+	var errorData OlmErrorData
+
+	jsonData, err := json.Marshal(msg.Data)
+	if err != nil {
+		logger.Error("Error marshaling olm error data: %v", err)
+		return
+	}
+
+	if err := json.Unmarshal(jsonData, &errorData); err != nil {
+		logger.Error("Error unmarshaling olm error data: %v", err)
+		return
+	}
+
+	logger.Error("Olm error (code: %s): %s", errorData.Code, errorData.Message)
+
+	// Set the olm error in the API server so it can be exposed via status
+	o.apiServer.SetOlmError(errorData.Code, errorData.Message)
+
+	// Invoke onOlmError callback if configured
+	if o.olmConfig.OnOlmError != nil {
+		go o.olmConfig.OnOlmError(errorData.Code, errorData.Message)
+	}
+}
+
 func (o *Olm) handleTerminate(msg websocket.WSMessage) {
 	logger.Info("Received terminate message")
 	o.apiServer.SetTerminated(true)
 	o.apiServer.SetConnectionStatus(false)
 	o.apiServer.SetRegistered(false)
+	o.apiServer.ClearOlmError()
 	o.apiServer.ClearPeerStatuses()
 
 	network.ClearNetworkSettings()
