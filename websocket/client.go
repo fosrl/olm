@@ -96,9 +96,10 @@ type Client struct {
 	exitNodes         []ExitNode   // Cached exit nodes from token response
 	tokenMux          sync.RWMutex // Protects token and exitNodes
 	forceNewToken     bool         // Flag to force fetching a new token on next connection
-	processingMessage bool         // Flag to track if a message is currently being processed
-	processingMux     sync.RWMutex // Protects processingMessage
-	processingWg      sync.WaitGroup // WaitGroup to wait for message processing to complete
+	processingMessage bool                   // Flag to track if a message is currently being processed
+	processingMux     sync.RWMutex           // Protects processingMessage
+	processingWg      sync.WaitGroup         // WaitGroup to wait for message processing to complete
+	getPingData       func() map[string]any  // Callback to get additional ping data
 }
 
 type ClientOption func(*Client)
@@ -131,6 +132,13 @@ func WithTLSConfig(config TLSConfig) ClientOption {
 		if config.PKCS12File != "" {
 			c.config.TlsClientCert = config.PKCS12File
 		}
+	}
+}
+
+// WithPingDataProvider sets a callback to provide additional data for ping messages
+func WithPingDataProvider(fn func() map[string]any) ClientOption {
+	return func(c *Client) {
+		c.getPingData = fn
 	}
 }
 
@@ -670,12 +678,19 @@ func (c *Client) pingMonitor() {
 			configVersion := c.configVersion
 			c.configVersionMux.RUnlock()
 
+			pingData := map[string]any{
+				"timestamp": time.Now().Unix(),
+				"userToken": c.config.UserToken,
+			}
+			if c.getPingData != nil {
+				for k, v := range c.getPingData() {
+					pingData[k] = v
+				}
+			}
+
 			pingMsg := WSMessage{
-				Type: "olm/ping",
-				Data: map[string]any{
-					"timestamp": time.Now().Unix(),
-					"userToken": c.config.UserToken,
-				},
+				Type:          "olm/ping",
+				Data:          pingData,
 				ConfigVersion: configVersion,
 			}
 
