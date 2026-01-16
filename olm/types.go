@@ -73,5 +73,8 @@ type TunnelConfig struct {
 	OverrideDNS bool
 	TunnelDNS   bool
 
+	InitialFingerprint map[string]any
+	InitialPostures    map[string]any
+
 	DisableRelay bool
 }

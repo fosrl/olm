@@ -59,6 +59,11 @@ type Olm struct {
 	olmConfig    OlmConfig
 	tunnelConfig TunnelConfig
 
+	// Metadata to send alongside pings
+	fingerprint map[string]any
+	postures    map[string]any
+	metaMu      sync.Mutex
+
 	stopRegister   func()
 	updateRegister func(newData any)
 
@@ -240,6 +245,20 @@ func (o *Olm) registerAPICallbacks() {
 			logger.Info("Received switch organization request via HTTP: orgID=%s", req.OrgID)
 			return o.SwitchOrg(req.OrgID)
 		},
+		// onMetadataChange
+		func(req api.MetadataChangeRequest) error {
+			logger.Info("Received change metadata request via API")
+
+			if req.Fingerprint != nil {
+				o.SetFingerprint(req.Fingerprint)
+			}
+
+			if req.Postures != nil {
+				o.SetPostures(req.Postures)
+			}
+
+			return nil
+		},
 		// onDisconnect
 		func() error {
 			logger.Info("Processing disconnect request via API")
@@ -346,12 +365,14 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		if o.stopRegister == nil {
 			logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !config.Holepunch)
 			o.stopRegister, o.updateRegister = o.websocket.SendMessageInterval("olm/wg/register", map[string]any{
-				"publicKey":  publicKey.String(),
-				"relay":      !config.Holepunch,
-				"olmVersion": o.olmConfig.Version,
-				"olmAgent":   o.olmConfig.Agent,
-				"orgId":      config.OrgID,
-				"userToken":  userToken,
+				"publicKey":   publicKey.String(),
+				"relay":       !config.Holepunch,
+				"olmVersion":  o.olmConfig.Version,
+				"olmAgent":    o.olmConfig.Agent,
+				"orgId":       config.OrgID,
+				"userToken":   userToken,
+				"fingerprint": o.fingerprint,
+				"postures":    o.postures,
 			}, 1*time.Second, 10)
 
 			// Invoke onRegistered callback if configured
@@ -411,6 +432,19 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 			go o.olmConfig.OnTerminated()
 		}
 	})
+
+	fingerprint := config.InitialFingerprint
+	if fingerprint == nil {
+		fingerprint = make(map[string]any)
+	}
+
+	postures := config.InitialPostures
+	if postures == nil {
+		postures = make(map[string]any)
+	}
+
+	o.SetFingerprint(fingerprint)
+	o.SetPostures(postures)
 
 	// Connect to the WebSocket server
 	if err := o.websocket.Connect(); err != nil {
@@ -606,6 +640,20 @@ func (o *Olm) SwitchOrg(orgID string) error {
 	go o.StartTunnel(o.tunnelConfig)
 
 	return nil
+}
+
+func (o *Olm) SetFingerprint(data map[string]any) {
+	o.metaMu.Lock()
+	defer o.metaMu.Unlock()
+
+	o.fingerprint = data
+}
+
+func (o *Olm) SetPostures(data map[string]any) {
+	o.metaMu.Lock()
+	defer o.metaMu.Unlock()
+
+	o.postures = data
 }
 
 // SetPowerMode switches between normal and low power modes
