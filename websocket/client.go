@@ -665,6 +665,8 @@ func (c *Client) pingMonitor() {
 				ConfigVersion: configVersion,
 			}
 
+			logger.Debug("++++++++++++++++++++++++++++websocket: Sending ping: %+v", pingMsg)
+
 			c.writeMux.Lock()
 			err := c.conn.WriteJSON(pingMsg)
 			c.writeMux.Unlock()
@@ -695,9 +697,8 @@ func (c *Client) GetConfigVersion() int {
 func (c *Client) setConfigVersion(version int) {
 	c.configVersionMux.Lock()
 	defer c.configVersionMux.Unlock()
-	if version > c.configVersion {
-		c.configVersion = version
-	}
+	logger.Debug("++++++++++++++++++++++++++++websocket: setting config version to %d", version)
+	c.configVersion = version
 }
 
 // readPumpWithDisconnectDetection reads messages and triggers reconnect on error
@@ -748,9 +749,7 @@ func (c *Client) readPumpWithDisconnectDetection() {
 			}
 
 			// Update config version from incoming message
-			if msg.ConfigVersion > 0 {
-				c.setConfigVersion(msg.ConfigVersion)
-			}
+			c.setConfigVersion(msg.ConfigVersion)
 
 			c.handlersMux.RLock()
 			if handler, ok := c.handlers[msg.Type]; ok {

@@ -7,7 +7,9 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fosrl/newt/bind"
@@ -275,6 +277,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	o.tunnelCancel = cancel
 
 	var (
+		err       error
 		id        = config.ID
 		secret    = config.Secret
 		userToken = config.UserToken
@@ -284,8 +287,8 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 	o.apiServer.SetOrgID(config.OrgID)
 
-	// Create a new olmClient client using the provided credentials
-	olmClient, err := websocket.NewClient(
+	// Create a new o.websocket client using the provided credentials
+	o.websocket, err = websocket.NewClient(
 		id,
 		secret,
 		userToken,
@@ -306,26 +309,26 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	}
 
 	// Handlers for managing connection status
-	olmClient.RegisterHandler("olm/wg/connect", o.handleConnect)
-	olmClient.RegisterHandler("olm/terminate", o.handleTerminate)
+	o.websocket.RegisterHandler("olm/wg/connect", o.handleConnect)
+	o.websocket.RegisterHandler("olm/terminate", o.handleTerminate)
 
 	// Handlers for managing peers
-	olmClient.RegisterHandler("olm/wg/peer/add", o.handleWgPeerAdd)
-	olmClient.RegisterHandler("olm/wg/peer/remove", o.handleWgPeerRemove)
-	olmClient.RegisterHandler("olm/wg/peer/update", o.handleWgPeerUpdate)
-	olmClient.RegisterHandler("olm/wg/peer/relay", o.handleWgPeerRelay)
-	olmClient.RegisterHandler("olm/wg/peer/unrelay", o.handleWgPeerUnrelay)
+	o.websocket.RegisterHandler("olm/wg/peer/add", o.handleWgPeerAdd)
+	o.websocket.RegisterHandler("olm/wg/peer/remove", o.handleWgPeerRemove)
+	o.websocket.RegisterHandler("olm/wg/peer/update", o.handleWgPeerUpdate)
+	o.websocket.RegisterHandler("olm/wg/peer/relay", o.handleWgPeerRelay)
+	o.websocket.RegisterHandler("olm/wg/peer/unrelay", o.handleWgPeerUnrelay)
 
 	// Handlers for managing remote subnets to a peer
-	olmClient.RegisterHandler("olm/wg/peer/data/add", o.handleWgPeerAddData)
-	olmClient.RegisterHandler("olm/wg/peer/data/remove", o.handleWgPeerRemoveData)
-	olmClient.RegisterHandler("olm/wg/peer/data/update", o.handleWgPeerUpdateData)
+	o.websocket.RegisterHandler("olm/wg/peer/data/add", o.handleWgPeerAddData)
+	o.websocket.RegisterHandler("olm/wg/peer/data/remove", o.handleWgPeerRemoveData)
+	o.websocket.RegisterHandler("olm/wg/peer/data/update", o.handleWgPeerUpdateData)
 
 	// Handler for peer handshake - adds exit node to holepunch rotation and notifies server
-	olmClient.RegisterHandler("olm/wg/peer/holepunch/site/add", o.handleWgPeerHolepunchAddSite)
-	olmClient.RegisterHandler("olm/sync", o.handleSync)
+	o.websocket.RegisterHandler("olm/wg/peer/holepunch/site/add", o.handleWgPeerHolepunchAddSite)
+	o.websocket.RegisterHandler("olm/sync", o.handleSync)
 
-	olmClient.OnConnect(func() error {
+	o.websocket.OnConnect(func() error {
 		logger.Info("Websocket Connected")
 
 		o.apiServer.SetConnectionStatus(true)
@@ -342,7 +345,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 		if o.stopRegister == nil {
 			logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !config.Holepunch)
-			o.stopRegister, o.updateRegister = olmClient.SendMessageInterval("olm/wg/register", map[string]any{
+			o.stopRegister, o.updateRegister = o.websocket.SendMessageInterval("olm/wg/register", map[string]any{
 				"publicKey":  publicKey.String(),
 				"relay":      !config.Holepunch,
 				"olmVersion": o.olmConfig.Version,
@@ -360,7 +363,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		return nil
 	})
 
-	olmClient.OnTokenUpdate(func(token string, exitNodes []websocket.ExitNode) {
+	o.websocket.OnTokenUpdate(func(token string, exitNodes []websocket.ExitNode) {
 		o.holePunchManager.SetToken(token)
 
 		logger.Debug("Got exit nodes for hole punching: %v", exitNodes)
@@ -390,7 +393,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		}
 	})
 
-	olmClient.OnAuthError(func(statusCode int, message string) {
+	o.websocket.OnAuthError(func(statusCode int, message string) {
 		logger.Error("Authentication error (status %d): %s. Terminating tunnel.", statusCode, message)
 		o.apiServer.SetTerminated(true)
 		o.apiServer.SetConnectionStatus(false)
@@ -410,13 +413,41 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	})
 
 	// Connect to the WebSocket server
-	if err := olmClient.Connect(); err != nil {
+	if err := o.websocket.Connect(); err != nil {
 		logger.Error("Failed to connect to server: %v", err)
 		return
 	}
-	defer func() { _ = olmClient.Close() }()
+	defer func() { _ = o.websocket.Close() }()
 
-	o.websocket = olmClient
+	// Setup SIGHUP signal handler for testing (toggles power state)
+	// THIS SHOULD ONLY BE USED AND ON IN A DEV MODE
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGHUP)
+
+	go func() {
+		powerMode := "normal"
+		for {
+			select {
+			case <-sigChan:
+	
+			logger.Info("SIGHUP received, toggling power mode")
+			if powerMode == "normal" {
+				powerMode = "low"
+				if err := o.SetPowerMode("low"); err != nil {
+					logger.Error("Failed to set low power mode: %v", err)
+				}
+			} else {
+				powerMode = "normal"
+				if err := o.SetPowerMode("normal"); err != nil {
+					logger.Error("Failed to set normal power mode: %v", err)
+				}
+			}
+	
+			case <-tunnelCtx.Done():
+				return
+			}
+		}
+	}()
 
 	// Wait for context cancellation
 	<-tunnelCtx.Done()
