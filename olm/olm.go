@@ -315,6 +315,14 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		config.Endpoint,
 		30, // 30 seconds
 		config.PingTimeoutDuration,
+		websocket.WithPingDataProvider(func() map[string]any {
+			o.metaMu.Lock()
+			defer o.metaMu.Unlock()
+			return map[string]any{
+				"fingerprint": o.fingerprint,
+				"postures":    o.postures,
+			}
+		}),
 	)
 	if err != nil {
 		logger.Error("Failed to create olm: %v", err)
