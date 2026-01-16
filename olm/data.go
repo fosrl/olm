@@ -137,7 +137,7 @@ func (o *Olm) handleWgPeerUpdateData(msg websocket.WSMessage) {
 
 // Handler for syncing peer configuration - reconciles expected state with actual state
 func (o *Olm) handleSync(msg websocket.WSMessage) {
-	logger.Debug("++++++++++++++++++++++++++++Received sync message: %v", msg.Data)
+	logger.Debug("Received sync message: %v", msg.Data)
 
 	if !o.connected {
 		logger.Warn("Not connected, ignoring sync request")

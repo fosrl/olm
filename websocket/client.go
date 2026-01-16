@@ -679,7 +679,7 @@ func (c *Client) pingMonitor() {
 				ConfigVersion: configVersion,
 			}
 
-			logger.Debug("++++++++++++++++++++++++++++websocket: Sending ping: %+v", pingMsg)
+			logger.Debug("websocket: Sending ping: %+v", pingMsg)
 
 			c.writeMux.Lock()
 			err := c.conn.WriteJSON(pingMsg)
@@ -711,7 +711,7 @@ func (c *Client) GetConfigVersion() int {
 func (c *Client) setConfigVersion(version int) {
 	c.configVersionMux.Lock()
 	defer c.configVersionMux.Unlock()
-	logger.Debug("++++++++++++++++++++++++++++websocket: setting config version to %d", version)
+	logger.Debug("websocket: setting config version to %d", version)
 	c.configVersion = version
 }
 
