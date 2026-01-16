@@ -313,7 +313,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		userToken,
 		config.OrgID,
 		config.Endpoint,
-		config.PingIntervalDuration,
+		30, // 30 seconds
 		config.PingTimeoutDuration,
 	)
 	if err != nil {
