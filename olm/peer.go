@@ -2,7 +2,9 @@ package olm
 
 import (
 	"encoding/json"
+	"time"
 
+	"github.com/fosrl/newt/holepunch"
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/util"
 	"github.com/fosrl/olm/peers"
@@ -192,4 +194,65 @@ func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 	o.apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.Endpoint, false)
 
 	o.peerManager.UnRelayPeer(relayData.SiteId, primaryRelay)
+}
+
+func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
+	logger.Debug("Received peer-handshake message: %v", msg.Data)
+
+	jsonData, err := json.Marshal(msg.Data)
+	if err != nil {
+		logger.Error("Error marshaling handshake data: %v", err)
+		return
+	}
+
+	var handshakeData struct {
+		SiteId   int `json:"siteId"`
+		ExitNode struct {
+			PublicKey string `json:"publicKey"`
+			Endpoint  string `json:"endpoint"`
+			RelayPort uint16 `json:"relayPort"`
+		} `json:"exitNode"`
+	}
+
+	if err := json.Unmarshal(jsonData, &handshakeData); err != nil {
+		logger.Error("Error unmarshaling handshake data: %v", err)
+		return
+	}
+
+	// Get existing peer from PeerManager
+	_, exists := o.peerManager.GetPeer(handshakeData.SiteId)
+	if exists {
+		logger.Warn("Peer with site ID %d already added", handshakeData.SiteId)
+		return
+	}
+
+	relayPort := handshakeData.ExitNode.RelayPort
+	if relayPort == 0 {
+		relayPort = 21820 // default relay port
+	}
+
+	siteId := handshakeData.SiteId
+	exitNode := holepunch.ExitNode{
+		Endpoint:  handshakeData.ExitNode.Endpoint,
+		RelayPort: relayPort,
+		PublicKey: handshakeData.ExitNode.PublicKey,
+		SiteIds:   []int{siteId},
+	}
+
+	added := o.holePunchManager.AddExitNode(exitNode)
+	if added {
+		logger.Info("Added exit node %s to holepunch rotation for handshake", exitNode.Endpoint)
+	} else {
+		logger.Debug("Exit node %s already in holepunch rotation", exitNode.Endpoint)
+	}
+
+	o.holePunchManager.TriggerHolePunch()             // Trigger immediate hole punch attempt
+	o.holePunchManager.ResetServerHolepunchInterval() // start sending immediately again so we fill in the endpoint on the cloud
+
+	// Send handshake acknowledgment back to server with retry
+	o.stopPeerSend, _ = o.websocket.SendMessageInterval("olm/wg/server/peer/add", map[string]interface{}{
+		"siteId": handshakeData.SiteId,
+	}, 1*time.Second, 10)
+
+	logger.Info("Initiated handshake for site %d with exit node %s", handshakeData.SiteId, handshakeData.ExitNode.Endpoint)
 }

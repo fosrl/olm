@@ -96,6 +96,9 @@ type Client struct {
 	exitNodes         []ExitNode   // Cached exit nodes from token response
 	tokenMux          sync.RWMutex // Protects token and exitNodes
 	forceNewToken     bool         // Flag to force fetching a new token on next connection
+	processingMessage bool         // Flag to track if a message is currently being processed
+	processingMux     sync.RWMutex // Protects processingMessage
+	processingWg      sync.WaitGroup // WaitGroup to wait for message processing to complete
 }
 
 type ClientOption func(*Client)
@@ -221,6 +224,9 @@ func (c *Client) Close() error {
 func (c *Client) Disconnect() error {
 	c.isDisconnected = true
 	c.setConnected(false)
+
+	// Wait for any message currently being processed to complete
+	c.processingWg.Wait()
 
 	if c.conn != nil {
 		c.writeMux.Lock()
@@ -651,6 +657,14 @@ func (c *Client) pingMonitor() {
 			if c.isDisconnected || c.conn == nil {
 				return
 			}
+			// Skip ping if a message is currently being processed
+			c.processingMux.RLock()
+			isProcessing := c.processingMessage
+			c.processingMux.RUnlock()
+			if isProcessing {
+				logger.Debug("websocket: Skipping ping, message is being processed")
+				continue
+			}
 			// Send application-level ping with config version
 			c.configVersionMux.RLock()
 			configVersion := c.configVersion
@@ -753,7 +767,19 @@ func (c *Client) readPumpWithDisconnectDetection() {
 
 			c.handlersMux.RLock()
 			if handler, ok := c.handlers[msg.Type]; ok {
+				// Mark that we're processing a message
+				c.processingMux.Lock()
+				c.processingMessage = true
+				c.processingMux.Unlock()
+				c.processingWg.Add(1)
+
 				handler(msg)
+
+				// Mark that we're done processing
+				c.processingWg.Done()
+				c.processingMux.Lock()
+				c.processingMessage = false
+				c.processingMux.Unlock()
 			}
 			c.handlersMux.RUnlock()
 		}
