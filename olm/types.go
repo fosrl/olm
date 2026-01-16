@@ -23,6 +23,8 @@ type OlmConfig struct {
 	SocketPath string
 	Version    string
 	Agent      string
+	
+	WakeUpDebounce time.Duration
 
 	// Debugging
 	PprofAddr string // Address to serve pprof on (e.g., "localhost:6060")
