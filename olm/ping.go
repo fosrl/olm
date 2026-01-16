@@ -8,11 +8,12 @@ import (
 	"github.com/fosrl/olm/websocket"
 )
 
-func sendPing(olm *websocket.Client) error {
-	logger.Debug("Sending ping message")
+func (o *Olm) sendPing(olm *websocket.Client) error {
 	err := olm.SendMessage("olm/ping", map[string]any{
-		"timestamp": time.Now().Unix(),
-		"userToken": olm.GetConfig().UserToken,
+		"timestamp":   time.Now().Unix(),
+		"userToken":   olm.GetConfig().UserToken,
+		"fingerprint": o.fingerprint,
+		"postures":    o.postures,
 	})
 	if err != nil {
 		logger.Error("Failed to send ping message: %v", err)
@@ -24,7 +25,7 @@ func sendPing(olm *websocket.Client) error {
 
 func (o *Olm) keepSendingPing(olm *websocket.Client) {
 	// Send ping immediately on startup
-	if err := sendPing(olm); err != nil {
+	if err := o.sendPing(olm); err != nil {
 		logger.Error("Failed to send initial ping: %v", err)
 	} else {
 		logger.Info("Sent initial ping message")
@@ -40,7 +41,7 @@ func (o *Olm) keepSendingPing(olm *websocket.Client) {
 			logger.Info("Stopping ping messages")
 			return
 		case <-ticker.C:
-			if err := sendPing(olm); err != nil {
+			if err := o.sendPing(olm); err != nil {
 				logger.Error("Failed to send periodic ping: %v", err)
 			}
 		}

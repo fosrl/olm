@@ -7,6 +7,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/fosrl/newt/bind"
@@ -50,6 +51,11 @@ type Olm struct {
 
 	olmConfig    OlmConfig
 	tunnelConfig TunnelConfig
+
+	// Metadata to send alongside pings
+	fingerprint map[string]any
+	postures    map[string]any
+	metaMu      sync.Mutex
 
 	stopRegister   func()
 	stopPeerSend   func()
@@ -229,6 +235,20 @@ func (o *Olm) registerAPICallbacks() {
 			logger.Info("Received switch organization request via HTTP: orgID=%s", req.OrgID)
 			return o.SwitchOrg(req.OrgID)
 		},
+		// onMetadataChange
+		func(req api.MetadataChangeRequest) error {
+			logger.Info("Received change metadata request via API")
+
+			if req.Fingerprint != nil {
+				o.SetFingerprint(req.Fingerprint)
+			}
+
+			if req.Postures != nil {
+				o.SetPostures(req.Postures)
+			}
+
+			return nil
+		},
 		// onDisconnect
 		func() error {
 			logger.Info("Processing disconnect request via API")
@@ -336,12 +356,14 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		if o.stopRegister == nil {
 			logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !config.Holepunch)
 			o.stopRegister, o.updateRegister = olmClient.SendMessageInterval("olm/wg/register", map[string]any{
-				"publicKey":  publicKey.String(),
-				"relay":      !config.Holepunch,
-				"olmVersion": o.olmConfig.Version,
-				"olmAgent":   o.olmConfig.Agent,
-				"orgId":      config.OrgID,
-				"userToken":  userToken,
+				"publicKey":   publicKey.String(),
+				"relay":       !config.Holepunch,
+				"olmVersion":  o.olmConfig.Version,
+				"olmAgent":    o.olmConfig.Agent,
+				"orgId":       config.OrgID,
+				"userToken":   userToken,
+				"fingerprint": o.fingerprint,
+				"postures":    o.postures,
 			}, 1*time.Second)
 
 			// Invoke onRegistered callback if configured
@@ -403,6 +425,19 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 			go o.olmConfig.OnTerminated()
 		}
 	})
+
+	fingerprint := config.InitialFingerprint
+	if fingerprint == nil {
+		fingerprint = make(map[string]any)
+	}
+
+	postures := config.InitialPostures
+	if postures == nil {
+		postures = make(map[string]any)
+	}
+
+	o.SetFingerprint(fingerprint)
+	o.SetPostures(postures)
 
 	// Connect to the WebSocket server
 	if err := olmClient.Connect(); err != nil {
@@ -577,28 +612,16 @@ func (o *Olm) SwitchOrg(orgID string) error {
 	return nil
 }
 
-func (o *Olm) AddDevice(fd uint32) error {
-	if o.middleDev == nil {
-		return fmt.Errorf("middle device is not initialized")
-	}
+func (o *Olm) SetFingerprint(data map[string]any) {
+	o.metaMu.Lock()
+	defer o.metaMu.Unlock()
 
-	if o.tunnelConfig.MTU == 0 {
-		return fmt.Errorf("tunnel MTU is not set")
-	}
+	o.fingerprint = data
+}
 
-	tdev, err := olmDevice.CreateTUNFromFD(fd, o.tunnelConfig.MTU)
-	if err != nil {
-		return fmt.Errorf("failed to create TUN device from fd: %v", err)
-	}
+func (o *Olm) SetPostures(data map[string]any) {
+	o.metaMu.Lock()
+	defer o.metaMu.Unlock()
 
-	// Update interface name if available
-	if realInterfaceName, err2 := tdev.Name(); err2 == nil {
-		o.tunnelConfig.InterfaceName = realInterfaceName
-	}
-
-	// Replace the existing TUN device in the middle device with the new one
-	o.middleDev.AddDevice(tdev)
-
-	logger.Info("Added device from file descriptor %d", fd)
-	return nil
+	o.postures = data
 }
