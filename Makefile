@@ -17,6 +17,12 @@ docker-build-release:
 		-f Dockerfile \
 		--push
 
+docker-build-dev:
+	docker buildx build . \
+		--platform linux/arm/v7,linux/arm64,linux/amd64 \
+		-t fosrl/olm:latest \
+		-f Dockerfile
+
 .PHONY: go-build-release \
         go-build-release-linux-arm64 go-build-release-linux-arm32-v7 \
         go-build-release-linux-arm32-v6 go-build-release-linux-amd64 \
