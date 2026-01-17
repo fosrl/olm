@@ -56,3 +56,6 @@ go-build-release-darwin-amd64:
 
 go-build-release-windows-amd64:
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o bin/olm_windows_amd64.exe
+
+dev-build:
+	docker build -t fosrl/olm:latest .
