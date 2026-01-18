@@ -660,6 +660,59 @@ func (c *Client) setupPKCS12TLS() (*tls.Config, error) {
 	return loadClientCertificate(c.tlsConfig.PKCS12File)
 }
 
+// sendPing sends a single ping message
+func (c *Client) sendPing() {
+	if c.isDisconnected || c.conn == nil {
+		return
+	}
+	// Skip ping if a message is currently being processed
+	c.processingMux.RLock()
+	isProcessing := c.processingMessage
+	c.processingMux.RUnlock()
+	if isProcessing {
+		logger.Debug("websocket: Skipping ping, message is being processed")
+		return
+	}
+	// Send application-level ping with config version
+	c.configVersionMux.RLock()
+	configVersion := c.configVersion
+	c.configVersionMux.RUnlock()
+
+	pingData := map[string]any{
+		"timestamp": time.Now().Unix(),
+		"userToken": c.config.UserToken,
+	}
+	if c.getPingData != nil {
+		for k, v := range c.getPingData() {
+			pingData[k] = v
+		}
+	}
+
+	pingMsg := WSMessage{
+		Type:          "olm/ping",
+		Data:          pingData,
+		ConfigVersion: configVersion,
+	}
+
+	logger.Debug("websocket: Sending ping: %+v", pingMsg)
+
+	c.writeMux.Lock()
+	err := c.conn.WriteJSON(pingMsg)
+	c.writeMux.Unlock()
+	if err != nil {
+		// Check if we're shutting down before logging error and reconnecting
+		select {
+		case <-c.done:
+			// Expected during shutdown
+			return
+		default:
+			logger.Error("websocket: Ping failed: %v", err)
+			c.reconnect()
+			return
+		}
+	}
+}
+
 // pingMonitor sends pings at a short interval and triggers reconnect on failure
 func (c *Client) pingMonitor() {
 	ticker := time.NewTicker(c.pingInterval)
@@ -670,55 +723,7 @@ func (c *Client) pingMonitor() {
 		case <-c.done:
 			return
 		case <-ticker.C:
-			if c.isDisconnected || c.conn == nil {
-				return
-			}
-			// Skip ping if a message is currently being processed
-			c.processingMux.RLock()
-			isProcessing := c.processingMessage
-			c.processingMux.RUnlock()
-			if isProcessing {
-				logger.Debug("websocket: Skipping ping, message is being processed")
-				continue
-			}
-			// Send application-level ping with config version
-			c.configVersionMux.RLock()
-			configVersion := c.configVersion
-			c.configVersionMux.RUnlock()
-
-			pingData := map[string]any{
-				"timestamp": time.Now().Unix(),
-				"userToken": c.config.UserToken,
-			}
-			if c.getPingData != nil {
-				for k, v := range c.getPingData() {
-					pingData[k] = v
-				}
-			}
-
-			pingMsg := WSMessage{
-				Type:          "olm/ping",
-				Data:          pingData,
-				ConfigVersion: configVersion,
-			}
-
-			logger.Debug("websocket: Sending ping: %+v", pingMsg)
-
-			c.writeMux.Lock()
-			err := c.conn.WriteJSON(pingMsg)
-			c.writeMux.Unlock()
-			if err != nil {
-				// Check if we're shutting down before logging error and reconnecting
-				select {
-				case <-c.done:
-					// Expected during shutdown
-					return
-				default:
-					logger.Error("websocket: Ping failed: %v", err)
-					c.reconnect()
-					return
-				}
-			}
+			c.sendPing()
 		}
 	}
 }
@@ -734,7 +739,12 @@ func (c *Client) StartPingMonitor() {
 		return
 	}
 	c.pingStarted = true
-	go c.pingMonitor()
+	
+	// Send an initial ping immediately
+	go func() {
+		c.sendPing()
+		c.pingMonitor()
+	}()
 }
 
 // GetConfigVersion returns the current config version
