@@ -198,6 +198,9 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 
 	o.connected = true
 
+	// Start ping monitor now that we are registered and connected
+	o.websocket.StartPingMonitor()
+
 	// Invoke onConnected callback if configured
 	if o.olmConfig.OnConnected != nil {
 		go o.olmConfig.OnConnected()

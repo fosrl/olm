@@ -100,6 +100,8 @@ type Client struct {
 	processingMux     sync.RWMutex           // Protects processingMessage
 	processingWg      sync.WaitGroup         // WaitGroup to wait for message processing to complete
 	getPingData       func() map[string]any  // Callback to get additional ping data
+	pingStarted       bool                   // Flag to track if ping monitor has been started
+	pingStartedMux    sync.Mutex             // Protects pingStarted
 }
 
 type ClientOption func(*Client)
@@ -575,8 +577,14 @@ func (c *Client) establishConnection() error {
 	c.conn = conn
 	c.setConnected(true)
 
-	// Start the ping monitor
-	go c.pingMonitor()
+	// Reset ping started flag on new connection
+	c.pingStartedMux.Lock()
+	c.pingStarted = false
+	c.pingStartedMux.Unlock()
+
+	// Note: ping monitor is NOT started here - it will be started when
+	// StartPingMonitor() is called after registration completes
+
 	// Start the read pump with disconnect detection
 	go c.readPumpWithDisconnectDetection()
 
@@ -713,6 +721,20 @@ func (c *Client) pingMonitor() {
 			}
 		}
 	}
+}
+
+// StartPingMonitor starts the ping monitor goroutine.
+// This should be called after the client is registered and connected.
+// It is safe to call multiple times - only the first call will start the monitor.
+func (c *Client) StartPingMonitor() {
+	c.pingStartedMux.Lock()
+	defer c.pingStartedMux.Unlock()
+	
+	if c.pingStarted {
+		return
+	}
+	c.pingStarted = true
+	go c.pingMonitor()
 }
 
 // GetConfigVersion returns the current config version
