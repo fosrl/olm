@@ -78,6 +78,7 @@ type API struct {
 	onMetadataChange func(MetadataChangeRequest) error
 	onDisconnect     func() error
 	onExit           func() error
+	onRebind         func() error
 
 	statusMu     sync.RWMutex
 	peerStatuses map[int]*PeerStatus
@@ -126,11 +127,13 @@ func (s *API) SetHandlers(
 	onMetadataChange func(MetadataChangeRequest) error,
 	onDisconnect func() error,
 	onExit func() error,
+	onRebind func() error,
 ) {
 	s.onConnect = onConnect
 	s.onSwitchOrg = onSwitchOrg
 	s.onDisconnect = onDisconnect
 	s.onExit = onExit
+	s.onRebind = onRebind
 }
 
 // Start starts the HTTP server
@@ -147,6 +150,7 @@ func (s *API) Start() error {
 	mux.HandleFunc("/disconnect", s.handleDisconnect)
 	mux.HandleFunc("/exit", s.handleExit)
 	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/rebind", s.handleRebind)
 
 	s.server = &http.Server{
 		Handler: mux,
@@ -559,4 +563,34 @@ func (s *API) GetStatus() StatusResponse {
 		PeerStatuses:    s.peerStatuses,
 		NetworkSettings: network.GetSettings(),
 	}
+}
+
+// handleRebind handles the /rebind endpoint
+// This triggers a socket rebind, which is necessary when network connectivity changes
+// (e.g., WiFi to cellular transition on macOS/iOS) and the old socket becomes stale.
+func (s *API) handleRebind(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	logger.Info("Received rebind request via API")
+
+	// Call the rebind handler if set
+	if s.onRebind != nil {
+		if err := s.onRebind(); err != nil {
+			http.Error(w, fmt.Sprintf("Rebind failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		http.Error(w, "Rebind handler not configured", http.StatusNotImplemented)
+		return
+	}
+
+	// Return a success response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status": "socket rebound successfully",
+	})
 }
