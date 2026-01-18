@@ -168,7 +168,7 @@ func (c *Client) ensureConnection() error {
 // TestPeerConnection checks if the connection to the server is working
 // Returns true if connected, false otherwise
 func (c *Client) TestPeerConnection(ctx context.Context) (bool, time.Duration) {
-	logger.Debug("wgtester: testing connection to peer %s", c.serverAddr)
+	// logger.Debug("wgtester: testing connection to peer %s", c.serverAddr)
 	if err := c.ensureConnection(); err != nil {
 		logger.Warn("Failed to ensure connection: %v", err)
 		return false, 0

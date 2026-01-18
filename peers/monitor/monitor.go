@@ -580,7 +580,7 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() bool {
 	anyStatusChanged := false
 
 	for siteID, endpoint := range endpoints {
-		logger.Debug("holepunchTester: testing endpoint for site %d: %s", siteID, endpoint)
+		// logger.Debug("holepunchTester: testing endpoint for site %d: %s", siteID, endpoint)
 		result := pm.holepunchTester.TestEndpoint(endpoint, timeout)
 
 		pm.mutex.Lock()
