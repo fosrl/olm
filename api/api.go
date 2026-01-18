@@ -33,7 +33,12 @@ type ConnectionRequest struct {
 
 // SwitchOrgRequest defines the structure for switching organizations
 type SwitchOrgRequest struct {
-	OrgID string `json:"orgId"`
+	OrgID string `json:"org_id"`
+}
+
+// PowerModeRequest represents a request to change power mode
+type PowerModeRequest struct {
+	Mode string `json:"mode"` // "normal" or "low"
 }
 
 // PeerStatus represents the status of a peer connection
@@ -86,6 +91,7 @@ type API struct {
 	onDisconnect     func() error
 	onExit           func() error
 	onRebind         func() error
+	onPowerMode      func(PowerModeRequest) error
 
 	statusMu     sync.RWMutex
 	peerStatuses map[int]*PeerStatus
@@ -136,12 +142,15 @@ func (s *API) SetHandlers(
 	onDisconnect func() error,
 	onExit func() error,
 	onRebind func() error,
+	onPowerMode func(PowerModeRequest) error,
 ) {
 	s.onConnect = onConnect
 	s.onSwitchOrg = onSwitchOrg
+	s.onMetadataChange = onMetadataChange
 	s.onDisconnect = onDisconnect
 	s.onExit = onExit
 	s.onRebind = onRebind
+	s.onPowerMode = onPowerMode
 }
 
 // Start starts the HTTP server
@@ -159,6 +168,7 @@ func (s *API) Start() error {
 	mux.HandleFunc("/exit", s.handleExit)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/rebind", s.handleRebind)
+	mux.HandleFunc("/power-mode", s.handlePowerMode)
 
 	s.server = &http.Server{
 		Handler: mux,
@@ -623,5 +633,46 @@ func (s *API) handleRebind(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "socket rebound successfully",
+	})
+}
+
+// handlePowerMode handles the /power-mode endpoint
+// This allows changing the power mode between "normal" and "low"
+func (s *API) handlePowerMode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req PowerModeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Validate power mode
+	if req.Mode != "normal" && req.Mode != "low" {
+		http.Error(w, "Invalid power mode: must be 'normal' or 'low'", http.StatusBadRequest)
+		return
+	}
+
+	logger.Info("Received power mode change request via API: mode=%s", req.Mode)
+
+	// Call the power mode handler if set
+	if s.onPowerMode != nil {
+		if err := s.onPowerMode(req); err != nil {
+			http.Error(w, fmt.Sprintf("Power mode change failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		http.Error(w, "Power mode handler not configured", http.StatusNotImplemented)
+		return
+	}
+
+	// Return a success response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status": fmt.Sprintf("power mode changed to %s successfully", req.Mode),
 	})
 }
