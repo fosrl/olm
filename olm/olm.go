@@ -7,9 +7,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/fosrl/newt/bind"
@@ -278,6 +276,11 @@ func (o *Olm) registerAPICallbacks() {
 			logger.Info("Processing rebind request via API")
 			return o.RebindSocket()
 		},
+		// onPowerMode
+		func(req api.PowerModeRequest) error {
+			logger.Info("Processing power mode change request via API: mode=%s", req.Mode)
+			return o.SetPowerMode(req.Mode)
+		},
 	)
 }
 
@@ -469,36 +472,6 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		return
 	}
 	defer func() { _ = o.websocket.Close() }()
-
-	// Setup SIGHUP signal handler for testing (toggles power state)
-	// THIS SHOULD ONLY BE USED AND ON IN A DEV MODE
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGHUP)
-
-	go func() {
-		powerMode := "normal"
-		for {
-			select {
-			case <-sigChan:
-
-				logger.Info("SIGHUP received, toggling power mode")
-				if powerMode == "normal" {
-					powerMode = "low"
-					if err := o.SetPowerMode("low"); err != nil {
-						logger.Error("Failed to set low power mode: %v", err)
-					}
-				} else {
-					powerMode = "normal"
-					if err := o.SetPowerMode("normal"); err != nil {
-						logger.Error("Failed to set normal power mode: %v", err)
-					}
-				}
-
-			case <-tunnelCtx.Done():
-				return
-			}
-		}
-	}()
 
 	// Wait for context cancellation
 	<-tunnelCtx.Done()
