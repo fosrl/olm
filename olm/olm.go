@@ -797,17 +797,19 @@ func (o *Olm) RebindSocket() error {
 		return fmt.Errorf("shared bind is not initialized")
 	}
 
-	// Get the current port so we can try to reuse it
-	currentPort := o.sharedBind.GetPort()
+	// Close the old socket first to release the port, then try to rebind to the same port
+	currentPort, err := o.sharedBind.CloseSocket()
+	if err != nil {
+		return fmt.Errorf("failed to close old socket: %w", err)
+	}
 
-	logger.Info("Rebinding UDP socket (current port: %d)", currentPort)
+	logger.Info("Rebinding UDP socket (released port: %d)", currentPort)
 
 	// Create a new UDP socket
 	var newConn *net.UDPConn
 	var newPort uint16
-	var err error
 
-	// First try to bind to the same port
+	// First try to bind to the same port (now available since we closed the old socket)
 	localAddr := &net.UDPAddr{
 		Port: int(currentPort),
 		IP:   net.IPv4zero,
