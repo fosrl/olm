@@ -49,11 +49,18 @@ type PeerStatus struct {
 	HolepunchConnected bool          `json:"holepunchConnected"`
 }
 
+// OlmError holds error information from registration failures
+type OlmError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 // StatusResponse is returned by the status endpoint
 type StatusResponse struct {
 	Connected       bool                    `json:"connected"`
 	Registered      bool                    `json:"registered"`
 	Terminated      bool                    `json:"terminated"`
+	OlmError        *OlmError               `json:"error,omitempty"`
 	Version         string                  `json:"version,omitempty"`
 	Agent           string                  `json:"agent,omitempty"`
 	OrgID           string                  `json:"orgId,omitempty"`
@@ -86,6 +93,7 @@ type API struct {
 	isConnected  bool
 	isRegistered bool
 	isTerminated bool
+	olmError     *OlmError
 
 	version string
 	agent   string
@@ -141,7 +149,7 @@ func (s *API) Start() error {
 	if s.socketPath == "" && s.addr == "" {
 		return fmt.Errorf("either socketPath or addr must be provided to start the API server")
 	}
-	
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", s.handleConnect)
 	mux.HandleFunc("/status", s.handleStatus)
@@ -264,6 +272,27 @@ func (s *API) SetRegistered(registered bool) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	s.isRegistered = registered
+	// Clear any registration error when successfully registered
+	if registered {
+		s.olmError = nil
+	}
+}
+
+// SetOlmError sets the registration error
+func (s *API) SetOlmError(code string, message string) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.olmError = &OlmError{
+		Code:    code,
+		Message: message,
+	}
+}
+
+// ClearOlmError clears any registration error
+func (s *API) ClearOlmError() {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.olmError = nil
 }
 
 func (s *API) SetTerminated(terminated bool) {
@@ -391,6 +420,7 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Connected:       s.isConnected,
 		Registered:      s.isRegistered,
 		Terminated:      s.isTerminated,
+		OlmError:        s.olmError,
 		Version:         s.version,
 		Agent:           s.agent,
 		OrgID:           s.orgID,
@@ -557,6 +587,7 @@ func (s *API) GetStatus() StatusResponse {
 		Connected:       s.isConnected,
 		Registered:      s.isRegistered,
 		Terminated:      s.isTerminated,
+		OlmError:        s.olmError,
 		Version:         s.version,
 		Agent:           s.agent,
 		OrgID:           s.orgID,
