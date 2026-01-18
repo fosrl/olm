@@ -273,6 +273,11 @@ func (o *Olm) registerAPICallbacks() {
 			}
 			return nil
 		},
+		// onRebind
+		func() error {
+			logger.Info("Processing rebind request via API")
+			return o.RebindSocket()
+		},
 	)
 }
 
@@ -780,6 +785,74 @@ func (o *Olm) SetPowerMode(mode string) error {
 			o.currentPowerMode = "normal"
 			logger.Info("Switched to normal power mode")
 		})
+	}
+
+	return nil
+}
+
+// RebindSocket recreates the UDP socket when network connectivity changes.
+// This is necessary on macOS/iOS when transitioning between WiFi and cellular,
+// as the old socket becomes stale and can no longer route packets.
+// Call this method when detecting a network path change.
+func (o *Olm) RebindSocket() error {
+	if o.sharedBind == nil {
+		return fmt.Errorf("shared bind is not initialized")
+	}
+
+	// Close the old socket first to release the port, then try to rebind to the same port
+	currentPort, err := o.sharedBind.CloseSocket()
+	if err != nil {
+		return fmt.Errorf("failed to close old socket: %w", err)
+	}
+
+	logger.Info("Rebinding UDP socket (released port: %d)", currentPort)
+
+	// Create a new UDP socket
+	var newConn *net.UDPConn
+	var newPort uint16
+
+	// First try to bind to the same port (now available since we closed the old socket)
+	localAddr := &net.UDPAddr{
+		Port: int(currentPort),
+		IP:   net.IPv4zero,
+	}
+
+	newConn, err = net.ListenUDP("udp4", localAddr)
+	if err != nil {
+		// If we can't reuse the port, find a new one
+		logger.Warn("Could not rebind to port %d, finding new port: %v", currentPort, err)
+		newPort, err = util.FindAvailableUDPPort(49152, 65535)
+		if err != nil {
+			return fmt.Errorf("failed to find available UDP port: %w", err)
+		}
+
+		localAddr = &net.UDPAddr{
+			Port: int(newPort),
+			IP:   net.IPv4zero,
+		}
+
+		// Use udp4 explicitly to avoid IPv6 dual-stack issues
+		newConn, err = net.ListenUDP("udp4", localAddr)
+		if err != nil {
+			return fmt.Errorf("failed to create new UDP socket: %w", err)
+		}
+	} else {
+		newPort = currentPort
+	}
+
+	// Rebind the shared bind with the new connection
+	if err := o.sharedBind.Rebind(newConn); err != nil {
+		newConn.Close()
+		return fmt.Errorf("failed to rebind shared bind: %w", err)
+	}
+
+	logger.Info("Successfully rebound UDP socket on port %d", newPort)
+
+	// Trigger a hole punch to re-establish NAT mappings with the new socket
+	if o.holePunchManager != nil {
+		o.holePunchManager.TriggerHolePunch()
+		o.holePunchManager.ResetServerHolepunchInterval()
+		logger.Info("Triggered hole punch after socket rebind")
 	}
 
 	return nil
