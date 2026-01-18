@@ -46,6 +46,7 @@ type OlmConfig struct {
 	OnConnected  func()
 	OnTerminated func()
 	OnAuthError  func(statusCode int, message string) // Called when auth fails (401/403)
+	OnOlmError   func(code string, message string)    // Called when registration fails
 	OnExit       func()                               // Called when exit is requested via API
 }
 

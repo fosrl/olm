@@ -342,6 +342,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 	// Handlers for managing connection status
 	o.websocket.RegisterHandler("olm/wg/connect", o.handleConnect)
+	o.websocket.RegisterHandler("olm/error", o.handleOlmError)
 	o.websocket.RegisterHandler("olm/terminate", o.handleTerminate)
 
 	// Handlers for managing peers
@@ -434,6 +435,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		o.apiServer.SetTerminated(true)
 		o.apiServer.SetConnectionStatus(false)
 		o.apiServer.SetRegistered(false)
+		o.apiServer.ClearOlmError()
 		o.apiServer.ClearPeerStatuses()
 		network.ClearNetworkSettings()
 
@@ -478,20 +480,20 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		for {
 			select {
 			case <-sigChan:
-	
-			logger.Info("SIGHUP received, toggling power mode")
-			if powerMode == "normal" {
-				powerMode = "low"
-				if err := o.SetPowerMode("low"); err != nil {
-					logger.Error("Failed to set low power mode: %v", err)
+
+				logger.Info("SIGHUP received, toggling power mode")
+				if powerMode == "normal" {
+					powerMode = "low"
+					if err := o.SetPowerMode("low"); err != nil {
+						logger.Error("Failed to set low power mode: %v", err)
+					}
+				} else {
+					powerMode = "normal"
+					if err := o.SetPowerMode("normal"); err != nil {
+						logger.Error("Failed to set normal power mode: %v", err)
+					}
 				}
-			} else {
-				powerMode = "normal"
-				if err := o.SetPowerMode("normal"); err != nil {
-					logger.Error("Failed to set normal power mode: %v", err)
-				}
-			}
-	
+
 			case <-tunnelCtx.Done():
 				return
 			}
@@ -604,6 +606,7 @@ func (o *Olm) StopTunnel() error {
 	// Update API server status
 	o.apiServer.SetConnectionStatus(false)
 	o.apiServer.SetRegistered(false)
+	o.apiServer.ClearOlmError()
 
 	network.ClearNetworkSettings()
 	o.apiServer.ClearPeerStatuses()
