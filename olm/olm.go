@@ -321,7 +321,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		userToken,
 		config.OrgID,
 		config.Endpoint,
-		30 * time.Second, // 30 seconds
+		30*time.Second, // 30 seconds
 		config.PingTimeoutDuration,
 		websocket.WithPingDataProvider(func() map[string]any {
 			o.metaMu.Lock()
@@ -479,6 +479,9 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 }
 
 func (o *Olm) Close() {
+	// send a disconnect message to the cloud to show disconnected
+	o.websocket.SendMessage("olm/disconnecting", map[string]any{})
+
 	// Restore original DNS configuration
 	// we do this first to avoid any DNS issues if something else gets stuck
 	if err := dnsOverride.RestoreDNSOverride(); err != nil {
