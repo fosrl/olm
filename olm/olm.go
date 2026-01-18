@@ -362,6 +362,8 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 		if o.connected {
 			logger.Debug("Already connected, skipping registration")
+			// Restart ping monitor on reconnect since the old one would have exited
+			o.websocket.StartPingMonitor()
 			return nil
 		}
 
