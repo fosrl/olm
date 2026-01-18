@@ -480,7 +480,12 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 func (o *Olm) Close() {
 	// send a disconnect message to the cloud to show disconnected
-	o.websocket.SendMessage("olm/disconnecting", map[string]any{})
+	if o.websocket != nil {
+		o.websocket.SendMessage("olm/disconnecting", map[string]any{})
+		// Close the websocket connection after sending disconnect
+		_ = o.websocket.Close()
+		o.websocket = nil
+	}
 
 	// Restore original DNS configuration
 	// we do this first to avoid any DNS issues if something else gets stuck
@@ -567,12 +572,7 @@ func (o *Olm) StopTunnel() error {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// Close the websocket connection
-	if o.websocket != nil {
-		_ = o.websocket.Close()
-		o.websocket = nil
-	}
-
+	// Close() will handle sending disconnect message and closing websocket
 	o.Close()
 
 	// Reset the connected state
