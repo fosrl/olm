@@ -827,11 +827,18 @@ func (o *Olm) RebindSocket() error {
 
 	logger.Info("Successfully rebound UDP socket on port %d", newPort)
 
-	// Trigger a hole punch to re-establish NAT mappings with the new socket
-	if o.holePunchManager != nil {
+	// Check if we're in low power mode before triggering hole punch
+	o.powerModeMu.Lock()
+	isLowPower := o.currentPowerMode == "low"
+	o.powerModeMu.Unlock()
+
+	// Only trigger hole punch if not in low power mode
+	if !isLowPower && o.holePunchManager != nil {
 		o.holePunchManager.TriggerHolePunch()
 		o.holePunchManager.ResetServerHolepunchInterval()
 		logger.Info("Triggered hole punch after socket rebind")
+	} else if isLowPower {
+		logger.Info("Skipping hole punch trigger due to low power mode")
 	}
 
 	return nil
