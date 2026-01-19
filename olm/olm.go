@@ -289,15 +289,28 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		logger.Info("Tunnel already running")
 		return
 	}
+	
+	// debug print out the whole config
+	logger.Debug("Starting tunnel with config: %+v", config)
 
 	o.tunnelRunning = true // Also set it here in case it is called externally
 	o.tunnelConfig = config
 
 	// Reset terminated status when tunnel starts
 	o.apiServer.SetTerminated(false)
+	
+	fingerprint := config.InitialFingerprint
+	if fingerprint == nil {
+		fingerprint = make(map[string]any)
+	}
 
-	// debug print out the whole config
-	logger.Debug("Starting tunnel with config: %+v", config)
+	postures := config.InitialPostures
+	if postures == nil {
+		postures = make(map[string]any)
+	}
+
+	o.SetFingerprint(fingerprint)
+	o.SetPostures(postures)	
 
 	// Create a cancellable context for this tunnel process
 	tunnelCtx, cancel := context.WithCancel(o.olmCtx)
@@ -452,19 +465,6 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 			go o.olmConfig.OnTerminated()
 		}
 	})
-
-	fingerprint := config.InitialFingerprint
-	if fingerprint == nil {
-		fingerprint = make(map[string]any)
-	}
-
-	postures := config.InitialPostures
-	if postures == nil {
-		postures = make(map[string]any)
-	}
-
-	o.SetFingerprint(fingerprint)
-	o.SetPostures(postures)
 
 	// Connect to the WebSocket server
 	if err := o.websocket.Connect(); err != nil {
