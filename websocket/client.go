@@ -102,6 +102,7 @@ type Client struct {
 	getPingData       func() map[string]any  // Callback to get additional ping data
 	pingStarted       bool                   // Flag to track if ping monitor has been started
 	pingStartedMux    sync.Mutex             // Protects pingStarted
+	pingDone          chan struct{}          // Channel to stop the ping monitor independently
 }
 
 type ClientOption func(*Client)
@@ -176,6 +177,7 @@ func NewClient(ID, secret, userToken, orgId, endpoint string, pingInterval time.
 		pingInterval:      pingInterval,
 		pingTimeout:       pingTimeout,
 		clientType:        "olm",
+		pingDone:          make(chan struct{}),
 	}
 
 	// Apply options before loading config
@@ -234,6 +236,9 @@ func (c *Client) Close() error {
 func (c *Client) Disconnect() error {
 	c.isDisconnected = true
 	c.setConnected(false)
+
+	// Stop the ping monitor
+	c.stopPingMonitor()
 
 	// Wait for any message currently being processed to complete
 	c.processingWg.Wait()
@@ -577,11 +582,6 @@ func (c *Client) establishConnection() error {
 	c.conn = conn
 	c.setConnected(true)
 
-	// Reset ping started flag on new connection
-	c.pingStartedMux.Lock()
-	c.pingStarted = false
-	c.pingStartedMux.Unlock()
-
 	// Note: ping monitor is NOT started here - it will be started when
 	// StartPingMonitor() is called after registration completes
 
@@ -722,6 +722,8 @@ func (c *Client) pingMonitor() {
 		select {
 		case <-c.done:
 			return
+		case <-c.pingDone:
+			return
 		case <-ticker.C:
 			c.sendPing()
 		}
@@ -740,11 +742,28 @@ func (c *Client) StartPingMonitor() {
 	}
 	c.pingStarted = true
 	
+	// Create a new pingDone channel for this ping monitor instance
+	c.pingDone = make(chan struct{})
+	
 	// Send an initial ping immediately
 	go func() {
 		c.sendPing()
 		c.pingMonitor()
 	}()
+}
+
+// stopPingMonitor stops the ping monitor goroutine if it's running.
+func (c *Client) stopPingMonitor() {
+	c.pingStartedMux.Lock()
+	defer c.pingStartedMux.Unlock()
+	
+	if !c.pingStarted {
+		return
+	}
+	
+	// Close the pingDone channel to stop the monitor
+	close(c.pingDone)
+	c.pingStarted = false
 }
 
 // GetConfigVersion returns the current config version

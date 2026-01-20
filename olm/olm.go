@@ -383,9 +383,9 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		o.apiServer.SetConnectionStatus(true)
 
 		if o.connected {
-			logger.Debug("Already connected, skipping registration")
-			// Restart ping monitor on reconnect since the old one would have exited
 			o.websocket.StartPingMonitor()
+			
+			logger.Debug("Already connected, skipping registration")
 			return nil
 		}
 
@@ -685,6 +685,14 @@ func (o *Olm) SetPowerMode(mode string) error {
 		}
 
 		logger.Info("Switching to low power mode")
+
+		// Mark as disconnected so we re-register on reconnect
+		o.connected = false
+
+		// Update API server connection status
+		if o.apiServer != nil {
+			o.apiServer.SetConnectionStatus(false)
+		}
 
 		if o.websocket != nil {
 			logger.Info("Disconnecting websocket for low power mode")
