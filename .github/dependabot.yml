@@ -5,20 +5,10 @@ updates:
     schedule:
       interval: "daily"
     groups:
-      dev-patch-updates:
-        dependency-type: "development"
+      patch-updates:
         update-types:
           - "patch"
-      dev-minor-updates:
-        dependency-type: "development"
-        update-types:
-          - "minor"
-      prod-patch-updates:
-        dependency-type: "production"
-        update-types:
-          - "patch"
-      prod-minor-updates:
-        dependency-type: "production"
+      minor-updates:
         update-types:
           - "minor"
 
