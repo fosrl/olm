@@ -12,9 +12,22 @@ type WgData struct {
 	UtilitySubnet string             `json:"utilitySubnet"` // this is for things like the DNS server, and alias addresses
 }
 
-type GlobalConfig struct {
+type SyncData struct {
+	Sites     []peers.SiteConfig `json:"sites"`
+	ExitNodes []SyncExitNode     `json:"exitNodes"`
+}
+
+type SyncExitNode struct {
+	Endpoint  string `json:"endpoint"`
+	RelayPort uint16 `json:"relayPort"`
+	PublicKey string `json:"publicKey"`
+	SiteIds   []int  `json:"siteIds"`
+}
+
+type OlmConfig struct {
 	// Logging
-	LogLevel string
+	LogLevel    string
+	LogFilePath string
 
 	// HTTP server
 	EnableAPI  bool
@@ -23,11 +36,17 @@ type GlobalConfig struct {
 	Version    string
 	Agent      string
 
+	WakeUpDebounce time.Duration
+
+	// Debugging
+	PprofAddr string // Address to serve pprof on (e.g., "localhost:6060")
+
 	// Callbacks
 	OnRegistered func()
 	OnConnected  func()
 	OnTerminated func()
 	OnAuthError  func(statusCode int, message string) // Called when auth fails (401/403)
+	OnOlmError   func(code string, message string)    // Called when registration fails
 	OnExit       func()                               // Called when exit is requested via API
 }
 
@@ -62,6 +81,9 @@ type TunnelConfig struct {
 
 	OverrideDNS bool
 	TunnelDNS   bool
+
+	InitialFingerprint map[string]any
+	InitialPostures    map[string]any
 
 	DisableRelay bool
 }

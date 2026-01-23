@@ -1,10 +1,11 @@
-//go:build !windows
+//go:build linux
 
 package device
 
 import (
 	"net"
 	"os"
+	"runtime"
 
 	"github.com/fosrl/newt/logger"
 	"golang.org/x/sys/unix"
@@ -13,6 +14,11 @@ import (
 )
 
 func CreateTUNFromFD(tunFd uint32, mtuInt int) (tun.Device, error) {
+	if runtime.GOOS == "android" { // otherwise we get a permission denied
+		theTun, _, err := tun.CreateUnmonitoredTUNFromFD(int(tunFd))
+		return theTun, err
+	} 
+	
 	dupTunFd, err := unix.Dup(int(tunFd))
 	if err != nil {
 		logger.Error("Unable to dup tun fd: %v", err)

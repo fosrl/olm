@@ -5,6 +5,9 @@ all: local
 local:
 	CGO_ENABLED=0 go build -o ./bin/olm
 
+docker-build:
+	docker build -t fosrl/olm:latest .
+
 docker-build-release:
 	@if [ -z "$(tag)" ]; then \
 		echo "Error: tag is required. Usage: make docker-build-release tag=<tag>"; \

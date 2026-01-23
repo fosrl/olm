@@ -31,8 +31,7 @@ type PeerMonitor struct {
 	monitors    map[int]*Client
 	mutex       sync.Mutex
 	running     bool
-	interval    time.Duration
-	timeout     time.Duration
+	timeout         time.Duration
 	maxAttempts int
 	wsClient    *websocket.Client
 
@@ -42,7 +41,7 @@ type PeerMonitor struct {
 	stack       *stack.Stack
 	ep          *channel.Endpoint
 	activePorts map[uint16]bool
-	portsLock   sync.Mutex
+	portsLock   sync.RWMutex
 	nsCtx       context.Context
 	nsCancel    context.CancelFunc
 	nsWg        sync.WaitGroup
@@ -50,16 +49,25 @@ type PeerMonitor struct {
 	// Holepunch testing fields
 	sharedBind         *bind.SharedBind
 	holepunchTester    *holepunch.HolepunchTester
-	holepunchInterval  time.Duration
 	holepunchTimeout   time.Duration
 	holepunchEndpoints map[int]string // siteID -> endpoint for holepunch testing
 	holepunchStatus    map[int]bool   // siteID -> connected status
-	holepunchStopChan  chan struct{}
+	holepunchStopChan    chan struct{}
+	holepunchUpdateChan  chan struct{}
 
 	// Relay tracking fields
 	relayedPeers         map[int]bool // siteID -> whether the peer is currently relayed
 	holepunchMaxAttempts int          // max consecutive failures before triggering relay
 	holepunchFailures    map[int]int  // siteID -> consecutive failure count
+
+	// Exponential backoff fields for holepunch monitor
+	defaultHolepunchMinInterval time.Duration // Minimum interval (initial)
+	defaultHolepunchMaxInterval time.Duration
+	holepunchMinInterval        time.Duration // Minimum interval (initial)
+	holepunchMaxInterval        time.Duration // Maximum interval (cap for backoff)
+	holepunchBackoffMultiplier  float64       // Multiplier for each stable check
+	holepunchStableCount        map[int]int   // siteID -> consecutive stable status count
+	holepunchCurrentInterval    time.Duration // Current interval with backoff applied
 
 	// Rapid initial test fields
 	rapidTestInterval    time.Duration // interval between rapid test attempts
@@ -78,7 +86,6 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 	ctx, cancel := context.WithCancel(context.Background())
 	pm := &PeerMonitor{
 		monitors:             make(map[int]*Client),
-		interval:             2 * time.Second, // Default check interval (faster)
 		timeout:              3 * time.Second,
 		maxAttempts:          3,
 		wsClient:             wsClient,
@@ -88,7 +95,6 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		nsCtx:                ctx,
 		nsCancel:             cancel,
 		sharedBind:           sharedBind,
-		holepunchInterval:    2 * time.Second, // Check holepunch every 2 seconds
 		holepunchTimeout:     2 * time.Second, // Faster timeout
 		holepunchEndpoints:   make(map[int]string),
 		holepunchStatus:      make(map[int]bool),
@@ -101,6 +107,15 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		rapidTestMaxAttempts: 5,                      // 5 attempts = ~1-1.5 seconds total
 		apiServer:            apiServer,
 		wgConnectionStatus:   make(map[int]bool),
+		// Exponential backoff settings for holepunch monitor
+		defaultHolepunchMinInterval: 2 * time.Second,
+		defaultHolepunchMaxInterval: 30 * time.Second,
+		holepunchMinInterval:        2 * time.Second,
+		holepunchMaxInterval:        30 * time.Second,
+		holepunchBackoffMultiplier:  1.5,
+		holepunchStableCount:        make(map[int]int),
+		holepunchCurrentInterval:    2 * time.Second,
+		holepunchUpdateChan:         make(chan struct{}, 1),
 	}
 
 	if err := pm.initNetstack(); err != nil {
@@ -116,41 +131,75 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 }
 
 // SetInterval changes how frequently peers are checked
-func (pm *PeerMonitor) SetInterval(interval time.Duration) {
+func (pm *PeerMonitor) SetPeerInterval(minInterval, maxInterval time.Duration) {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
-
-	pm.interval = interval
 
 	// Update interval for all existing monitors
 	for _, client := range pm.monitors {
-		client.SetPacketInterval(interval)
+		client.SetPacketInterval(minInterval, maxInterval)
 	}
+
+	logger.Info("Set peer monitor interval to min: %s, max: %s", minInterval, maxInterval)
 }
 
-// SetTimeout changes the timeout for waiting for responses
-func (pm *PeerMonitor) SetTimeout(timeout time.Duration) {
+func (pm *PeerMonitor) ResetPeerInterval() {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 
-	pm.timeout = timeout
-
-	// Update timeout for all existing monitors
+	// Update interval for all existing monitors
 	for _, client := range pm.monitors {
-		client.SetTimeout(timeout)
+		client.ResetPacketInterval()
 	}
 }
 
-// SetMaxAttempts changes the maximum number of attempts for TestConnection
-func (pm *PeerMonitor) SetMaxAttempts(attempts int) {
+// SetPeerHolepunchInterval sets both the minimum and maximum intervals for holepunch monitoring
+func (pm *PeerMonitor) SetPeerHolepunchInterval(minInterval, maxInterval time.Duration) {
+	pm.mutex.Lock()
+	pm.holepunchMinInterval = minInterval
+	pm.holepunchMaxInterval = maxInterval
+	// Reset current interval to the new minimum
+	pm.holepunchCurrentInterval = minInterval
+	updateChan := pm.holepunchUpdateChan
+	pm.mutex.Unlock()
+
+	logger.Info("Set holepunch interval to min: %s, max: %s", minInterval, maxInterval)
+
+	// Signal the goroutine to apply the new interval if running
+	if updateChan != nil {
+		select {
+		case updateChan <- struct{}{}:
+		default:
+			// Channel full or closed, skip
+		}
+	}
+}
+
+// GetPeerHolepunchIntervals returns the current minimum and maximum intervals for holepunch monitoring
+func (pm *PeerMonitor) GetPeerHolepunchIntervals() (minInterval, maxInterval time.Duration) {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 
-	pm.maxAttempts = attempts
+	return pm.holepunchMinInterval, pm.holepunchMaxInterval
+}
 
-	// Update max attempts for all existing monitors
-	for _, client := range pm.monitors {
-		client.SetMaxAttempts(attempts)
+func (pm *PeerMonitor) ResetPeerHolepunchInterval() {
+	pm.mutex.Lock()
+	pm.holepunchMinInterval = pm.defaultHolepunchMinInterval
+	pm.holepunchMaxInterval = pm.defaultHolepunchMaxInterval
+	pm.holepunchCurrentInterval = pm.defaultHolepunchMinInterval
+	updateChan := pm.holepunchUpdateChan
+	pm.mutex.Unlock()
+
+	logger.Info("Reset holepunch interval to defaults: min=%v, max=%v", pm.defaultHolepunchMinInterval, pm.defaultHolepunchMaxInterval)
+
+	// Signal the goroutine to apply the new interval if running
+	if updateChan != nil {
+		select {
+		case updateChan <- struct{}{}:
+		default:
+			// Channel full or closed, skip
+		}
 	}
 }
 
@@ -168,10 +217,6 @@ func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, holepunchEndpoint st
 	if err != nil {
 		return err
 	}
-
-	client.SetPacketInterval(pm.interval)
-	client.SetTimeout(pm.timeout)
-	client.SetMaxAttempts(pm.maxAttempts)
 
 	pm.monitors[siteID] = client
 
@@ -470,31 +515,59 @@ func (pm *PeerMonitor) stopHolepunchMonitor() {
 	logger.Info("Stopped holepunch connection monitor")
 }
 
-// runHolepunchMonitor runs the holepunch monitoring loop
+// runHolepunchMonitor runs the holepunch monitoring loop with exponential backoff
 func (pm *PeerMonitor) runHolepunchMonitor() {
-	ticker := time.NewTicker(pm.holepunchInterval)
-	defer ticker.Stop()
+	pm.mutex.Lock()
+	pm.holepunchCurrentInterval = pm.holepunchMinInterval
+	pm.mutex.Unlock()
 
-	// Do initial check immediately
-	pm.checkHolepunchEndpoints()
+	timer := time.NewTimer(0) // Fire immediately for initial check
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-pm.holepunchStopChan:
 			return
-		case <-ticker.C:
-			pm.checkHolepunchEndpoints()
+		case <-pm.holepunchUpdateChan:
+			// Interval settings changed, reset to minimum
+			pm.mutex.Lock()
+			pm.holepunchCurrentInterval = pm.holepunchMinInterval
+			currentInterval := pm.holepunchCurrentInterval
+			pm.mutex.Unlock()
+			
+			timer.Reset(currentInterval)
+			logger.Debug("Holepunch monitor interval updated, reset to %v", currentInterval)
+		case <-timer.C:
+			anyStatusChanged := pm.checkHolepunchEndpoints()
+
+			pm.mutex.Lock()
+			if anyStatusChanged {
+				// Reset to minimum interval on any status change
+				pm.holepunchCurrentInterval = pm.holepunchMinInterval
+			} else {
+				// Apply exponential backoff when stable
+				newInterval := time.Duration(float64(pm.holepunchCurrentInterval) * pm.holepunchBackoffMultiplier)
+				if newInterval > pm.holepunchMaxInterval {
+					newInterval = pm.holepunchMaxInterval
+				}
+				pm.holepunchCurrentInterval = newInterval
+			}
+			currentInterval := pm.holepunchCurrentInterval
+			pm.mutex.Unlock()
+
+			timer.Reset(currentInterval)
 		}
 	}
 }
 
 // checkHolepunchEndpoints tests all holepunch endpoints
-func (pm *PeerMonitor) checkHolepunchEndpoints() {
+// Returns true if any endpoint's status changed
+func (pm *PeerMonitor) checkHolepunchEndpoints() bool {
 	pm.mutex.Lock()
 	// Check if we're still running before doing any work
 	if !pm.running {
 		pm.mutex.Unlock()
-		return
+		return false
 	}
 	endpoints := make(map[int]string, len(pm.holepunchEndpoints))
 	for siteID, endpoint := range pm.holepunchEndpoints {
@@ -504,8 +577,10 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 	maxAttempts := pm.holepunchMaxAttempts
 	pm.mutex.Unlock()
 
+	anyStatusChanged := false
+
 	for siteID, endpoint := range endpoints {
-		// logger.Debug("Testing holepunch endpoint for site %d: %s", siteID, endpoint)
+		// logger.Debug("holepunchTester: testing endpoint for site %d: %s", siteID, endpoint)
 		result := pm.holepunchTester.TestEndpoint(endpoint, timeout)
 
 		pm.mutex.Lock()
@@ -529,7 +604,9 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 		pm.mutex.Unlock()
 
 		// Log status changes
-		if !exists || previousStatus != result.Success {
+		statusChanged := !exists || previousStatus != result.Success
+		if statusChanged {
+			anyStatusChanged = true
 			if result.Success {
 				logger.Info("Holepunch to site %d (%s) is CONNECTED (RTT: %v)", siteID, endpoint, result.RTT)
 			} else {
@@ -562,7 +639,7 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 		pm.mutex.Unlock()
 
 		if !stillRunning {
-			return // Stop processing if shutdown is in progress
+			return anyStatusChanged // Stop processing if shutdown is in progress
 		}
 
 		if !result.Success && !isRelayed && failureCount >= maxAttempts {
@@ -579,6 +656,8 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() {
 			}
 		}
 	}
+
+	return anyStatusChanged
 }
 
 // GetHolepunchStatus returns the current holepunch status for all endpoints
@@ -650,55 +729,55 @@ func (pm *PeerMonitor) Close() {
 	logger.Debug("PeerMonitor: Cleanup complete")
 }
 
-// TestPeer tests connectivity to a specific peer
-func (pm *PeerMonitor) TestPeer(siteID int) (bool, time.Duration, error) {
-	pm.mutex.Lock()
-	client, exists := pm.monitors[siteID]
-	pm.mutex.Unlock()
+// // TestPeer tests connectivity to a specific peer
+// func (pm *PeerMonitor) TestPeer(siteID int) (bool, time.Duration, error) {
+// 	pm.mutex.Lock()
+// 	client, exists := pm.monitors[siteID]
+// 	pm.mutex.Unlock()
 
-	if !exists {
-		return false, 0, fmt.Errorf("peer with siteID %d not found", siteID)
-	}
+// 	if !exists {
+// 		return false, 0, fmt.Errorf("peer with siteID %d not found", siteID)
+// 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), pm.timeout*time.Duration(pm.maxAttempts))
-	defer cancel()
+// 	ctx, cancel := context.WithTimeout(context.Background(), pm.timeout*time.Duration(pm.maxAttempts))
+// 	defer cancel()
 
-	connected, rtt := client.TestConnection(ctx)
-	return connected, rtt, nil
-}
+// 	connected, rtt := client.TestPeerConnection(ctx)
+// 	return connected, rtt, nil
+// }
 
-// TestAllPeers tests connectivity to all peers
-func (pm *PeerMonitor) TestAllPeers() map[int]struct {
-	Connected bool
-	RTT       time.Duration
-} {
-	pm.mutex.Lock()
-	peers := make(map[int]*Client, len(pm.monitors))
-	for siteID, client := range pm.monitors {
-		peers[siteID] = client
-	}
-	pm.mutex.Unlock()
+// // TestAllPeers tests connectivity to all peers
+// func (pm *PeerMonitor) TestAllPeers() map[int]struct {
+// 	Connected bool
+// 	RTT       time.Duration
+// } {
+// 	pm.mutex.Lock()
+// 	peers := make(map[int]*Client, len(pm.monitors))
+// 	for siteID, client := range pm.monitors {
+// 		peers[siteID] = client
+// 	}
+// 	pm.mutex.Unlock()
 
-	results := make(map[int]struct {
-		Connected bool
-		RTT       time.Duration
-	})
-	for siteID, client := range peers {
-		ctx, cancel := context.WithTimeout(context.Background(), pm.timeout*time.Duration(pm.maxAttempts))
-		connected, rtt := client.TestConnection(ctx)
-		cancel()
+// 	results := make(map[int]struct {
+// 		Connected bool
+// 		RTT       time.Duration
+// 	})
+// 	for siteID, client := range peers {
+// 		ctx, cancel := context.WithTimeout(context.Background(), pm.timeout*time.Duration(pm.maxAttempts))
+// 		connected, rtt := client.TestPeerConnection(ctx)
+// 		cancel()
 
-		results[siteID] = struct {
-			Connected bool
-			RTT       time.Duration
-		}{
-			Connected: connected,
-			RTT:       rtt,
-		}
-	}
+// 		results[siteID] = struct {
+// 			Connected bool
+// 			RTT       time.Duration
+// 		}{
+// 			Connected: connected,
+// 			RTT:       rtt,
+// 		}
+// 	}
 
-	return results
-}
+// 	return results
+// }
 
 // initNetstack initializes the gvisor netstack
 func (pm *PeerMonitor) initNetstack() error {
@@ -770,9 +849,9 @@ func (pm *PeerMonitor) handlePacket(packet []byte) bool {
 	}
 
 	// Check if we are listening on this port
-	pm.portsLock.Lock()
+	pm.portsLock.RLock()
 	active := pm.activePorts[uint16(port)]
-	pm.portsLock.Unlock()
+	pm.portsLock.RUnlock()
 
 	if !active {
 		return false
@@ -803,13 +882,12 @@ func (pm *PeerMonitor) runPacketSender() {
 	defer pm.nsWg.Done()
 	logger.Debug("PeerMonitor: Packet sender goroutine started")
 
-	// Use a ticker to periodically check for packets without blocking indefinitely
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-
 	for {
-		select {
-		case <-pm.nsCtx.Done():
+		// Use blocking ReadContext instead of polling - much more CPU efficient
+		// This will block until a packet is available or context is cancelled
+		pkt := pm.ep.ReadContext(pm.nsCtx)
+		if pkt == nil {
+			// Context was cancelled or endpoint closed
 			logger.Debug("PeerMonitor: Packet sender context cancelled, draining packets")
 			// Drain any remaining packets before exiting
 			for {
@@ -821,36 +899,28 @@ func (pm *PeerMonitor) runPacketSender() {
 			}
 			logger.Debug("PeerMonitor: Packet sender goroutine exiting")
 			return
-		case <-ticker.C:
-			// Try to read packets in batches
-			for i := 0; i < 10; i++ {
-				pkt := pm.ep.Read()
-				if pkt == nil {
-					break
-				}
-
-				// Extract packet data
-				slices := pkt.AsSlices()
-				if len(slices) > 0 {
-					var totalSize int
-					for _, slice := range slices {
-						totalSize += len(slice)
-					}
-
-					buf := make([]byte, totalSize)
-					pos := 0
-					for _, slice := range slices {
-						copy(buf[pos:], slice)
-						pos += len(slice)
-					}
-
-					// Inject into MiddleDevice (outbound to WG)
-					pm.middleDev.InjectOutbound(buf)
-				}
-
-				pkt.DecRef()
-			}
 		}
+
+		// Extract packet data
+		slices := pkt.AsSlices()
+		if len(slices) > 0 {
+			var totalSize int
+			for _, slice := range slices {
+				totalSize += len(slice)
+			}
+
+			buf := make([]byte, totalSize)
+			pos := 0
+			for _, slice := range slices {
+				copy(buf[pos:], slice)
+				pos += len(slice)
+			}
+
+			// Inject into MiddleDevice (outbound to WG)
+			pm.middleDev.InjectOutbound(buf)
+		}
+
+		pkt.DecRef()
 	}
 }
 

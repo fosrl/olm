@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -32,7 +33,12 @@ type ConnectionRequest struct {
 
 // SwitchOrgRequest defines the structure for switching organizations
 type SwitchOrgRequest struct {
-	OrgID string `json:"orgId"`
+	OrgID string `json:"org_id"`
+}
+
+// PowerModeRequest represents a request to change power mode
+type PowerModeRequest struct {
+	Mode string `json:"mode"` // "normal" or "low"
 }
 
 // PeerStatus represents the status of a peer connection
@@ -48,11 +54,18 @@ type PeerStatus struct {
 	HolepunchConnected bool          `json:"holepunchConnected"`
 }
 
+// OlmError holds error information from registration failures
+type OlmError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 // StatusResponse is returned by the status endpoint
 type StatusResponse struct {
 	Connected       bool                    `json:"connected"`
 	Registered      bool                    `json:"registered"`
 	Terminated      bool                    `json:"terminated"`
+	OlmError        *OlmError               `json:"error,omitempty"`
 	Version         string                  `json:"version,omitempty"`
 	Agent           string                  `json:"agent,omitempty"`
 	OrgID           string                  `json:"orgId,omitempty"`
@@ -60,25 +73,37 @@ type StatusResponse struct {
 	NetworkSettings network.NetworkSettings `json:"networkSettings,omitempty"`
 }
 
+type MetadataChangeRequest struct {
+	Fingerprint map[string]any `json:"fingerprint"`
+	Postures    map[string]any `json:"postures"`
+}
+
 // API represents the HTTP server and its state
 type API struct {
-	addr         string
-	socketPath   string
-	listener     net.Listener
-	server       *http.Server
-	onConnect    func(ConnectionRequest) error
-	onSwitchOrg  func(SwitchOrgRequest) error
-	onDisconnect func() error
-	onExit       func() error
+	addr       string
+	socketPath string
+	listener   net.Listener
+	server     *http.Server
+
+	onConnect        func(ConnectionRequest) error
+	onSwitchOrg      func(SwitchOrgRequest) error
+	onMetadataChange func(MetadataChangeRequest) error
+	onDisconnect     func() error
+	onExit           func() error
+	onRebind         func() error
+	onPowerMode      func(PowerModeRequest) error
+
 	statusMu     sync.RWMutex
 	peerStatuses map[int]*PeerStatus
 	connectedAt  time.Time
 	isConnected  bool
 	isRegistered bool
 	isTerminated bool
-	version      string
-	agent        string
-	orgID        string
+	olmError     *OlmError
+
+	version string
+	agent   string
+	orgID   string
 }
 
 // NewAPI creates a new HTTP server that listens on a TCP address
@@ -101,28 +126,49 @@ func NewAPISocket(socketPath string) *API {
 	return s
 }
 
+func NewAPIStub() *API {
+	s := &API{
+		peerStatuses: make(map[int]*PeerStatus),
+	}
+
+	return s
+}
+
 // SetHandlers sets the callback functions for handling API requests
 func (s *API) SetHandlers(
 	onConnect func(ConnectionRequest) error,
 	onSwitchOrg func(SwitchOrgRequest) error,
+	onMetadataChange func(MetadataChangeRequest) error,
 	onDisconnect func() error,
 	onExit func() error,
+	onRebind func() error,
+	onPowerMode func(PowerModeRequest) error,
 ) {
 	s.onConnect = onConnect
 	s.onSwitchOrg = onSwitchOrg
+	s.onMetadataChange = onMetadataChange
 	s.onDisconnect = onDisconnect
 	s.onExit = onExit
+	s.onRebind = onRebind
+	s.onPowerMode = onPowerMode
 }
 
 // Start starts the HTTP server
 func (s *API) Start() error {
+	if s.socketPath == "" && s.addr == "" {
+		return fmt.Errorf("either socketPath or addr must be provided to start the API server")
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", s.handleConnect)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/switch-org", s.handleSwitchOrg)
+	mux.HandleFunc("/metadata", s.handleMetadataChange)
 	mux.HandleFunc("/disconnect", s.handleDisconnect)
 	mux.HandleFunc("/exit", s.handleExit)
 	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/rebind", s.handleRebind)
+	mux.HandleFunc("/power-mode", s.handlePowerMode)
 
 	s.server = &http.Server{
 		Handler: mux,
@@ -160,7 +206,7 @@ func (s *API) Stop() error {
 
 	// Close the server first, which will also close the listener gracefully
 	if s.server != nil {
-		s.server.Close()
+		_ = s.server.Close()
 	}
 
 	// Clean up socket file if using Unix socket
@@ -236,6 +282,27 @@ func (s *API) SetRegistered(registered bool) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	s.isRegistered = registered
+	// Clear any registration error when successfully registered
+	if registered {
+		s.olmError = nil
+	}
+}
+
+// SetOlmError sets the registration error
+func (s *API) SetOlmError(code string, message string) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.olmError = &OlmError{
+		Code:    code,
+		Message: message,
+	}
+}
+
+// ClearOlmError clears any registration error
+func (s *API) ClearOlmError() {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.olmError = nil
 }
 
 func (s *API) SetTerminated(terminated bool) {
@@ -345,7 +412,7 @@ func (s *API) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Return a success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "connection request accepted",
 	})
 }
@@ -358,12 +425,12 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.statusMu.RLock()
-	defer s.statusMu.RUnlock()
 
 	resp := StatusResponse{
 		Connected:       s.isConnected,
 		Registered:      s.isRegistered,
 		Terminated:      s.isTerminated,
+		OlmError:        s.olmError,
 		Version:         s.version,
 		Agent:           s.agent,
 		OrgID:           s.orgID,
@@ -371,8 +438,18 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		NetworkSettings: network.GetSettings(),
 	}
 
+	s.statusMu.RUnlock()
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 // handleHealth handles the /health endpoint
@@ -384,7 +461,7 @@ func (s *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "ok",
 	})
 }
@@ -401,7 +478,7 @@ func (s *API) handleExit(w http.ResponseWriter, r *http.Request) {
 	// Return a success response first
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "shutdown initiated",
 	})
 
@@ -450,7 +527,7 @@ func (s *API) handleSwitchOrg(w http.ResponseWriter, r *http.Request) {
 	// Return a success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "org switch request accepted",
 	})
 }
@@ -484,8 +561,34 @@ func (s *API) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	// Return a success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "disconnect initiated",
+	})
+}
+
+// handleMetadataChange handles the /metadata endpoint
+func (s *API) handleMetadataChange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req MetadataChangeRequest
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	logger.Info("Received metadata change request via API: %v", req)
+
+	_ = s.onMetadataChange(req)
+
+	// Return a success response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status": "metadata updated",
 	})
 }
 
@@ -494,10 +597,82 @@ func (s *API) GetStatus() StatusResponse {
 		Connected:       s.isConnected,
 		Registered:      s.isRegistered,
 		Terminated:      s.isTerminated,
+		OlmError:        s.olmError,
 		Version:         s.version,
 		Agent:           s.agent,
 		OrgID:           s.orgID,
 		PeerStatuses:    s.peerStatuses,
 		NetworkSettings: network.GetSettings(),
 	}
+}
+
+// handleRebind handles the /rebind endpoint
+// This triggers a socket rebind, which is necessary when network connectivity changes
+// (e.g., WiFi to cellular transition on macOS/iOS) and the old socket becomes stale.
+func (s *API) handleRebind(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	logger.Info("Received rebind request via API")
+
+	// Call the rebind handler if set
+	if s.onRebind != nil {
+		if err := s.onRebind(); err != nil {
+			http.Error(w, fmt.Sprintf("Rebind failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		http.Error(w, "Rebind handler not configured", http.StatusNotImplemented)
+		return
+	}
+
+	// Return a success response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status": "socket rebound successfully",
+	})
+}
+
+// handlePowerMode handles the /power-mode endpoint
+// This allows changing the power mode between "normal" and "low"
+func (s *API) handlePowerMode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req PowerModeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Validate power mode
+	if req.Mode != "normal" && req.Mode != "low" {
+		http.Error(w, "Invalid power mode: must be 'normal' or 'low'", http.StatusBadRequest)
+		return
+	}
+
+	logger.Info("Received power mode change request via API: mode=%s", req.Mode)
+
+	// Call the power mode handler if set
+	if s.onPowerMode != nil {
+		if err := s.onPowerMode(req); err != nil {
+			http.Error(w, fmt.Sprintf("Power mode change failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		http.Error(w, "Power mode handler not configured", http.StatusNotImplemented)
+		return
+	}
+
+	// Return a success response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status": fmt.Sprintf("power mode changed to %s successfully", req.Mode),
+	})
 }

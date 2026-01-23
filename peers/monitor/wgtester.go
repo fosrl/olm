@@ -32,10 +32,19 @@ type Client struct {
 	monitorLock    sync.Mutex
 	connLock       sync.Mutex // Protects connection operations
 	shutdownCh     chan struct{}
+	updateCh       chan struct{}
 	packetInterval time.Duration
 	timeout        time.Duration
 	maxAttempts    int
 	dialer         Dialer
+
+	// Exponential backoff fields
+	defaultMinInterval   time.Duration // Default minimum interval (initial)
+	defaultMaxInterval   time.Duration // Default maximum interval (cap for backoff)
+	minInterval          time.Duration // Minimum interval (initial)
+	maxInterval          time.Duration // Maximum interval (cap for backoff)
+	backoffMultiplier    float64       // Multiplier for each stable check
+	stableCountToBackoff int           // Number of stable checks before backing off
 }
 
 // Dialer is a function that creates a connection
@@ -50,28 +59,59 @@ type ConnectionStatus struct {
 // NewClient creates a new connection test client
 func NewClient(serverAddr string, dialer Dialer) (*Client, error) {
 	return &Client{
-		serverAddr:     serverAddr,
-		shutdownCh:     make(chan struct{}),
-		packetInterval: 2 * time.Second,
-		timeout:        500 * time.Millisecond, // Timeout for individual packets
-		maxAttempts:    3,                      // Default max attempts
-		dialer:         dialer,
+		serverAddr:           serverAddr,
+		shutdownCh:           make(chan struct{}),
+		updateCh:             make(chan struct{}, 1),
+		packetInterval:       2 * time.Second,
+		defaultMinInterval:   2 * time.Second,
+		defaultMaxInterval:   30 * time.Second,
+		minInterval:          2 * time.Second,
+		maxInterval:          30 * time.Second,
+		backoffMultiplier:    1.5,
+		stableCountToBackoff: 3,                      // After 3 consecutive same-state results, start backing off
+		timeout:              500 * time.Millisecond, // Timeout for individual packets
+		maxAttempts:          3,                      // Default max attempts
+		dialer:               dialer,
 	}, nil
 }
 
 // SetPacketInterval changes how frequently packets are sent in monitor mode
-func (c *Client) SetPacketInterval(interval time.Duration) {
-	c.packetInterval = interval
+func (c *Client) SetPacketInterval(minInterval, maxInterval time.Duration) {
+	c.monitorLock.Lock()
+	c.packetInterval = minInterval
+	c.minInterval = minInterval
+	c.maxInterval = maxInterval
+	updateCh := c.updateCh
+	monitorRunning := c.monitorRunning
+	c.monitorLock.Unlock()
+
+	// Signal the goroutine to apply the new interval if running
+	if monitorRunning && updateCh != nil {
+		select {
+		case updateCh <- struct{}{}:
+		default:
+			// Channel full or closed, skip
+		}
+	}
 }
 
-// SetTimeout changes the timeout for waiting for responses
-func (c *Client) SetTimeout(timeout time.Duration) {
-	c.timeout = timeout
-}
+func (c *Client) ResetPacketInterval() {
+	c.monitorLock.Lock()
+	c.packetInterval = c.defaultMinInterval
+	c.minInterval = c.defaultMinInterval
+	c.maxInterval = c.defaultMaxInterval
+	updateCh := c.updateCh
+	monitorRunning := c.monitorRunning
+	c.monitorLock.Unlock()
 
-// SetMaxAttempts changes the maximum number of attempts for TestConnection
-func (c *Client) SetMaxAttempts(attempts int) {
-	c.maxAttempts = attempts
+	// Signal the goroutine to apply the new interval if running
+	if monitorRunning && updateCh != nil {
+		select {
+		case updateCh <- struct{}{}:
+		default:
+			// Channel full or closed, skip
+		}
+	}
 }
 
 // UpdateServerAddr updates the server address and resets the connection
@@ -125,9 +165,10 @@ func (c *Client) ensureConnection() error {
 	return nil
 }
 
-// TestConnection checks if the connection to the server is working
+// TestPeerConnection checks if the connection to the server is working
 // Returns true if connected, false otherwise
-func (c *Client) TestConnection(ctx context.Context) (bool, time.Duration) {
+func (c *Client) TestPeerConnection(ctx context.Context) (bool, time.Duration) {
+	// logger.Debug("wgtester: testing connection to peer %s", c.serverAddr)
 	if err := c.ensureConnection(); err != nil {
 		logger.Warn("Failed to ensure connection: %v", err)
 		return false, 0
@@ -137,6 +178,9 @@ func (c *Client) TestConnection(ctx context.Context) (bool, time.Duration) {
 	packet := make([]byte, packetSize)
 	binary.BigEndian.PutUint32(packet[0:4], magicHeader)
 	packet[4] = packetTypeRequest
+
+	// Reusable response buffer
+	responseBuffer := make([]byte, packetSize)
 
 	// Send multiple attempts as specified
 	for attempt := 0; attempt < c.maxAttempts; attempt++ {
@@ -157,20 +201,17 @@ func (c *Client) TestConnection(ctx context.Context) (bool, time.Duration) {
 				return false, 0
 			}
 
-			// logger.Debug("Attempting to send monitor packet to %s", c.serverAddr)
 			_, err := c.conn.Write(packet)
 			if err != nil {
 				c.connLock.Unlock()
 				logger.Info("Error sending packet: %v", err)
 				continue
 			}
-			// logger.Debug("Successfully sent monitor packet")
 
 			// Set read deadline
 			c.conn.SetReadDeadline(time.Now().Add(c.timeout))
 
 			// Wait for response
-			responseBuffer := make([]byte, packetSize)
 			n, err := c.conn.Read(responseBuffer)
 			c.connLock.Unlock()
 
@@ -211,7 +252,7 @@ func (c *Client) TestConnection(ctx context.Context) (bool, time.Duration) {
 func (c *Client) TestConnectionWithTimeout(timeout time.Duration) (bool, time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return c.TestConnection(ctx)
+	return c.TestPeerConnection(ctx)
 }
 
 // MonitorCallback is the function type for connection status change callbacks
@@ -238,28 +279,61 @@ func (c *Client) StartMonitor(callback MonitorCallback) error {
 	go func() {
 		var lastConnected bool
 		firstRun := true
+		stableCount := 0
+		currentInterval := c.minInterval
 
-		ticker := time.NewTicker(c.packetInterval)
-		defer ticker.Stop()
+		timer := time.NewTimer(currentInterval)
+		defer timer.Stop()
 
 		for {
 			select {
 			case <-c.shutdownCh:
 				return
-			case <-ticker.C:
+			case <-c.updateCh:
+				// Interval settings changed, reset to minimum
+				c.monitorLock.Lock()
+				currentInterval = c.minInterval
+				c.monitorLock.Unlock()
+				
+				// Reset backoff state
+				stableCount = 0
+				
+				timer.Reset(currentInterval)
+				logger.Debug("Packet interval updated, reset to %v", currentInterval)
+			case <-timer.C:
 				ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
-				connected, rtt := c.TestConnection(ctx)
+				connected, rtt := c.TestPeerConnection(ctx)
 				cancel()
 
+				statusChanged := connected != lastConnected
+
 				// Callback if status changed or it's the first check
-				if connected != lastConnected || firstRun {
+				if statusChanged || firstRun {
 					callback(ConnectionStatus{
 						Connected: connected,
 						RTT:       rtt,
 					})
 					lastConnected = connected
 					firstRun = false
+					// Reset backoff on status change
+					stableCount = 0
+					currentInterval = c.minInterval
+				} else {
+					// Status is stable, increment counter
+					stableCount++
+
+					// Apply exponential backoff after stable threshold
+					if stableCount >= c.stableCountToBackoff {
+						newInterval := time.Duration(float64(currentInterval) * c.backoffMultiplier)
+						if newInterval > c.maxInterval {
+							newInterval = c.maxInterval
+						}
+						currentInterval = newInterval
+					}
 				}
+
+				// Reset timer with current interval
+				timer.Reset(currentInterval)
 			}
 		}
 	}()
