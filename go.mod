@@ -31,4 +31,5 @@ require (
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
 )
 
-replace github.com/fosrl/newt => ../newt
+# To be used ONLY for local development
+# replace github.com/fosrl/newt => ../newt
