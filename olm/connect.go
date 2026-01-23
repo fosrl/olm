@@ -28,6 +28,12 @@ type OlmErrorData struct {
 func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	logger.Debug("Received message: %v", msg.Data)
 
+	// Check if tunnel is still running
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring connect message")
+		return
+	}
+
 	var wgData WgData
 
 	if o.connected {
@@ -218,6 +224,12 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 func (o *Olm) handleOlmError(msg websocket.WSMessage) {
 	logger.Debug("Received olm error message: %v", msg.Data)
 
+	// Check if tunnel is still running
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring olm error message")
+		return
+	}
+
 	var errorData OlmErrorData
 
 	jsonData, err := json.Marshal(msg.Data)
@@ -244,6 +256,12 @@ func (o *Olm) handleOlmError(msg websocket.WSMessage) {
 
 func (o *Olm) handleTerminate(msg websocket.WSMessage) {
 	logger.Info("Received terminate message")
+
+	// Check if tunnel is still running
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring terminate message")
+		return
+	}
 
 	var errorData OlmErrorData
 

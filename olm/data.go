@@ -13,6 +13,12 @@ import (
 func (o *Olm) handleWgPeerAddData(msg websocket.WSMessage) {
 	logger.Debug("Received add-remote-subnets-aliases message: %v", msg.Data)
 
+	// Check if tunnel is still running
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring add-remote-subnets-aliases message")
+		return
+	}
+
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {
 		logger.Error("Error marshaling data: %v", err)
@@ -48,6 +54,12 @@ func (o *Olm) handleWgPeerAddData(msg websocket.WSMessage) {
 func (o *Olm) handleWgPeerRemoveData(msg websocket.WSMessage) {
 	logger.Debug("Received remove-remote-subnets-aliases message: %v", msg.Data)
 
+	// Check if tunnel is still running
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring remove-remote-subnets-aliases message")
+		return
+	}
+
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {
 		logger.Error("Error marshaling data: %v", err)
@@ -82,6 +94,12 @@ func (o *Olm) handleWgPeerRemoveData(msg websocket.WSMessage) {
 
 func (o *Olm) handleWgPeerUpdateData(msg websocket.WSMessage) {
 	logger.Debug("Received update-remote-subnets-aliases message: %v", msg.Data)
+
+	// Check if tunnel is still running
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring update-remote-subnets-aliases message")
+		return
+	}
 
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {

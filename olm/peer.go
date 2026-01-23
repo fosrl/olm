@@ -14,6 +14,12 @@ import (
 func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 	logger.Debug("Received add-peer message: %v", msg.Data)
 
+	// Check if tunnel is still running
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring add-peer message")
+		return
+	}
+
 	if o.stopPeerSend != nil {
 		o.stopPeerSend()
 		o.stopPeerSend = nil
@@ -43,6 +49,12 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 
 func (o *Olm) handleWgPeerRemove(msg websocket.WSMessage) {
 	logger.Debug("Received remove-peer message: %v", msg.Data)
+
+	// Check if tunnel is still running
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring remove-peer message")
+		return
+	}
 
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {
@@ -74,6 +86,12 @@ func (o *Olm) handleWgPeerRemove(msg websocket.WSMessage) {
 
 func (o *Olm) handleWgPeerUpdate(msg websocket.WSMessage) {
 	logger.Debug("Received update-peer message: %v", msg.Data)
+
+	// Check if tunnel is still running
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring update-peer message")
+		return
+	}
 
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {
@@ -198,6 +216,12 @@ func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 
 func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 	logger.Debug("Received peer-handshake message: %v", msg.Data)
+
+	// Check if tunnel is still running
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring peer-handshake message")
+		return
+	}
 
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {

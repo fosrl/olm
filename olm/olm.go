@@ -8,6 +8,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fosrl/newt/bind"
@@ -66,6 +67,9 @@ type Olm struct {
 	updateRegister func(newData any)
 
 	stopPeerSend func()
+
+	// WaitGroup to track tunnel lifecycle
+	tunnelWg sync.WaitGroup
 }
 
 // initTunnelInfo creates the shared UDP socket and holepunch manager.
@@ -389,10 +393,22 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 			return nil
 		}
 
+		// Check if tunnel is still running before starting registration
+		if !o.tunnelRunning {
+			logger.Debug("Tunnel is no longer running, skipping registration")
+			return nil
+		}
+
 		publicKey := o.privateKey.PublicKey()
 
 		// delay for 500ms to allow for time for the hp to get processed
 		time.Sleep(500 * time.Millisecond)
+
+		// Check again after sleep in case tunnel was stopped
+		if !o.tunnelRunning {
+			logger.Debug("Tunnel stopped during delay, skipping registration")
+			return nil
+		}
 
 		if o.stopRegister == nil {
 			logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !config.Holepunch)
@@ -417,6 +433,12 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	})
 
 	o.websocket.OnTokenUpdate(func(token string, exitNodes []websocket.ExitNode) {
+		// Check if tunnel is still running and hole punch manager exists
+		if !o.tunnelRunning || o.holePunchManager == nil {
+			logger.Debug("Tunnel stopped or hole punch manager nil, ignoring token update")
+			return
+		}
+
 		o.holePunchManager.SetToken(token)
 
 		logger.Debug("Got exit nodes for hole punching: %v", exitNodes)
@@ -447,6 +469,12 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	})
 
 	o.websocket.OnAuthError(func(statusCode int, message string) {
+		// Check if tunnel is still running
+		if !o.tunnelRunning {
+			logger.Debug("Tunnel stopped, ignoring auth error")
+			return
+		}
+
 		logger.Error("Authentication error (status %d): %s. Terminating tunnel.", statusCode, message)
 		o.apiServer.SetTerminated(true)
 		o.apiServer.SetConnectionStatus(false)
@@ -466,6 +494,10 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		}
 	})
 
+	// Indicate that tunnel is starting
+	o.tunnelWg.Add(1)
+	defer o.tunnelWg.Done()
+
 	// Connect to the WebSocket server
 	if err := o.websocket.Connect(); err != nil {
 		logger.Error("Failed to connect to server: %v", err)
@@ -479,6 +511,13 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 }
 
 func (o *Olm) Close() {
+	// Stop registration first to prevent it from trying to use closed websocket
+	if o.stopRegister != nil {
+		logger.Debug("Stopping registration interval")
+		o.stopRegister()
+		o.stopRegister = nil
+	}
+
 	// send a disconnect message to the cloud to show disconnected
 	if o.websocket != nil {
 		o.websocket.SendMessage("olm/disconnecting", map[string]any{})
@@ -496,11 +535,6 @@ func (o *Olm) Close() {
 	if o.holePunchManager != nil {
 		o.holePunchManager.Stop()
 		o.holePunchManager = nil
-	}
-
-	if o.stopRegister != nil {
-		o.stopRegister()
-		o.stopRegister = nil
 	}
 
 	// Close() also calls Stop() internally
@@ -533,6 +567,21 @@ func (o *Olm) Close() {
 		logger.Debug("Closing MiddleDevice")
 		_ = o.middleDev.Close()
 		o.middleDev = nil
+	} else if o.tdev != nil {
+		// If middleDev was never created but tdev exists, close it directly
+		logger.Debug("Closing TUN device directly (no MiddleDevice)")
+		_ = o.tdev.Close()
+		o.tdev = nil
+	} else if o.tunnelConfig.FileDescriptorTun != 0 {
+		// If we never created a device from the FD, close it explicitly
+		// This can happen if tunnel is stopped during registration before handleConnect
+		logger.Debug("Closing unused TUN file descriptor %d", o.tunnelConfig.FileDescriptorTun)
+		if err := syscall.Close(int(o.tunnelConfig.FileDescriptorTun)); err != nil {
+			logger.Error("Failed to close TUN file descriptor: %v", err)
+		} else {
+			logger.Info("Closed unused TUN file descriptor")
+		}
+		o.tunnelConfig.FileDescriptorTun = 0
 	}
 
 	// Now close WireGuard device - its TUN reader should have exited by now
@@ -565,19 +614,23 @@ func (o *Olm) StopTunnel() error {
 		return nil
 	}
 
+	// Reset the running state BEFORE cleanup to prevent callbacks from accessing nil pointers
+	o.connected = false
+	o.tunnelRunning = false
+
 	// Cancel the tunnel context if it exists
 	if o.tunnelCancel != nil {
+		logger.Debug("Cancelling tunnel context")
 		o.tunnelCancel()
-		// Give it a moment to clean up
-		time.Sleep(200 * time.Millisecond)
 	}
+
+	// Wait for the tunnel goroutine to complete
+	logger.Debug("Waiting for tunnel goroutine to finish")
+	o.tunnelWg.Wait()
+	logger.Debug("Tunnel goroutine finished")
 
 	// Close() will handle sending disconnect message and closing websocket
 	o.Close()
-
-	// Reset the connected state
-	o.connected = false
-	o.tunnelRunning = false
 
 	// Update API server status
 	o.apiServer.SetConnectionStatus(false)
