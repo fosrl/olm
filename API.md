@@ -46,7 +46,18 @@ Initiates a new connection request to a Pangolin server.
   "tlsClientCert": "string",
   "pingInterval": "3s",
   "pingTimeout": "5s",
-  "orgId": "string"
+  "orgId": "string",
+  "fingerprint": {
+    "username": "string",
+    "hostname": "string",
+    "platform": "string",
+    "osVersion": "string",
+    "kernelVersion": "string",
+    "arch": "string",
+    "deviceModel": "string",
+    "serialNumber": "string"
+  },
+  "postures": {}
 }
 ```
 
@@ -67,6 +78,16 @@ Initiates a new connection request to a Pangolin server.
 - `pingInterval`: Interval for pinging the server (default: 3s)
 - `pingTimeout`: Timeout for each ping (default: 5s)
 - `orgId`: Organization ID to connect to
+- `fingerprint`: Device fingerprinting information (should be set before connecting)
+  - `username`: Current username on the device
+  - `hostname`: Device hostname
+  - `platform`: Operating system platform (macos, windows, linux, ios, android, unknown)
+  - `osVersion`: Operating system version
+  - `kernelVersion`: Kernel version
+  - `arch`: System architecture (e.g., amd64, arm64)
+  - `deviceModel`: Device model identifier
+  - `serialNumber`: Device serial number
+- `postures`: Device posture/security information
 
 **Response:**
 - **Status Code:** `202 Accepted`
@@ -205,6 +226,56 @@ Switches to a different organization while maintaining the connection.
 
 ---
 
+### PUT /metadata
+Updates device fingerprinting and posture information. This endpoint can be called at any time to update metadata, but it's recommended to provide this information in the initial `/connect` request or immediately before connecting.
+
+**Request Body:**
+```json
+{
+  "fingerprint": {
+    "username": "string",
+    "hostname": "string",
+    "platform": "string",
+    "osVersion": "string",
+    "kernelVersion": "string",
+    "arch": "string",
+    "deviceModel": "string",
+    "serialNumber": "string"
+  },
+  "postures": {}
+}
+```
+
+**Optional Fields:**
+- `fingerprint`: Device fingerprinting information
+  - `username`: Current username on the device
+  - `hostname`: Device hostname
+  - `platform`: Operating system platform (macos, windows, linux, ios, android, unknown)
+  - `osVersion`: Operating system version
+  - `kernelVersion`: Kernel version
+  - `arch`: System architecture (e.g., amd64, arm64)
+  - `deviceModel`: Device model identifier
+  - `serialNumber`: Device serial number
+- `postures`: Device posture/security information (object with arbitrary key-value pairs)
+
+**Response:**
+- **Status Code:** `200 OK`
+- **Content-Type:** `application/json`
+
+```json
+{
+  "status": "metadata updated"
+}
+```
+
+**Error Responses:**
+- `405 Method Not Allowed` - Non-PUT requests
+- `400 Bad Request` - Invalid JSON
+
+**Note:** It's recommended to call this endpoint BEFORE `/connect` to ensure fingerprinting information is available during the initial connection handshake.
+
+---
+
 ### POST /exit
 Initiates a graceful shutdown of the Olm process.
 
@@ -246,6 +317,22 @@ Simple health check endpoint to verify the API server is running.
 ---
 
 ## Usage Examples
+
+### Update metadata before connecting (recommended)
+```bash
+curl -X PUT http://localhost:9452/metadata \
+  -H "Content-Type: application/json" \
+  -d '{
+    "fingerprint": {
+      "username": "john",
+      "hostname": "johns-laptop",
+      "platform": "macos",
+      "osVersion": "14.2.1",
+      "arch": "arm64",
+      "deviceModel": "MacBookPro18,3"
+    }
+  }'
+```
 
 ### Connect to a peer
 ```bash

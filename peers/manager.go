@@ -50,6 +50,8 @@ type PeerManager struct {
 	// key is the CIDR string, value is a set of siteIds that want this IP
 	allowedIPClaims map[string]map[int]bool
 	APIServer       *api.API
+	
+	PersistentKeepalive int
 }
 
 // NewPeerManager creates a new PeerManager with an internal PeerMonitor
@@ -82,6 +84,13 @@ func (pm *PeerManager) GetPeer(siteId int) (SiteConfig, bool) {
 	defer pm.mu.RUnlock()
 	peer, ok := pm.peers[siteId]
 	return peer, ok
+}
+
+// GetPeerMonitor returns the internal peer monitor instance
+func (pm *PeerManager) GetPeerMonitor() *monitor.PeerMonitor {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return pm.peerMonitor
 }
 
 func (pm *PeerManager) GetAllPeers() []SiteConfig {
@@ -120,7 +129,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	wgConfig := siteConfig
 	wgConfig.AllowedIps = ownedIPs
 
-	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId)); err != nil {
+	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId), pm.PersistentKeepalive); err != nil {
 		return err
 	}
 
@@ -157,6 +166,29 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	go pm.performRapidInitialTest(siteConfig.SiteId, siteConfig.Endpoint)
 
 	return nil
+}
+
+// UpdateAllPeersPersistentKeepalive updates the persistent keepalive interval for all peers at once
+// without recreating them. Returns a map of siteId to error for any peers that failed to update.
+func (pm *PeerManager) UpdateAllPeersPersistentKeepalive(interval int) map[int]error {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	
+	pm.PersistentKeepalive = interval
+
+	errors := make(map[int]error)
+
+	for siteId, peer := range pm.peers {
+		err := UpdatePersistentKeepalive(pm.device, peer.PublicKey, interval)
+		if err != nil {
+			errors[siteId] = err
+		}
+	}
+
+	if len(errors) == 0 {
+		return nil
+	}
+	return errors
 }
 
 func (pm *PeerManager) RemovePeer(siteId int) error {
@@ -238,7 +270,7 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 			ownedIPs := pm.getOwnedAllowedIPs(promotedPeerId)
 			wgConfig := promotedPeer
 			wgConfig.AllowedIps = ownedIPs
-			if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(promotedPeerId)); err != nil {
+			if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(promotedPeerId), pm.PersistentKeepalive); err != nil {
 				logger.Error("Failed to update promoted peer %d: %v", promotedPeerId, err)
 			}
 		}
@@ -314,7 +346,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 	wgConfig := siteConfig
 	wgConfig.AllowedIps = ownedIPs
 
-	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId)); err != nil {
+	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId), pm.PersistentKeepalive); err != nil {
 		return err
 	}
 
@@ -324,7 +356,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 			promotedOwnedIPs := pm.getOwnedAllowedIPs(promotedPeerId)
 			promotedWgConfig := promotedPeer
 			promotedWgConfig.AllowedIps = promotedOwnedIPs
-			if err := ConfigurePeer(pm.device, promotedWgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(promotedPeerId)); err != nil {
+			if err := ConfigurePeer(pm.device, promotedWgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(promotedPeerId), pm.PersistentKeepalive); err != nil {
 				logger.Error("Failed to update promoted peer %d: %v", promotedPeerId, err)
 			}
 		}

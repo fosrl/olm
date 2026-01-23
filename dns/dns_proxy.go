@@ -12,7 +12,6 @@ import (
 	"github.com/fosrl/newt/util"
 	"github.com/fosrl/olm/device"
 	"github.com/miekg/dns"
-	"golang.zx2c4.com/wireguard/tun"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -34,18 +33,17 @@ type DNSProxy struct {
 	ep           *channel.Endpoint
 	proxyIP      netip.Addr
 	upstreamDNS  []string
-	tunnelDNS    bool                 // Whether to tunnel DNS queries over WireGuard or to spit them out locally
+	tunnelDNS    bool // Whether to tunnel DNS queries over WireGuard or to spit them out locally
 	mtu          int
-	tunDevice    tun.Device           // Direct reference to underlying TUN device for responses
-	middleDevice *device.MiddleDevice // Reference to MiddleDevice for packet filtering
+	middleDevice *device.MiddleDevice // Reference to MiddleDevice for packet filtering and TUN writes
 	recordStore  *DNSRecordStore      // Local DNS records
 
 	// Tunnel DNS fields - for sending queries over WireGuard
-	tunnelIP         netip.Addr       // WireGuard interface IP (source for tunneled queries)
-	tunnelStack      *stack.Stack     // Separate netstack for outbound tunnel queries
-	tunnelEp         *channel.Endpoint
+	tunnelIP          netip.Addr   // WireGuard interface IP (source for tunneled queries)
+	tunnelStack       *stack.Stack // Separate netstack for outbound tunnel queries
+	tunnelEp          *channel.Endpoint
 	tunnelActivePorts map[uint16]bool
-	tunnelPortsLock  sync.Mutex
+	tunnelPortsLock   sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -53,7 +51,7 @@ type DNSProxy struct {
 }
 
 // NewDNSProxy creates a new DNS proxy
-func NewDNSProxy(tunDevice tun.Device, middleDevice *device.MiddleDevice, mtu int, utilitySubnet string, upstreamDns []string, tunnelDns bool, tunnelIP string) (*DNSProxy, error) {
+func NewDNSProxy(middleDevice *device.MiddleDevice, mtu int, utilitySubnet string, upstreamDns []string, tunnelDns bool, tunnelIP string) (*DNSProxy, error) {
 	proxyIP, err := PickIPFromSubnet(utilitySubnet)
 	if err != nil {
 		return nil, fmt.Errorf("failed to pick DNS proxy IP from subnet: %v", err)
@@ -68,7 +66,6 @@ func NewDNSProxy(tunDevice tun.Device, middleDevice *device.MiddleDevice, mtu in
 	proxy := &DNSProxy{
 		proxyIP:           proxyIP,
 		mtu:               mtu,
-		tunDevice:         tunDevice,
 		middleDevice:      middleDevice,
 		upstreamDNS:       upstreamDns,
 		tunnelDNS:         tunnelDns,
@@ -602,12 +599,12 @@ func (p *DNSProxy) runTunnelPacketSender() {
 	defer p.wg.Done()
 	logger.Debug("DNS tunnel packet sender goroutine started")
 
-	ticker := time.NewTicker(1 * time.Millisecond)
-	defer ticker.Stop()
-
 	for {
-		select {
-		case <-p.ctx.Done():
+		// Use blocking ReadContext instead of polling - much more CPU efficient
+		// This will block until a packet is available or context is cancelled
+		pkt := p.tunnelEp.ReadContext(p.ctx)
+		if pkt == nil {
+			// Context was cancelled or endpoint closed
 			logger.Debug("DNS tunnel packet sender exiting")
 			// Drain any remaining packets
 			for {
@@ -618,36 +615,28 @@ func (p *DNSProxy) runTunnelPacketSender() {
 				pkt.DecRef()
 			}
 			return
-		case <-ticker.C:
-			// Try to read packets
-			for i := 0; i < 10; i++ {
-				pkt := p.tunnelEp.Read()
-				if pkt == nil {
-					break
-				}
-
-				// Extract packet data
-				slices := pkt.AsSlices()
-				if len(slices) > 0 {
-					var totalSize int
-					for _, slice := range slices {
-						totalSize += len(slice)
-					}
-
-					buf := make([]byte, totalSize)
-					pos := 0
-					for _, slice := range slices {
-						copy(buf[pos:], slice)
-						pos += len(slice)
-					}
-
-					// Inject into MiddleDevice (outbound to WG)
-					p.middleDevice.InjectOutbound(buf)
-				}
-
-				pkt.DecRef()
-			}
 		}
+
+		// Extract packet data
+		slices := pkt.AsSlices()
+		if len(slices) > 0 {
+			var totalSize int
+			for _, slice := range slices {
+				totalSize += len(slice)
+			}
+
+			buf := make([]byte, totalSize)
+			pos := 0
+			for _, slice := range slices {
+				copy(buf[pos:], slice)
+				pos += len(slice)
+			}
+
+			// Inject into MiddleDevice (outbound to WG)
+			p.middleDevice.InjectOutbound(buf)
+		}
+
+		pkt.DecRef()
 	}
 }
 
@@ -660,18 +649,12 @@ func (p *DNSProxy) runPacketSender() {
 	const offset = 16
 
 	for {
-		select {
-		case <-p.ctx.Done():
-			return
-		default:
-		}
-
-		// Read packets from netstack endpoint
-		pkt := p.ep.Read()
+		// Use blocking ReadContext instead of polling - much more CPU efficient
+		// This will block until a packet is available or context is cancelled
+		pkt := p.ep.ReadContext(p.ctx)
 		if pkt == nil {
-			// No packet available, small sleep to avoid busy loop
-			time.Sleep(1 * time.Millisecond)
-			continue
+			// Context was cancelled or endpoint closed
+			return
 		}
 
 		// Extract packet data as slices
@@ -694,9 +677,9 @@ func (p *DNSProxy) runPacketSender() {
 				pos += len(slice)
 			}
 
-			// Write packet to TUN device
+			// Write packet to TUN device via MiddleDevice
 			// offset=16 indicates packet data starts at position 16 in the buffer
-			_, err := p.tunDevice.Write([][]byte{buf}, offset)
+			_, err := p.middleDevice.WriteToTun([][]byte{buf}, offset)
 			if err != nil {
 				logger.Error("Failed to write DNS response to TUN: %v", err)
 			}

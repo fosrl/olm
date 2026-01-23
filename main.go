@@ -10,7 +10,7 @@ import (
 
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/updates"
-	"github.com/fosrl/olm/olm"
+	olmpkg "github.com/fosrl/olm/olm"
 )
 
 func main() {
@@ -210,7 +210,7 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 	}
 
 	// Create a new olm.Config struct and copy values from the main config
-	olmConfig := olm.GlobalConfig{
+	olmConfig := olmpkg.OlmConfig{
 		LogLevel:     config.LogLevel,
 		EnableAPI:    config.EnableAPI,
 		HTTPAddr:     config.HTTPAddr,
@@ -219,15 +219,20 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 		Agent:        "Olm CLI",
 		OnExit:       cancel, // Pass cancel function directly to trigger shutdown
 		OnTerminated: cancel,
+		PprofAddr:    ":4444", // TODO: REMOVE OR MAKE CONFIGURABLE
 	}
 
-	olm.Init(ctx, olmConfig)
+	olm, err := olmpkg.Init(ctx, olmConfig)
+	if err != nil {
+		logger.Fatal("Failed to initialize olm: %v", err)
+	}
+
 	if err := olm.StartApi(); err != nil {
 		logger.Fatal("Failed to start API server: %v", err)
 	}
 
 	if config.ID != "" && config.Secret != "" && config.Endpoint != "" {
-		tunnelConfig := olm.TunnelConfig{
+		tunnelConfig := olmpkg.TunnelConfig{
 			Endpoint:             config.Endpoint,
 			ID:                   config.ID,
 			Secret:               config.Secret,
