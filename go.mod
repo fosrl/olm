@@ -7,7 +7,7 @@ require (
 	github.com/fosrl/newt v1.9.0
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gorilla/websocket v1.5.3
-	github.com/miekg/dns v1.1.70
+	github.com/miekg/dns v1.1.72
 	golang.org/x/sys v0.40.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
