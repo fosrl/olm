@@ -255,6 +255,12 @@ func (o *Olm) handleTerminate(msg websocket.WSMessage) {
 			logger.Error("Error unmarshaling terminate error data: %v", err)
 		} else {
 			logger.Info("Terminate reason (code: %s): %s", errorData.Code, errorData.Message)
+			
+			if errorData.Code == "TERMINATED_INACTIVITY" {
+				logger.Info("Ignoring...")
+				return
+			}
+			
 			// Set the olm error in the API server so it can be exposed via status
 			o.apiServer.SetOlmError(errorData.Code, errorData.Message)
 		}
