@@ -348,3 +348,68 @@ func TestHasRecordWildcard(t *testing.T) {
 		t.Error("Expected HasRecord to return false for base domain")
 	}
 }
+
+func TestDNSRecordStoreCaseInsensitive(t *testing.T) {
+	store := NewDNSRecordStore()
+
+	// Add record with mixed case
+	ip := net.ParseIP("10.0.0.1")
+	err := store.AddRecord("MyHost.AutoCo.Internal", ip)
+	if err != nil {
+		t.Fatalf("Failed to add mixed case record: %v", err)
+	}
+
+	// Test lookup with different cases
+	testCases := []string{
+		"myhost.autoco.internal.",
+		"MYHOST.AUTOCO.INTERNAL.",
+		"MyHost.AutoCo.Internal.",
+		"mYhOsT.aUtOcO.iNtErNaL.",
+	}
+
+	for _, domain := range testCases {
+		ips := store.GetRecords(domain, RecordTypeA)
+		if len(ips) != 1 {
+			t.Errorf("Expected 1 IP for domain %q, got %d", domain, len(ips))
+		}
+		if len(ips) > 0 && !ips[0].Equal(ip) {
+			t.Errorf("Expected IP %v for domain %q, got %v", ip, domain, ips[0])
+		}
+	}
+
+	// Test wildcard with mixed case
+	wildcardIP := net.ParseIP("10.0.0.2")
+	err = store.AddRecord("*.Example.Com", wildcardIP)
+	if err != nil {
+		t.Fatalf("Failed to add mixed case wildcard: %v", err)
+	}
+
+	wildcardTestCases := []string{
+		"host.example.com.",
+		"HOST.EXAMPLE.COM.",
+		"Host.Example.Com.",
+		"HoSt.ExAmPlE.CoM.",
+	}
+
+	for _, domain := range wildcardTestCases {
+		ips := store.GetRecords(domain, RecordTypeA)
+		if len(ips) != 1 {
+			t.Errorf("Expected 1 IP for wildcard domain %q, got %d", domain, len(ips))
+		}
+		if len(ips) > 0 && !ips[0].Equal(wildcardIP) {
+			t.Errorf("Expected IP %v for wildcard domain %q, got %v", wildcardIP, domain, ips[0])
+		}
+	}
+
+	// Test removal with different case
+	store.RemoveRecord("MYHOST.AUTOCO.INTERNAL", nil)
+	ips := store.GetRecords("myhost.autoco.internal.", RecordTypeA)
+	if len(ips) != 0 {
+		t.Errorf("Expected 0 IPs after removal, got %d", len(ips))
+	}
+
+	// Test HasRecord with different case
+	if !store.HasRecord("HOST.EXAMPLE.COM.", RecordTypeA) {
+		t.Error("Expected HasRecord to return true for mixed case wildcard match")
+	}
+}

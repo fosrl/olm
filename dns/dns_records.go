@@ -48,8 +48,8 @@ func (s *DNSRecordStore) AddRecord(domain string, ip net.IP) error {
 		domain = domain + "."
 	}
 
-	// Normalize domain to lowercase
-	domain = dns.Fqdn(domain)
+	// Normalize domain to lowercase FQDN
+	domain = strings.ToLower(dns.Fqdn(domain))
 
 	// Check if domain contains wildcards
 	isWildcard := strings.ContainsAny(domain, "*?")
@@ -86,8 +86,8 @@ func (s *DNSRecordStore) RemoveRecord(domain string, ip net.IP) {
 		domain = domain + "."
 	}
 
-	// Normalize domain to lowercase
-	domain = dns.Fqdn(domain)
+	// Normalize domain to lowercase FQDN
+	domain = strings.ToLower(dns.Fqdn(domain))
 
 	// Check if domain contains wildcards
 	isWildcard := strings.ContainsAny(domain, "*?")
@@ -148,7 +148,7 @@ func (s *DNSRecordStore) GetRecords(domain string, recordType RecordType) []net.
 	defer s.mu.RUnlock()
 
 	// Normalize domain to lowercase FQDN
-	domain = dns.Fqdn(domain)
+	domain = strings.ToLower(dns.Fqdn(domain))
 
 	var records []net.IP
 	switch recordType {
@@ -205,7 +205,7 @@ func (s *DNSRecordStore) HasRecord(domain string, recordType RecordType) bool {
 	defer s.mu.RUnlock()
 
 	// Normalize domain to lowercase FQDN
-	domain = dns.Fqdn(domain)
+	domain = strings.ToLower(dns.Fqdn(domain))
 
 	switch recordType {
 	case RecordTypeA:
