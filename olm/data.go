@@ -157,7 +157,7 @@ func (o *Olm) handleWgPeerUpdateData(msg websocket.WSMessage) {
 func (o *Olm) handleSync(msg websocket.WSMessage) {
 	logger.Debug("Received sync message: %v", msg.Data)
 
-	if !o.connected {
+	if !o.registered {
 		logger.Warn("Not connected, ignoring sync request")
 		return
 	}

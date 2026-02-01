@@ -36,7 +36,7 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 
 	var wgData WgData
 
-	if o.connected {
+	if o.registered {
 		logger.Info("Already connected. Ignoring new connection request.")
 		return
 	}
@@ -208,7 +208,7 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 
 	o.apiServer.SetRegistered(true)
 
-	o.connected = true
+	o.registered = true
 
 	// Start ping monitor now that we are registered and connected
 	o.websocket.StartPingMonitor()

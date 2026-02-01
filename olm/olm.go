@@ -32,7 +32,7 @@ type Olm struct {
 	privateKey wgtypes.Key
 	logFile    *os.File
 
-	connected     bool
+	registered     bool
 	tunnelRunning bool
 
 	uapiListener net.Listener
@@ -386,10 +386,10 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 		o.apiServer.SetConnectionStatus(true)
 
-		if o.connected {
+		if o.registered {
 			o.websocket.StartPingMonitor()
 			
-			logger.Debug("Already connected, skipping registration")
+			logger.Debug("Already registered, skipping registration")
 			return nil
 		}
 
@@ -615,7 +615,7 @@ func (o *Olm) StopTunnel() error {
 	}
 
 	// Reset the running state BEFORE cleanup to prevent callbacks from accessing nil pointers
-	o.connected = false
+	o.registered = false
 	o.tunnelRunning = false
 
 	// Cancel the tunnel context if it exists
@@ -738,9 +738,6 @@ func (o *Olm) SetPowerMode(mode string) error {
 		}
 
 		logger.Info("Switching to low power mode")
-
-		// Mark as disconnected so we re-register on reconnect
-		o.connected = false
 
 		// Update API server connection status
 		if o.apiServer != nil {
