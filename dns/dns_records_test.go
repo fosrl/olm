@@ -183,25 +183,34 @@ func TestDNSRecordStoreWildcard(t *testing.T) {
 	}
 
 	// Test exact match takes precedence
-	ips := store.GetRecords("exact.autoco.internal.", RecordTypeA)
+	ips, exists := store.GetRecords("exact.autoco.internal.", RecordTypeA)
+	if !exists {
+		t.Error("Expected domain to exist")
+	}
 	if len(ips) != 1 {
 		t.Errorf("Expected 1 IP for exact match, got %d", len(ips))
 	}
-	if !ips[0].Equal(exactIP) {
+	if len(ips) > 0 && !ips[0].Equal(exactIP) {
 		t.Errorf("Expected exact IP %v, got %v", exactIP, ips[0])
 	}
 
 	// Test wildcard match
-	ips = store.GetRecords("host.autoco.internal.", RecordTypeA)
+	ips, exists = store.GetRecords("host.autoco.internal.", RecordTypeA)
+	if !exists {
+		t.Error("Expected wildcard match to exist")
+	}
 	if len(ips) != 1 {
 		t.Errorf("Expected 1 IP for wildcard match, got %d", len(ips))
 	}
-	if !ips[0].Equal(wildcardIP) {
+	if len(ips) > 0 && !ips[0].Equal(wildcardIP) {
 		t.Errorf("Expected wildcard IP %v, got %v", wildcardIP, ips[0])
 	}
 
 	// Test non-match (base domain)
-	ips = store.GetRecords("autoco.internal.", RecordTypeA)
+	ips, exists = store.GetRecords("autoco.internal.", RecordTypeA)
+	if exists {
+		t.Error("Expected base domain to not exist")
+	}
 	if len(ips) != 0 {
 		t.Errorf("Expected 0 IPs for base domain, got %d", len(ips))
 	}
@@ -218,7 +227,10 @@ func TestDNSRecordStoreComplexWildcard(t *testing.T) {
 	}
 
 	// Test matching domain
-	ips := store.GetRecords("sub.host-01.autoco.internal.", RecordTypeA)
+	ips, exists := store.GetRecords("sub.host-01.autoco.internal.", RecordTypeA)
+	if !exists {
+		t.Error("Expected complex wildcard match to exist")
+	}
 	if len(ips) != 1 {
 		t.Errorf("Expected 1 IP for complex wildcard match, got %d", len(ips))
 	}
@@ -227,13 +239,19 @@ func TestDNSRecordStoreComplexWildcard(t *testing.T) {
 	}
 
 	// Test non-matching domain (missing prefix)
-	ips = store.GetRecords("host-01.autoco.internal.", RecordTypeA)
+	ips, exists = store.GetRecords("host-01.autoco.internal.", RecordTypeA)
+	if exists {
+		t.Error("Expected domain without prefix to not exist")
+	}
 	if len(ips) != 0 {
 		t.Errorf("Expected 0 IPs for domain without prefix, got %d", len(ips))
 	}
 
 	// Test non-matching domain (wrong ? position)
-	ips = store.GetRecords("sub.host-012.autoco.internal.", RecordTypeA)
+	ips, exists = store.GetRecords("sub.host-012.autoco.internal.", RecordTypeA)
+	if exists {
+		t.Error("Expected domain with wrong ? match to not exist")
+	}
 	if len(ips) != 0 {
 		t.Errorf("Expected 0 IPs for domain with wrong ? match, got %d", len(ips))
 	}
@@ -250,7 +268,10 @@ func TestDNSRecordStoreRemoveWildcard(t *testing.T) {
 	}
 
 	// Verify it exists
-	ips := store.GetRecords("host.autoco.internal.", RecordTypeA)
+	ips, exists := store.GetRecords("host.autoco.internal.", RecordTypeA)
+	if !exists {
+		t.Error("Expected domain to exist before removal")
+	}
 	if len(ips) != 1 {
 		t.Errorf("Expected 1 IP before removal, got %d", len(ips))
 	}
@@ -259,7 +280,10 @@ func TestDNSRecordStoreRemoveWildcard(t *testing.T) {
 	store.RemoveRecord("*.autoco.internal", nil)
 
 	// Verify it's gone
-	ips = store.GetRecords("host.autoco.internal.", RecordTypeA)
+	ips, exists = store.GetRecords("host.autoco.internal.", RecordTypeA)
+	if exists {
+		t.Error("Expected domain to not exist after removal")
+	}
 	if len(ips) != 0 {
 		t.Errorf("Expected 0 IPs after removal, got %d", len(ips))
 	}
@@ -290,19 +314,19 @@ func TestDNSRecordStoreMultipleWildcards(t *testing.T) {
 	}
 
 	// Test domain matching only the prod pattern and the broad pattern
-	ips := store.GetRecords("host.prod.autoco.internal.", RecordTypeA)
+	ips, _ := store.GetRecords("host.prod.autoco.internal.", RecordTypeA)
 	if len(ips) != 2 {
 		t.Errorf("Expected 2 IPs (prod + broad), got %d", len(ips))
 	}
 
 	// Test domain matching only the dev pattern and the broad pattern
-	ips = store.GetRecords("service.dev.autoco.internal.", RecordTypeA)
+	ips, _ = store.GetRecords("service.dev.autoco.internal.", RecordTypeA)
 	if len(ips) != 2 {
 		t.Errorf("Expected 2 IPs (dev + broad), got %d", len(ips))
 	}
 
 	// Test domain matching only the broad pattern
-	ips = store.GetRecords("host.test.autoco.internal.", RecordTypeA)
+	ips, _ = store.GetRecords("host.test.autoco.internal.", RecordTypeA)
 	if len(ips) != 1 {
 		t.Errorf("Expected 1 IP (broad only), got %d", len(ips))
 	}
@@ -319,7 +343,7 @@ func TestDNSRecordStoreIPv6Wildcard(t *testing.T) {
 	}
 
 	// Test wildcard match for IPv6
-	ips := store.GetRecords("host.autoco.internal.", RecordTypeAAAA)
+	ips, _ := store.GetRecords("host.autoco.internal.", RecordTypeAAAA)
 	if len(ips) != 1 {
 		t.Errorf("Expected 1 IPv6 for wildcard match, got %d", len(ips))
 	}
@@ -368,7 +392,7 @@ func TestDNSRecordStoreCaseInsensitive(t *testing.T) {
 	}
 
 	for _, domain := range testCases {
-		ips := store.GetRecords(domain, RecordTypeA)
+		ips, _ := store.GetRecords(domain, RecordTypeA)
 		if len(ips) != 1 {
 			t.Errorf("Expected 1 IP for domain %q, got %d", domain, len(ips))
 		}
@@ -392,7 +416,7 @@ func TestDNSRecordStoreCaseInsensitive(t *testing.T) {
 	}
 
 	for _, domain := range wildcardTestCases {
-		ips := store.GetRecords(domain, RecordTypeA)
+		ips, _ := store.GetRecords(domain, RecordTypeA)
 		if len(ips) != 1 {
 			t.Errorf("Expected 1 IP for wildcard domain %q, got %d", domain, len(ips))
 		}
@@ -403,7 +427,7 @@ func TestDNSRecordStoreCaseInsensitive(t *testing.T) {
 
 	// Test removal with different case
 	store.RemoveRecord("MYHOST.AUTOCO.INTERNAL", nil)
-	ips := store.GetRecords("myhost.autoco.internal.", RecordTypeA)
+	ips, _ := store.GetRecords("myhost.autoco.internal.", RecordTypeA)
 	if len(ips) != 0 {
 		t.Errorf("Expected 0 IPs after removal, got %d", len(ips))
 	}
@@ -752,7 +776,7 @@ func TestAutomaticPTRRecordOnRemove(t *testing.T) {
 	}
 
 	// Verify A record is also gone
-	ips := store.GetRecords(domain, RecordTypeA)
+	ips, _ := store.GetRecords(domain, RecordTypeA)
 	if len(ips) != 0 {
 		t.Errorf("Expected A record to be removed, got %d records", len(ips))
 	}
