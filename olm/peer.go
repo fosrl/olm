@@ -20,31 +20,39 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 		return
 	}
 
-	if o.stopPeerSend != nil {
-		o.stopPeerSend()
-		o.stopPeerSend = nil
-	}
-
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {
 		logger.Error("Error marshaling data: %v", err)
 		return
 	}
 
-	var siteConfig peers.SiteConfig
-	if err := json.Unmarshal(jsonData, &siteConfig); err != nil {
+	var siteConfigMsg struct {
+		peers.SiteConfig
+		ChainId string `json:"chainId"`
+	}
+	if err := json.Unmarshal(jsonData, &siteConfigMsg); err != nil {
 		logger.Error("Error unmarshaling add data: %v", err)
 		return
 	}
 
+	if siteConfigMsg.ChainId != "" {
+		o.peerSendMu.Lock()
+		if stop, ok := o.stopPeerSends[siteConfigMsg.ChainId]; ok {
+			stop()
+			delete(o.stopPeerSends, siteConfigMsg.ChainId)
+		}
+		o.peerSendMu.Unlock()
+	}
+
 	_ = o.holePunchManager.TriggerHolePunch() // Trigger immediate hole punch attempt so that if the peer decides to relay we have already punched close to when we need it
 
-	if err := o.peerManager.AddPeer(siteConfig); err != nil {
+	if err := o.peerManager.AddPeer(siteConfigMsg.SiteConfig); err != nil {
 		logger.Error("Failed to add peer: %v", err)
 		return
 	}
 
-	logger.Info("Successfully added peer for site %d", siteConfig.SiteId)
+
+	logger.Info("Successfully added peer for site %d", siteConfigMsg.SiteId)
 }
 
 func (o *Olm) handleWgPeerRemove(msg websocket.WSMessage) {
@@ -230,7 +238,8 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 	}
 
 	var handshakeData struct {
-		SiteId   int `json:"siteId"`
+		SiteId  int    `json:"siteId"`
+		ChainId string `json:"chainId"`
 		ExitNode struct {
 			PublicKey string `json:"publicKey"`
 			Endpoint  string `json:"endpoint"`
@@ -242,6 +251,16 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 		logger.Error("Error unmarshaling handshake data: %v", err)
 		return
 	}
+	
+	// Stop the peer init sender for this chain, if any
+	if handshakeData.ChainId != "" {
+		o.peerSendMu.Lock()
+		if stop, ok := o.stopPeerInits[handshakeData.ChainId]; ok {
+			stop()
+			delete(o.stopPeerInits, handshakeData.ChainId)
+		}
+		o.peerSendMu.Unlock()
+	}	
 
 	// Get existing peer from PeerManager
 	_, exists := o.peerManager.GetPeer(handshakeData.SiteId)
@@ -273,10 +292,64 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 	o.holePunchManager.TriggerHolePunch()             // Trigger immediate hole punch attempt
 	o.holePunchManager.ResetServerHolepunchInterval() // start sending immediately again so we fill in the endpoint on the cloud
 
-	// Send handshake acknowledgment back to server with retry
-	o.stopPeerSend, _ = o.websocket.SendMessageInterval("olm/wg/server/peer/add", map[string]interface{}{
-		"siteId": handshakeData.SiteId,
-	}, 1*time.Second, 10)
+	// Send handshake acknowledgment back to server with retry, keyed by chainId
+	chainId := handshakeData.ChainId
+	if chainId == "" {
+		chainId = generateChainId()
+	}
+	o.peerSendMu.Lock()
+	stopFunc, _ := o.websocket.SendMessageInterval("olm/wg/server/peer/add", map[string]interface{}{
+		"siteId":  handshakeData.SiteId,
+		"chainId": chainId,
+	}, 2*time.Second, 10)
+	o.stopPeerSends[chainId] = stopFunc
+	o.peerSendMu.Unlock()
 
 	logger.Info("Initiated handshake for site %d with exit node %s", handshakeData.SiteId, handshakeData.ExitNode.Endpoint)
+}
+
+func (o *Olm) handleCancelChain(msg websocket.WSMessage) {
+	logger.Debug("Received cancel-chain message: %v", msg.Data)
+
+	jsonData, err := json.Marshal(msg.Data)
+	if err != nil {
+		logger.Error("Error marshaling cancel-chain data: %v", err)
+		return
+	}
+
+	var cancelData struct {
+		ChainId string `json:"chainId"`
+	}
+	if err := json.Unmarshal(jsonData, &cancelData); err != nil {
+		logger.Error("Error unmarshaling cancel-chain data: %v", err)
+		return
+	}
+
+	if cancelData.ChainId == "" {
+		logger.Warn("Received cancel-chain message with no chainId")
+		return
+	}
+
+	o.peerSendMu.Lock()
+	defer o.peerSendMu.Unlock()
+
+	found := false
+
+	if stop, ok := o.stopPeerInits[cancelData.ChainId]; ok {
+		stop()
+		delete(o.stopPeerInits, cancelData.ChainId)
+		found = true
+	}
+
+	if stop, ok := o.stopPeerSends[cancelData.ChainId]; ok {
+		stop()
+		delete(o.stopPeerSends, cancelData.ChainId)
+		found = true
+	}
+
+	if found {
+		logger.Info("Cancelled chain %s", cancelData.ChainId)
+	} else {
+		logger.Warn("Cancel-chain: no active sender found for chain %s", cancelData.ChainId)
+	}
 }

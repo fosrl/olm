@@ -2,6 +2,8 @@ package olm
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
@@ -65,8 +67,9 @@ type Olm struct {
 	stopRegister   func()
 	updateRegister func(newData any)
 
-	stopPeerSend func()
-	stopPeerInit func()
+	stopPeerSends map[string]func()
+	stopPeerInits map[string]func()
+	peerSendMu    sync.Mutex
 
 	// WaitGroup to track tunnel lifecycle
 	tunnelWg sync.WaitGroup
@@ -115,6 +118,13 @@ func (o *Olm) initTunnelInfo(clientID string) error {
 	o.holePunchManager = holepunch.NewManager(sharedBind, clientID, "olm", privateKey.PublicKey().String())
 
 	return nil
+}
+
+// generateChainId generates a random chain ID for tracking peer sender lifecycles.
+func generateChainId() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
@@ -167,10 +177,12 @@ func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 	apiServer.SetAgent(config.Agent)
 
 	newOlm := &Olm{
-		logFile:   logFile,
-		olmCtx:    ctx,
-		apiServer: apiServer,
-		olmConfig: config,
+		logFile:       logFile,
+		olmCtx:        ctx,
+		apiServer:     apiServer,
+		olmConfig:     config,
+		stopPeerSends: make(map[string]func()),
+		stopPeerInits: make(map[string]func()),
 	}
 
 	newOlm.registerAPICallbacks()
@@ -287,12 +299,17 @@ func (o *Olm) registerAPICallbacks() {
 		},
 		func(req api.JITConnectionRequest) error {
 			logger.Info("Processing JIT connect request via API: site=%s resource=%s", req.Site, req.Resource)
-			
-			o.stopPeerInit, _ = o.websocket.SendMessageInterval("olm/wg/server/peer/init", map[string]interface{}{
-				"siteId": req.Site,
+
+			chainId := generateChainId()
+			o.peerSendMu.Lock()
+			stopFunc, _ := o.websocket.SendMessageInterval("olm/wg/server/peer/init", map[string]interface{}{
+				"siteId":     req.Site,
 				"resourceId": req.Resource,
-			}, 2*time.Second, 10)	
-			
+				"chainId":    chainId,
+			}, 2*time.Second, 10)
+			o.stopPeerInits[chainId] = stopFunc
+			o.peerSendMu.Unlock()
+
 			return nil
 		},
 	)
@@ -389,6 +406,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 	// Handler for peer handshake - adds exit node to holepunch rotation and notifies server
 	o.websocket.RegisterHandler("olm/wg/peer/holepunch/site/add", o.handleWgPeerHolepunchAddSite)
+	o.websocket.RegisterHandler("olm/wg/peer/chain/cancel", o.handleCancelChain)
 	o.websocket.RegisterHandler("olm/sync", o.handleSync)
 
 	o.websocket.OnConnect(func() error {
@@ -431,7 +449,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 				"userToken":   userToken,
 				"fingerprint": o.fingerprint,
 				"postures":    o.postures,
-			}, 1*time.Second, 10)
+			}, 2*time.Second, 10)
 
 			// Invoke onRegistered callback if configured
 			if o.olmConfig.OnRegistered != nil {
@@ -527,6 +545,22 @@ func (o *Olm) Close() {
 		o.stopRegister()
 		o.stopRegister = nil
 	}
+
+	// Stop all pending peer init and send senders before closing websocket
+	o.peerSendMu.Lock()
+	for _, stop := range o.stopPeerInits {
+		if stop != nil {
+			stop()
+		}
+	}
+	o.stopPeerInits = make(map[string]func())
+	for _, stop := range o.stopPeerSends {
+		if stop != nil {
+			stop()
+		}
+	}
+	o.stopPeerSends = make(map[string]func())
+	o.peerSendMu.Unlock()
 
 	// send a disconnect message to the cloud to show disconnected
 	if o.websocket != nil {
