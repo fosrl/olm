@@ -125,7 +125,6 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 		logger.Debug("Ignoring add-peer message: peerManager is nil (shutdown in progress)")
 		return
 	}
-
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {
 		logger.Error("Error marshaling data: %v", err)
@@ -157,10 +156,17 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 		o.stopPeerSends = make(map[string]func())
 		o.peerSendMu.Unlock()
 	}
-
 	if siteConfigMsg.PublicKey == "" {
 		logger.Warn("Skipping add-peer for site %d (%s): no public key available (site may not be connected)", siteConfigMsg.SiteId, siteConfigMsg.Name)
 		return
+	}
+	if siteConfigMsg.ChainId != "" {
+		o.peerSendMu.Lock()
+		if stop, ok := o.stopPeerSends[siteConfigMsg.ChainId]; ok {
+			stop()
+			delete(o.stopPeerSends, siteConfigMsg.ChainId)
+		}
+		o.peerSendMu.Unlock()
 	}
 
 	_ = o.holePunchManager.TriggerHolePunch() // Trigger immediate hole punch attempt so that if the peer decides to relay we have already punched close to when we need it
@@ -169,7 +175,6 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 		logger.Error("Failed to add peer: %v", err)
 		return
 	}
-
 	logger.Info("Successfully added peer for site %d", siteConfigMsg.SiteId)
 }
 
@@ -393,8 +398,8 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 	}
 
 	var handshakeData struct {
-		SiteId   int    `json:"siteId"`
-		ChainId  string `json:"chainId"`
+		SiteId  int    `json:"siteId"`
+		ChainId string `json:"chainId"`
 		ExitNode struct {
 			PublicKey string `json:"publicKey"`
 			Endpoint  string `json:"endpoint"`
@@ -406,6 +411,16 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 		logger.Error("Error unmarshaling handshake data: %v", err)
 		return
 	}
+	
+	// Stop the peer init sender for this chain, if any
+	if handshakeData.ChainId != "" {
+		o.peerSendMu.Lock()
+		if stop, ok := o.stopPeerInits[handshakeData.ChainId]; ok {
+			stop()
+			delete(o.stopPeerInits, handshakeData.ChainId)
+		}
+		o.peerSendMu.Unlock()
+	}	
 
 	// Stop the peer init sender for this chain, if any
 	if handshakeData.ChainId != "" {
