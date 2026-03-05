@@ -220,6 +220,7 @@ func (o *Olm) handleSync(msg websocket.WSMessage) {
 			logger.Info("Sync: Adding new peer for site %d", siteId)
 
 			o.holePunchManager.TriggerHolePunch()
+			o.holePunchManager.ResetServerHolepunchInterval() // start sending immediately again so we fill in the endpoint on the cloud
 
 			// // TODO: do we need to send the message to the cloud to add the peer that way?
 			// if err := o.peerManager.AddPeer(expectedSite); err != nil {

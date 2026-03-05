@@ -66,6 +66,7 @@ type Olm struct {
 	updateRegister func(newData any)
 
 	stopPeerSend func()
+	stopPeerInit func()
 
 	// WaitGroup to track tunnel lifecycle
 	tunnelWg sync.WaitGroup
@@ -283,6 +284,16 @@ func (o *Olm) registerAPICallbacks() {
 		func(req api.PowerModeRequest) error {
 			logger.Info("Processing power mode change request via API: mode=%s", req.Mode)
 			return o.SetPowerMode(req.Mode)
+		},
+		func(req api.JITConnectionRequest) error {
+			logger.Info("Processing JIT connect request via API: site=%s resource=%s", req.Site, req.Resource)
+			
+			o.stopPeerInit, _ = o.websocket.SendMessageInterval("olm/wg/server/peer/init", map[string]interface{}{
+				"siteId": req.Site,
+				"resourceId": req.Resource,
+			}, 2*time.Second, 10)	
+			
+			return nil
 		},
 	)
 }
