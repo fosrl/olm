@@ -36,7 +36,7 @@ type PeerMonitor struct {
 	timeout     time.Duration
 	maxAttempts int
 	wsClient    *websocket.Client
-	publicDNS []string
+	publicDNS   []string
 
 	// Relay sender tracking
 	relaySends  map[string]func()
@@ -104,7 +104,7 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		wsClient:             wsClient,
 		middleDev:            middleDev,
 		localIP:              localIP,
-		publicDNS:          publicDNS,
+		publicDNS:            publicDNS,
 		activePorts:          make(map[uint16]bool),
 		nsCtx:                ctx,
 		nsCancel:             cancel,
@@ -473,7 +473,6 @@ func (pm *PeerMonitor) CancelRelaySend(chainId string) {
 		logger.Info("Cancelled all relay senders")
 		return
 	}
-
 	if stop, ok := pm.relaySends[chainId]; ok {
 		stop()
 		delete(pm.relaySends, chainId)

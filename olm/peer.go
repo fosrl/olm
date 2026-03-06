@@ -398,8 +398,8 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 	}
 
 	var handshakeData struct {
-		SiteId  int    `json:"siteId"`
-		ChainId string `json:"chainId"`
+		SiteId   int    `json:"siteId"`
+		ChainId  string `json:"chainId"`
 		ExitNode struct {
 			PublicKey string `json:"publicKey"`
 			Endpoint  string `json:"endpoint"`
@@ -411,7 +411,7 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 		logger.Error("Error unmarshaling handshake data: %v", err)
 		return
 	}
-	
+
 	// Stop the peer init sender for this chain, if any
 	if handshakeData.ChainId != "" {
 		o.peerSendMu.Lock()
@@ -420,7 +420,7 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 			delete(o.stopPeerInits, handshakeData.ChainId)
 		}
 		o.peerSendMu.Unlock()
-	}	
+	}
 
 	// Stop the peer init sender for this chain, if any
 	if handshakeData.ChainId != "" {
