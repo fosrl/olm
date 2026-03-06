@@ -172,10 +172,19 @@ func (o *Olm) handleWgPeerRelay(msg websocket.WSMessage) {
 		return
 	}
 
-	var relayData peers.RelayPeerData
+	var relayData struct {
+		peers.RelayPeerData
+		ChainId string `json:"chainId"`
+	}
 	if err := json.Unmarshal(jsonData, &relayData); err != nil {
 		logger.Error("Error unmarshaling relay data: %v", err)
 		return
+	}
+
+	if relayData.ChainId != "" {
+		if monitor := o.peerManager.GetPeerMonitor(); monitor != nil {
+			monitor.CancelRelaySend(relayData.ChainId)
+		}
 	}
 
 	primaryRelay, err := util.ResolveDomain(relayData.RelayEndpoint)
@@ -205,10 +214,19 @@ func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 		return
 	}
 
-	var relayData peers.UnRelayPeerData
+	var relayData struct {
+		peers.UnRelayPeerData
+		ChainId string `json:"chainId"`
+	}
 	if err := json.Unmarshal(jsonData, &relayData); err != nil {
 		logger.Error("Error unmarshaling relay data: %v", err)
 		return
+	}
+
+	if relayData.ChainId != "" {
+		if monitor := o.peerManager.GetPeerMonitor(); monitor != nil {
+			monitor.CancelRelaySend(relayData.ChainId)
+		}
 	}
 
 	primaryRelay, err := util.ResolveDomain(relayData.Endpoint)
