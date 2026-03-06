@@ -51,7 +51,6 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 		return
 	}
 
-
 	logger.Info("Successfully added peer for site %d", siteConfigMsg.SiteId)
 }
 
@@ -181,10 +180,8 @@ func (o *Olm) handleWgPeerRelay(msg websocket.WSMessage) {
 		return
 	}
 
-	if relayData.ChainId != "" {
-		if monitor := o.peerManager.GetPeerMonitor(); monitor != nil {
-			monitor.CancelRelaySend(relayData.ChainId)
-		}
+	if monitor := o.peerManager.GetPeerMonitor(); monitor != nil {
+		monitor.CancelRelaySend(relayData.ChainId)
 	}
 
 	primaryRelay, err := util.ResolveDomain(relayData.RelayEndpoint)
@@ -223,10 +220,8 @@ func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 		return
 	}
 
-	if relayData.ChainId != "" {
-		if monitor := o.peerManager.GetPeerMonitor(); monitor != nil {
-			monitor.CancelRelaySend(relayData.ChainId)
-		}
+	if monitor := o.peerManager.GetPeerMonitor(); monitor != nil {
+		monitor.CancelRelaySend(relayData.ChainId)
 	}
 
 	primaryRelay, err := util.ResolveDomain(relayData.Endpoint)
@@ -256,8 +251,8 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 	}
 
 	var handshakeData struct {
-		SiteId  int    `json:"siteId"`
-		ChainId string `json:"chainId"`
+		SiteId   int    `json:"siteId"`
+		ChainId  string `json:"chainId"`
 		ExitNode struct {
 			PublicKey string `json:"publicKey"`
 			Endpoint  string `json:"endpoint"`
@@ -269,7 +264,7 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 		logger.Error("Error unmarshaling handshake data: %v", err)
 		return
 	}
-	
+
 	// Stop the peer init sender for this chain, if any
 	if handshakeData.ChainId != "" {
 		o.peerSendMu.Lock()
@@ -278,7 +273,7 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 			delete(o.stopPeerInits, handshakeData.ChainId)
 		}
 		o.peerSendMu.Unlock()
-	}	
+	}
 
 	// Get existing peer from PeerManager
 	_, exists := o.peerManager.GetPeer(handshakeData.SiteId)

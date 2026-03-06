@@ -33,13 +33,13 @@ type PeerMonitor struct {
 	monitors    map[int]*Client
 	mutex       sync.Mutex
 	running     bool
-	timeout         time.Duration
+	timeout     time.Duration
 	maxAttempts int
 	wsClient    *websocket.Client
 
 	// Relay sender tracking
-	relaySends   map[string]func()
-	relaySendMu  sync.Mutex
+	relaySends  map[string]func()
+	relaySendMu sync.Mutex
 
 	// Netstack fields
 	middleDev   *middleDevice.MiddleDevice
@@ -53,13 +53,13 @@ type PeerMonitor struct {
 	nsWg        sync.WaitGroup
 
 	// Holepunch testing fields
-	sharedBind         *bind.SharedBind
-	holepunchTester    *holepunch.HolepunchTester
-	holepunchTimeout   time.Duration
-	holepunchEndpoints map[int]string // siteID -> endpoint for holepunch testing
-	holepunchStatus    map[int]bool   // siteID -> connected status
-	holepunchStopChan    chan struct{}
-	holepunchUpdateChan  chan struct{}
+	sharedBind          *bind.SharedBind
+	holepunchTester     *holepunch.HolepunchTester
+	holepunchTimeout    time.Duration
+	holepunchEndpoints  map[int]string // siteID -> endpoint for holepunch testing
+	holepunchStatus     map[int]bool   // siteID -> connected status
+	holepunchStopChan   chan struct{}
+	holepunchUpdateChan chan struct{}
 
 	// Relay tracking fields
 	relayedPeers         map[int]bool // siteID -> whether the peer is currently relayed
@@ -456,9 +456,21 @@ func (pm *PeerMonitor) sendUnRelay(siteID int) error {
 }
 
 // CancelRelaySend stops the interval sender for the given chainId, if one exists.
+// If chainId is empty, all active relay senders are stopped.
 func (pm *PeerMonitor) CancelRelaySend(chainId string) {
 	pm.relaySendMu.Lock()
 	defer pm.relaySendMu.Unlock()
+
+	if chainId == "" {
+		for id, stop := range pm.relaySends {
+			if stop != nil {
+				stop()
+			}
+			delete(pm.relaySends, id)
+		}
+		logger.Info("Cancelled all relay senders")
+		return
+	}
 
 	if stop, ok := pm.relaySends[chainId]; ok {
 		stop()
@@ -567,7 +579,7 @@ func (pm *PeerMonitor) runHolepunchMonitor() {
 			pm.holepunchCurrentInterval = pm.holepunchMinInterval
 			currentInterval := pm.holepunchCurrentInterval
 			pm.mutex.Unlock()
-			
+
 			timer.Reset(currentInterval)
 			logger.Debug("Holepunch monitor interval updated, reset to %v", currentInterval)
 		case <-timer.C:
