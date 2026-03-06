@@ -419,16 +419,6 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 			stop()
 			delete(o.stopPeerInits, handshakeData.ChainId)
 		}
-		o.peerSendMu.Unlock()
-	}
-
-	// Stop the peer init sender for this chain, if any
-	if handshakeData.ChainId != "" {
-		o.peerSendMu.Lock()
-		if stop, ok := o.stopPeerInits[handshakeData.ChainId]; ok {
-			stop()
-			delete(o.stopPeerInits, handshakeData.ChainId)
-		}
 		// If this chain was initiated by a DNS-triggered JIT request, clear the
 		// pending entry so the site can be re-triggered if needed in the future.
 		delete(o.jitPendingSites, handshakeData.SiteId)
