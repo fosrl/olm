@@ -447,19 +447,20 @@ func (p *DNSProxy) checkLocalRecords(query *dns.Msg, question dns.Question) *dns
 		return nil
 	}
 
-	ips := p.recordStore.GetRecords(question.Name, recordType)
-	if len(ips) == 0 {
+	ips, exists := p.recordStore.GetRecords(question.Name, recordType)
+	if !exists {
+		// Domain not found in local records, forward to upstream
 		return nil
 	}
 
 	logger.Debug("Found %d local record(s) for %s", len(ips), question.Name)
 
-	// Create response message
+	// Create response message (NODATA if no records, otherwise with answers)
 	response := new(dns.Msg)
 	response.SetReply(query)
 	response.Authoritative = true
 
-	// Add answer records
+	// Add answer records (loop is a no-op if ips is empty)
 	for _, ip := range ips {
 		var rr dns.RR
 		if question.Qtype == dns.TypeA {
@@ -730,8 +731,9 @@ func (p *DNSProxy) RemoveDNSRecord(domain string, ip net.IP) {
 	p.recordStore.RemoveRecord(domain, ip)
 }
 
-// GetDNSRecords returns all IP addresses for a domain and record type
-func (p *DNSProxy) GetDNSRecords(domain string, recordType RecordType) []net.IP {
+// GetDNSRecords returns all IP addresses for a domain and record type.
+// The second return value indicates whether the domain exists.
+func (p *DNSProxy) GetDNSRecords(domain string, recordType RecordType) ([]net.IP, bool) {
 	return p.recordStore.GetRecords(domain, recordType)
 }
 
