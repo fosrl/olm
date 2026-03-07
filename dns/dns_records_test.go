@@ -170,14 +170,14 @@ func TestDNSRecordStoreWildcard(t *testing.T) {
 
 	// Add wildcard records
 	wildcardIP := net.ParseIP("10.0.0.1")
-	err := store.AddRecord("*.autoco.internal", wildcardIP)
+	err := store.AddRecord("*.autoco.internal", wildcardIP, 0)
 	if err != nil {
 		t.Fatalf("Failed to add wildcard record: %v", err)
 	}
 
 	// Add exact record
 	exactIP := net.ParseIP("10.0.0.2")
-	err = store.AddRecord("exact.autoco.internal", exactIP)
+	err = store.AddRecord("exact.autoco.internal", exactIP, 0)
 	if err != nil {
 		t.Fatalf("Failed to add exact record: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestDNSRecordStoreComplexWildcard(t *testing.T) {
 
 	// Add complex wildcard pattern
 	ip1 := net.ParseIP("10.0.0.1")
-	err := store.AddRecord("*.host-0?.autoco.internal", ip1)
+	err := store.AddRecord("*.host-0?.autoco.internal", ip1, 0)
 	if err != nil {
 		t.Fatalf("Failed to add wildcard record: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestDNSRecordStoreRemoveWildcard(t *testing.T) {
 
 	// Add wildcard record
 	ip := net.ParseIP("10.0.0.1")
-	err := store.AddRecord("*.autoco.internal", ip)
+	err := store.AddRecord("*.autoco.internal", ip, 0)
 	if err != nil {
 		t.Fatalf("Failed to add wildcard record: %v", err)
 	}
@@ -297,18 +297,18 @@ func TestDNSRecordStoreMultipleWildcards(t *testing.T) {
 	ip2 := net.ParseIP("10.0.0.2")
 	ip3 := net.ParseIP("10.0.0.3")
 
-	err := store.AddRecord("*.prod.autoco.internal", ip1)
+	err := store.AddRecord("*.prod.autoco.internal", ip1, 0)
 	if err != nil {
 		t.Fatalf("Failed to add first wildcard: %v", err)
 	}
 
-	err = store.AddRecord("*.dev.autoco.internal", ip2)
+	err = store.AddRecord("*.dev.autoco.internal", ip2, 0)
 	if err != nil {
 		t.Fatalf("Failed to add second wildcard: %v", err)
 	}
 
 	// Add a broader wildcard that matches both
-	err = store.AddRecord("*.autoco.internal", ip3)
+	err = store.AddRecord("*.autoco.internal", ip3, 0)
 	if err != nil {
 		t.Fatalf("Failed to add third wildcard: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestDNSRecordStoreIPv6Wildcard(t *testing.T) {
 
 	// Add IPv6 wildcard record
 	ip := net.ParseIP("2001:db8::1")
-	err := store.AddRecord("*.autoco.internal", ip)
+	err := store.AddRecord("*.autoco.internal", ip, 0)
 	if err != nil {
 		t.Fatalf("Failed to add IPv6 wildcard record: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestHasRecordWildcard(t *testing.T) {
 
 	// Add wildcard record
 	ip := net.ParseIP("10.0.0.1")
-	err := store.AddRecord("*.autoco.internal", ip)
+	err := store.AddRecord("*.autoco.internal", ip, 0)
 	if err != nil {
 		t.Fatalf("Failed to add wildcard record: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestDNSRecordStoreCaseInsensitive(t *testing.T) {
 
 	// Add record with mixed case
 	ip := net.ParseIP("10.0.0.1")
-	err := store.AddRecord("MyHost.AutoCo.Internal", ip)
+	err := store.AddRecord("MyHost.AutoCo.Internal", ip, 0)
 	if err != nil {
 		t.Fatalf("Failed to add mixed case record: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestDNSRecordStoreCaseInsensitive(t *testing.T) {
 
 	// Test wildcard with mixed case
 	wildcardIP := net.ParseIP("10.0.0.2")
-	err = store.AddRecord("*.Example.Com", wildcardIP)
+	err = store.AddRecord("*.Example.Com", wildcardIP, 0)
 	if err != nil {
 		t.Fatalf("Failed to add mixed case wildcard: %v", err)
 	}
@@ -689,7 +689,7 @@ func TestClearPTRRecords(t *testing.T) {
 	store.AddPTRRecord(ip2, "host2.example.com.")
 
 	// Add some A records too
-	store.AddRecord("test.example.com.", net.ParseIP("10.0.0.1"))
+	store.AddRecord("test.example.com.", net.ParseIP("10.0.0.1"), 0)
 
 	// Verify PTR records exist
 	if !store.HasPTRRecord("1.1.168.192.in-addr.arpa.") {
@@ -719,7 +719,7 @@ func TestAutomaticPTRRecordOnAdd(t *testing.T) {
 	// Add an A record - should automatically add PTR record
 	domain := "host.example.com."
 	ip := net.ParseIP("192.168.1.100")
-	err := store.AddRecord(domain, ip)
+	err := store.AddRecord(domain, ip, 0)
 	if err != nil {
 		t.Fatalf("Failed to add A record: %v", err)
 	}
@@ -737,7 +737,7 @@ func TestAutomaticPTRRecordOnAdd(t *testing.T) {
 	// Add AAAA record - should also automatically add PTR record
 	domain6 := "ipv6host.example.com."
 	ip6 := net.ParseIP("2001:db8::1")
-	err = store.AddRecord(domain6, ip6)
+	err = store.AddRecord(domain6, ip6, 0)
 	if err != nil {
 		t.Fatalf("Failed to add AAAA record: %v", err)
 	}
@@ -759,7 +759,7 @@ func TestAutomaticPTRRecordOnRemove(t *testing.T) {
 	// Add an A record (with automatic PTR)
 	domain := "host.example.com."
 	ip := net.ParseIP("192.168.1.100")
-	store.AddRecord(domain, ip)
+	store.AddRecord(domain, ip, 0)
 
 	// Verify PTR exists
 	reverseDomain := "100.1.168.192.in-addr.arpa."
@@ -789,8 +789,8 @@ func TestAutomaticPTRRecordOnRemoveAll(t *testing.T) {
 	domain := "host.example.com."
 	ip1 := net.ParseIP("192.168.1.100")
 	ip2 := net.ParseIP("192.168.1.101")
-	store.AddRecord(domain, ip1)
-	store.AddRecord(domain, ip2)
+	store.AddRecord(domain, ip1, 0)
+	store.AddRecord(domain, ip2, 0)
 
 	// Verify both PTR records exist
 	reverseDomain1 := "100.1.168.192.in-addr.arpa."
@@ -820,7 +820,7 @@ func TestNoPTRForWildcardRecords(t *testing.T) {
 	// Add wildcard record - should NOT create PTR record
 	domain := "*.example.com."
 	ip := net.ParseIP("192.168.1.100")
-	err := store.AddRecord(domain, ip)
+	err := store.AddRecord(domain, ip, 0)
 	if err != nil {
 		t.Fatalf("Failed to add wildcard record: %v", err)
 	}
@@ -844,7 +844,7 @@ func TestPTRRecordOverwrite(t *testing.T) {
 	// Add first domain with IP
 	domain1 := "host1.example.com."
 	ip := net.ParseIP("192.168.1.100")
-	store.AddRecord(domain1, ip)
+	store.AddRecord(domain1, ip, 0)
 
 	// Verify PTR points to first domain
 	reverseDomain := "100.1.168.192.in-addr.arpa."
@@ -858,7 +858,7 @@ func TestPTRRecordOverwrite(t *testing.T) {
 
 	// Add second domain with same IP - should overwrite PTR
 	domain2 := "host2.example.com."
-	store.AddRecord(domain2, ip)
+	store.AddRecord(domain2, ip, 0)
 
 	// Verify PTR now points to second domain (last one added)
 	result, ok = store.GetPTRRecord(reverseDomain)

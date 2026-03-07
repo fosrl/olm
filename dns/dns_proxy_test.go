@@ -14,7 +14,7 @@ func TestCheckLocalRecordsNODATAForAAAA(t *testing.T) {
 
 	// Add an A record for a domain (no AAAA record)
 	ip := net.ParseIP("10.0.0.1")
-	err := proxy.recordStore.AddRecord("myservice.internal", ip)
+	err := proxy.recordStore.AddRecord("myservice.internal", ip, 0)
 	if err != nil {
 		t.Fatalf("Failed to add A record: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestCheckLocalRecordsNODATAForA(t *testing.T) {
 
 	// Add an AAAA record for a domain (no A record)
 	ip := net.ParseIP("2001:db8::1")
-	err := proxy.recordStore.AddRecord("ipv6only.internal", ip)
+	err := proxy.recordStore.AddRecord("ipv6only.internal", ip, 0)
 	if err != nil {
 		t.Fatalf("Failed to add AAAA record: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestCheckLocalRecordsNonExistentDomain(t *testing.T) {
 	}
 
 	// Add a record so the store isn't empty
-	err := proxy.recordStore.AddRecord("exists.internal", net.ParseIP("10.0.0.1"))
+	err := proxy.recordStore.AddRecord("exists.internal", net.ParseIP("10.0.0.1"), 0)
 	if err != nil {
 		t.Fatalf("Failed to add record: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestCheckLocalRecordsNODATAWildcard(t *testing.T) {
 
 	// Add a wildcard A record (no AAAA)
 	ip := net.ParseIP("10.0.0.1")
-	err := proxy.recordStore.AddRecord("*.wildcard.internal", ip)
+	err := proxy.recordStore.AddRecord("*.wildcard.internal", ip, 0)
 	if err != nil {
 		t.Fatalf("Failed to add wildcard A record: %v", err)
 	}

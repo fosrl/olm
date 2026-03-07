@@ -144,7 +144,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 		if address == nil {
 			continue
 		}
-		pm.dnsProxy.AddDNSRecord(alias.Alias, address)
+		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteConfig.SiteId)
 	}
 
 	monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
@@ -433,7 +433,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 		if address == nil {
 			continue
 		}
-		pm.dnsProxy.AddDNSRecord(alias.Alias, address)
+		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteConfig.SiteId)
 	}
 
 	pm.peerMonitor.UpdateHolepunchEndpoint(siteConfig.SiteId, siteConfig.Endpoint)
@@ -713,7 +713,7 @@ func (pm *PeerManager) AddAlias(siteId int, alias Alias) error {
 
 	address := net.ParseIP(alias.AliasAddress)
 	if address != nil {
-		pm.dnsProxy.AddDNSRecord(alias.Alias, address)
+		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteId)
 	}
 
 	// Add an allowed IP for the alias

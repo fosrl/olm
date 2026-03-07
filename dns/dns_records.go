@@ -20,8 +20,9 @@ const (
 
 // recordSet holds A and AAAA records for a single domain or wildcard pattern
 type recordSet struct {
-	A    []net.IP
-	AAAA []net.IP
+	A      []net.IP
+	AAAA   []net.IP
+	SiteId int
 }
 
 // DNSRecordStore manages local DNS records for A, AAAA, and PTR queries.
@@ -46,8 +47,9 @@ func NewDNSRecordStore() *DNSRecordStore {
 // domain should be in FQDN format (e.g., "example.com.")
 // domain can contain wildcards: * (0+ chars) and ? (exactly 1 char)
 // ip should be a valid IPv4 or IPv6 address
+// siteId is the site that owns this alias/domain
 // Automatically adds a corresponding PTR record for non-wildcard domains
-func (s *DNSRecordStore) AddRecord(domain string, ip net.IP) error {
+func (s *DNSRecordStore) AddRecord(domain string, ip net.IP, siteId int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -69,7 +71,7 @@ func (s *DNSRecordStore) AddRecord(domain string, ip net.IP) error {
 	}
 
 	if m[domain] == nil {
-		m[domain] = &recordSet{}
+		m[domain] = &recordSet{SiteId: siteId}
 	}
 	rs := m[domain]
 	if isV4 {
@@ -177,6 +179,30 @@ func (s *DNSRecordStore) RemovePTRRecord(ip net.IP) {
 	defer s.mu.Unlock()
 
 	delete(s.ptrRecords, ip.String())
+}
+
+// GetSiteIdForDomain returns the siteId associated with the given domain.
+// It checks exact matches first, then wildcard patterns.
+// The second return value is false if the domain is not found in local records.
+func (s *DNSRecordStore) GetSiteIdForDomain(domain string) (int, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	domain = strings.ToLower(dns.Fqdn(domain))
+
+	// Check exact match first
+	if rs, exists := s.exact[domain]; exists {
+		return rs.SiteId, true
+	}
+
+	// Check wildcard matches
+	for pattern, rs := range s.wildcards {
+		if matchWildcard(pattern, domain) {
+			return rs.SiteId, true
+		}
+	}
+
+	return 0, false
 }
 
 // GetRecords returns all IP addresses for a domain and record type.

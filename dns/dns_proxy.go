@@ -721,8 +721,8 @@ func (p *DNSProxy) runPacketSender() {
 // AddDNSRecord adds a DNS record to the local store
 // domain should be a domain name (e.g., "example.com" or "example.com.")
 // ip should be a valid IPv4 or IPv6 address
-func (p *DNSProxy) AddDNSRecord(domain string, ip net.IP) error {
-	return p.recordStore.AddRecord(domain, ip)
+func (p *DNSProxy) AddDNSRecord(domain string, ip net.IP, siteId int) error {
+	return p.recordStore.AddRecord(domain, ip, siteId)
 }
 
 // RemoveDNSRecord removes a DNS record from the local store
