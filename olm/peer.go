@@ -37,6 +37,11 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 		return
 	}
 
+	if siteConfig.PublicKey == "" {
+		logger.Warn("Skipping add-peer for site %d (%s): no public key available (site may not be connected)", siteConfig.SiteId, siteConfig.Name)
+		return
+	}
+
 	_ = o.holePunchManager.TriggerHolePunch() // Trigger immediate hole punch attempt so that if the peer decides to relay we have already punched close to when we need it
 
 	if err := o.peerManager.AddPeer(siteConfig); err != nil {
