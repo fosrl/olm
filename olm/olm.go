@@ -67,8 +67,9 @@ type Olm struct {
 	stopRegister   func()
 	updateRegister func(newData any)
 
-	stopPeerSends map[string]func()
-	stopPeerInits map[string]func()
+	stopPeerSends  map[string]func()
+	stopPeerInits  map[string]func()
+	jitPendingSites map[int]string // siteId -> chainId for in-flight JIT requests
 	peerSendMu    sync.Mutex
 
 	// WaitGroup to track tunnel lifecycle
@@ -181,8 +182,9 @@ func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 		olmCtx:        ctx,
 		apiServer:     apiServer,
 		olmConfig:     config,
-		stopPeerSends: make(map[string]func()),
-		stopPeerInits: make(map[string]func()),
+		stopPeerSends:   make(map[string]func()),
+		stopPeerInits:   make(map[string]func()),
+		jitPendingSites: make(map[int]string),
 	}
 
 	newOlm.registerAPICallbacks()
@@ -560,6 +562,7 @@ func (o *Olm) Close() {
 		}
 	}
 	o.stopPeerSends = make(map[string]func())
+	o.jitPendingSites = make(map[int]string)
 	o.peerSendMu.Unlock()
 
 	// send a disconnect message to the cloud to show disconnected

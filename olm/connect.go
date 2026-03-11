@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/network"
@@ -195,6 +196,36 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	if err := o.dnsProxy.Start(); err != nil { // start DNS proxy first so there is no downtime
 		logger.Error("Failed to start DNS proxy: %v", err)
 	}
+
+	// Register JIT handler: when the DNS proxy resolves a local record, check whether
+	// the owning site is already connected and, if not, initiate a JIT connection.
+	o.dnsProxy.SetJITHandler(func(siteId int) {
+		if o.peerManager == nil || o.websocket == nil {
+			return
+		}
+
+		// Site already has an active peer connection - nothing to do.
+		if _, exists := o.peerManager.GetPeer(siteId); exists {
+			return
+		}
+
+		o.peerSendMu.Lock()
+		defer o.peerSendMu.Unlock()
+
+		// A JIT request for this site is already in-flight - avoid duplicate sends.
+		if _, pending := o.jitPendingSites[siteId]; pending {
+			return
+		}
+
+		chainId := generateChainId()
+		logger.Info("DNS-triggered JIT connect for site %d (chainId=%s)", siteId, chainId)
+		stopFunc, _ := o.websocket.SendMessageInterval("olm/wg/server/peer/init", map[string]interface{}{
+			"siteId":  siteId,
+			"chainId": chainId,
+		}, 2*time.Second, 10)
+		o.stopPeerInits[chainId] = stopFunc
+		o.jitPendingSites[siteId] = chainId
+	})
 
 	if o.tunnelConfig.OverrideDNS {
 		// Set up DNS override to use our DNS proxy

@@ -45,6 +45,11 @@ type DNSProxy struct {
 	tunnelActivePorts map[uint16]bool
 	tunnelPortsLock   sync.Mutex
 
+	// jitHandler is called when a local record is resolved for a site that may not be
+	// connected yet, giving the caller a chance to initiate a JIT connection.
+	// It is invoked asynchronously so it never blocks DNS resolution.
+	jitHandler func(siteId int)
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -384,6 +389,16 @@ func (p *DNSProxy) handleDNSQuery(udpConn *gonet.UDPConn, queryData []byte, clie
 		response = p.checkLocalRecords(msg, question)
 	}
 
+	// If a local A/AAAA record was found, notify the JIT handler so that the owning
+	// site can be connected on-demand if it is not yet active.
+	if response != nil && p.jitHandler != nil &&
+		(question.Qtype == dns.TypeA || question.Qtype == dns.TypeAAAA) {
+		if siteId, ok := p.recordStore.GetSiteIdForDomain(question.Name); ok && siteId != 0 {
+			handler := p.jitHandler
+			go handler(siteId)
+		}
+	}
+
 	// If no local records, forward to upstream
 	if response == nil {
 		logger.Debug("No local record for %s, forwarding upstream to %v", question.Name, p.upstreamDNS)
@@ -716,6 +731,14 @@ func (p *DNSProxy) runPacketSender() {
 
 		pkt.DecRef()
 	}
+}
+
+// SetJITHandler registers a callback that is invoked whenever a local DNS record is
+// resolved for an A or AAAA query. The siteId identifies which site owns the record.
+// The handler is called in its own goroutine so it must be safe to call concurrently.
+// Pass nil to disable JIT notifications.
+func (p *DNSProxy) SetJITHandler(handler func(siteId int)) {
+	p.jitHandler = handler
 }
 
 // AddDNSRecord adds a DNS record to the local store

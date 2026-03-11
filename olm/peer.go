@@ -272,6 +272,9 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 			stop()
 			delete(o.stopPeerInits, handshakeData.ChainId)
 		}
+		// If this chain was initiated by a DNS-triggered JIT request, clear the
+		// pending entry so the site can be re-triggered if needed in the future.
+		delete(o.jitPendingSites, handshakeData.SiteId)
 		o.peerSendMu.Unlock()
 	}
 
@@ -352,6 +355,14 @@ func (o *Olm) handleCancelChain(msg websocket.WSMessage) {
 		stop()
 		delete(o.stopPeerInits, cancelData.ChainId)
 		found = true
+	}
+	// If this chain was a DNS-triggered JIT request, clear the pending entry so
+	// the site can be re-triggered on the next DNS lookup.
+	for siteId, chainId := range o.jitPendingSites {
+		if chainId == cancelData.ChainId {
+			delete(o.jitPendingSites, siteId)
+			break
+		}
 	}
 
 	if stop, ok := o.stopPeerSends[cancelData.ChainId]; ok {
