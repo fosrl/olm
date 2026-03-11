@@ -298,9 +298,13 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 	o.tunnelRunning = true // Also set it here in case it is called externally
 	o.tunnelConfig = config
-	
+
 	// TODO: we are hardcoding this for now but we should really pull it from the current config of the system
-	o.tunnelConfig.PublicDNS = []string{"8.8.8.8:53", "1.1.1.1:53"}
+	if o.tunnelConfig.DNS != "" {
+		o.tunnelConfig.PublicDNS = []string{o.tunnelConfig.DNS + ":53"}
+	} else {
+		o.tunnelConfig.PublicDNS = []string{"8.8.8.8:53"}
+	}
 
 	// Reset terminated status when tunnel starts
 	o.apiServer.SetTerminated(false)
