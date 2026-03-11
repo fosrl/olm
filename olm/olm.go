@@ -70,10 +70,10 @@ type Olm struct {
 	stopRegister   func()
 	updateRegister func(newData any)
 
-	stopPeerSends  map[string]func()
-	stopPeerInits  map[string]func()
+	stopPeerSends   map[string]func()
+	stopPeerInits   map[string]func()
 	jitPendingSites map[int]string // siteId -> chainId for in-flight JIT requests
-	peerSendMu    sync.Mutex
+	peerSendMu      sync.Mutex
 
 	// WaitGroup to track tunnel lifecycle
 	tunnelWg sync.WaitGroup
@@ -215,10 +215,10 @@ func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 		olmCtx:          ctx,
 		apiServer:       apiServer,
 		olmConfig:       config,
+		relayTimers:     make(map[int]*time.Timer),
 		stopPeerSends:   make(map[string]func()),
 		stopPeerInits:   make(map[string]func()),
 		jitPendingSites: make(map[int]string),
-		relayTimers: make(map[int]*time.Timer),
 	}
 
 	newOlm.registerAPICallbacks()
