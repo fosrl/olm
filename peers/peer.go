@@ -11,14 +11,14 @@ import (
 )
 
 // ConfigurePeer sets up or updates a peer within the WireGuard device
-func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes.Key, relay bool, persistentKeepalive int) error {
+func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes.Key, relay bool, persistentKeepalive int, publicDNS []string) error {
 	var endpoint string
 	if relay && siteConfig.RelayEndpoint != "" {
 		endpoint = formatEndpoint(siteConfig.RelayEndpoint)
 	} else {
 		endpoint = formatEndpoint(siteConfig.Endpoint)
 	}
-	siteHost, err := util.ResolveDomain(endpoint)
+	siteHost, err := util.ResolveDomainUpstream(endpoint, publicDNS)
 	if err != nil {
 		return fmt.Errorf("failed to resolve endpoint for site %d: %v", siteConfig.SiteId, err)
 	}

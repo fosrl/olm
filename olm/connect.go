@@ -168,6 +168,7 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		SharedBind:    o.sharedBind,
 		WSClient:      o.websocket,
 		APIServer:     o.apiServer,
+		PublicDNS:     o.tunnelConfig.PublicDNS,
 	})
 
 	for i := range wgData.Sites {

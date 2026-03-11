@@ -61,6 +61,7 @@ type TunnelConfig struct {
 	MTU           int
 	DNS           string
 	UpstreamDNS   []string
+	PublicDNS   []string
 	InterfaceName string
 
 	// Advanced
