@@ -31,7 +31,7 @@ type Olm struct {
 	privateKey wgtypes.Key
 	logFile    *os.File
 
-	registered     bool
+	registered    bool
 	tunnelRunning bool
 
 	uapiListener net.Listener
@@ -111,7 +111,7 @@ func (o *Olm) initTunnelInfo(clientID string) error {
 	logger.Info("Created shared UDP socket on port %d (refcount: %d)", sourcePort, sharedBind.GetRefCount())
 
 	// Create the holepunch manager
-	o.holePunchManager = holepunch.NewManager(sharedBind, clientID, "olm", privateKey.PublicKey().String())
+	o.holePunchManager = holepunch.NewManager(sharedBind, clientID, "olm", privateKey.PublicKey().String(), o.tunnelConfig.PublicDNS)
 
 	return nil
 }
@@ -222,7 +222,7 @@ func (o *Olm) registerAPICallbacks() {
 				tunnelConfig.MTU = 1420
 			}
 			if req.DNS == "" {
-				tunnelConfig.DNS = "9.9.9.9"
+				tunnelConfig.DNS = "8.8.8.8"
 			}
 			// DNSProxyIP has no default - it must be provided if DNS proxy is desired
 			// UpstreamDNS defaults to 8.8.8.8 if not provided
@@ -292,16 +292,19 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		logger.Info("Tunnel already running")
 		return
 	}
-	
+
 	// debug print out the whole config
 	logger.Debug("Starting tunnel with config: %+v", config)
 
 	o.tunnelRunning = true // Also set it here in case it is called externally
 	o.tunnelConfig = config
+	
+	// TODO: we are hardcoding this for now but we should really pull it from the current config of the system
+	o.tunnelConfig.PublicDNS = []string{"8.8.8.8:53", "1.1.1.1:53"}
 
 	// Reset terminated status when tunnel starts
 	o.apiServer.SetTerminated(false)
-	
+
 	fingerprint := config.InitialFingerprint
 	if fingerprint == nil {
 		fingerprint = make(map[string]any)
@@ -313,7 +316,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	}
 
 	o.SetFingerprint(fingerprint)
-	o.SetPostures(postures)	
+	o.SetPostures(postures)
 
 	// Create a cancellable context for this tunnel process
 	tunnelCtx, cancel := context.WithCancel(o.olmCtx)
@@ -387,7 +390,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 		if o.registered {
 			o.websocket.StartPingMonitor()
-			
+
 			logger.Debug("Already registered, skipping registration")
 			return nil
 		}
@@ -507,6 +510,14 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	// Wait for context cancellation
 	<-tunnelCtx.Done()
 	logger.Info("Tunnel process context cancelled, cleaning up")
+}
+
+func (o *Olm) RestoreDNSOverride() {
+	// Restore original DNS configuration
+	// we do this first to avoid any DNS issues if something else gets stuck
+	if err := dnsOverride.RestoreDNSOverride(); err != nil {
+		logger.Error("Failed to restore DNS: %v", err)
+	}
 }
 
 func (o *Olm) Close() {
