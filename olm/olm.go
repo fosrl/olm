@@ -516,14 +516,6 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	logger.Info("Tunnel process context cancelled, cleaning up")
 }
 
-func (o *Olm) RestoreDNSOverride() {
-	// Restore original DNS configuration
-	// we do this first to avoid any DNS issues if something else gets stuck
-	if err := dnsOverride.RestoreDNSOverride(); err != nil {
-		logger.Error("Failed to restore DNS: %v", err)
-	}
-}
-
 func (o *Olm) Close() {
 	// Stop registration first to prevent it from trying to use closed websocket
 	if o.stopRegister != nil {
