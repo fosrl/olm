@@ -106,11 +106,11 @@ func RestoreDNSOverride() error {
 //
 // It checks and cleans up stale state from all supported DNS managers:
 // - NetworkManager: removes /etc/NetworkManager/conf.d/olm-dns.conf
-// - resolvconf: removes entry for the "olm" interface
+// - resolvconf: removes entry for the provided interface
 // - File-based: restores /etc/resolv.conf from backup if it exists
 //
 // This is safe to call even if no stale state exists.
-func CleanupStaleState() error {
+func CleanupStaleState(interfaceName string) error {
 	var errs []error
 
 	// Clean up NetworkManager stale config
@@ -121,8 +121,8 @@ func CleanupStaleState() error {
 		logger.Debug("NetworkManager DNS cleanup completed")
 	}
 
-	// Clean up resolvconf stale entries (use default interface name "olm")
-	if err := platform.CleanupStaleResolvconfDNS("olm"); err != nil {
+	// Clean up resolvconf stale entries for the provided interface
+	if err := platform.CleanupStaleResolvconfDNS(interfaceName); err != nil {
 		logger.Warn("Failed to cleanup stale resolvconf DNS config: %v", err)
 		errs = append(errs, fmt.Errorf("resolvconf cleanup: %w", err))
 	} else {

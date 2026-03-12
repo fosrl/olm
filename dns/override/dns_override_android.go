@@ -16,6 +16,7 @@ func RestoreDNSOverride() error {
 }
 
 // CleanupStaleState is a no-op on Android as DNS configuration is handled by the VpnService API
-func CleanupStaleState() error {
+func CleanupStaleState(interfaceName string) error {
+	_ = interfaceName
 	return nil
 }

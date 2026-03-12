@@ -15,6 +15,7 @@ func RestoreDNSOverride() error {
 }
 
 // CleanupStaleState is a no-op on iOS as DNS configuration is handled by the system
-func CleanupStaleState() error {
+func CleanupStaleState(interfaceName string) error {
+	_ = interfaceName
 	return nil
 }

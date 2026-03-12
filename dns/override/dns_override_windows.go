@@ -69,10 +69,11 @@ func RestoreDNSOverride() error {
 //
 // On Windows, DNS configuration is tied to the interface GUID. When the WireGuard
 // interface is recreated, it gets a new GUID, so there's no stale state to clean up.
-func CleanupStaleState() error {
+func CleanupStaleState(interfaceName string) error {
 	// Windows DNS configuration via registry is interface-specific.
 	// When the WireGuard interface is recreated, it gets a new GUID,
 	// so there's no leftover state to clean up from previous sessions.
+	_ = interfaceName
 	logger.Debug("Windows DNS cleanup: no stale state to clean (interface-specific)")
 	return nil
 }
