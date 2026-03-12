@@ -175,7 +175,7 @@ func (o *Olm) handleWgPeerRelay(msg websocket.WSMessage) {
 		return
 	}
 
-	primaryRelay, err := util.ResolveDomain(relayData.RelayEndpoint)
+	primaryRelay, err := util.ResolveDomainUpstream(relayData.RelayEndpoint, o.tunnelConfig.PublicDNS)
 	if err != nil {
 		logger.Error("Failed to resolve primary relay endpoint: %v", err)
 		return
@@ -208,7 +208,7 @@ func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 		return
 	}
 
-	primaryRelay, err := util.ResolveDomain(relayData.Endpoint)
+	primaryRelay, err := util.ResolveDomainUpstream(relayData.Endpoint, o.tunnelConfig.PublicDNS)
 	if err != nil {
 		logger.Warn("Failed to resolve primary relay endpoint: %v", err)
 	}
