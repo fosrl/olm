@@ -43,6 +43,11 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 		}
 		o.peerSendMu.Unlock()
 	}
+	
+	if siteConfigMsg.PublicKey == "" {
+		logger.Warn("Skipping add-peer for site %d (%s): no public key available (site may not be connected)", siteConfigMsg.SiteId, siteConfigMsg.Name)
+		return
+	}
 
 	_ = o.holePunchManager.TriggerHolePunch() // Trigger immediate hole punch attempt so that if the peer decides to relay we have already punched close to when we need it
 
@@ -184,7 +189,8 @@ func (o *Olm) handleWgPeerRelay(msg websocket.WSMessage) {
 		monitor.CancelRelaySend(relayData.ChainId)
 	}
 
-	primaryRelay, err := util.ResolveDomain(relayData.RelayEndpoint)
+	primaryRelay, err := util.ResolveDomainUpstream(relayData.RelayEndpoint, o.tunnelConfig.PublicDNS)
+	
 	if err != nil {
 		logger.Error("Failed to resolve primary relay endpoint: %v", err)
 		return
@@ -224,7 +230,8 @@ func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 		monitor.CancelRelaySend(relayData.ChainId)
 	}
 
-	primaryRelay, err := util.ResolveDomain(relayData.Endpoint)
+	primaryRelay, err := util.ResolveDomainUpstream(relayData.Endpoint, o.tunnelConfig.PublicDNS)
+	
 	if err != nil {
 		logger.Warn("Failed to resolve primary relay endpoint: %v", err)
 	}

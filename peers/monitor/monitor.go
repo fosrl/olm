@@ -36,6 +36,7 @@ type PeerMonitor struct {
 	timeout     time.Duration
 	maxAttempts int
 	wsClient    *websocket.Client
+	publicDNS []string
 
 	// Relay sender tracking
 	relaySends  map[string]func()
@@ -94,7 +95,7 @@ func generateChainId() string {
 	return hex.EncodeToString(b)
 }
 
-func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDevice, localIP string, sharedBind *bind.SharedBind, apiServer *api.API) *PeerMonitor {
+func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDevice, localIP string, sharedBind *bind.SharedBind, apiServer *api.API, publicDNS []string) *PeerMonitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	pm := &PeerMonitor{
 		monitors:             make(map[int]*Client),
@@ -103,6 +104,7 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		wsClient:             wsClient,
 		middleDev:            middleDev,
 		localIP:              localIP,
+		publicDNS:          publicDNS,
 		activePorts:          make(map[uint16]bool),
 		nsCtx:                ctx,
 		nsCancel:             cancel,
@@ -137,7 +139,7 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 
 	// Initialize holepunch tester if sharedBind is available
 	if sharedBind != nil {
-		pm.holepunchTester = holepunch.NewHolepunchTester(sharedBind)
+		pm.holepunchTester = holepunch.NewHolepunchTester(sharedBind, publicDNS)
 	}
 
 	return pm

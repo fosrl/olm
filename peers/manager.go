@@ -32,7 +32,8 @@ type PeerManagerConfig struct {
 	SharedBind *bind.SharedBind
 	// WSClient is optional - if nil, relay messages won't be sent
 	WSClient  *websocket.Client
-	APIServer *api.API
+	APIServer   *api.API
+	PublicDNS []string
 }
 
 type PeerManager struct {
@@ -50,7 +51,8 @@ type PeerManager struct {
 	// key is the CIDR string, value is a set of siteIds that want this IP
 	allowedIPClaims map[string]map[int]bool
 	APIServer       *api.API
-	
+	publicDNS     []string
+
 	PersistentKeepalive int
 }
 
@@ -65,6 +67,7 @@ func NewPeerManager(config PeerManagerConfig) *PeerManager {
 		allowedIPOwners: make(map[string]int),
 		allowedIPClaims: make(map[string]map[int]bool),
 		APIServer:       config.APIServer,
+		publicDNS:     config.PublicDNS,
 	}
 
 	// Create the peer monitor
@@ -74,6 +77,7 @@ func NewPeerManager(config PeerManagerConfig) *PeerManager {
 		config.LocalIP,
 		config.SharedBind,
 		config.APIServer,
+		config.PublicDNS,
 	)
 
 	return pm
@@ -129,7 +133,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	wgConfig := siteConfig
 	wgConfig.AllowedIps = ownedIPs
 
-	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId), pm.PersistentKeepalive); err != nil {
+	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId), pm.PersistentKeepalive, pm.publicDNS); err != nil {
 		return err
 	}
 
@@ -270,7 +274,7 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 			ownedIPs := pm.getOwnedAllowedIPs(promotedPeerId)
 			wgConfig := promotedPeer
 			wgConfig.AllowedIps = ownedIPs
-			if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(promotedPeerId), pm.PersistentKeepalive); err != nil {
+			if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(promotedPeerId), pm.PersistentKeepalive, pm.publicDNS); err != nil {
 				logger.Error("Failed to update promoted peer %d: %v", promotedPeerId, err)
 			}
 		}
@@ -346,7 +350,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 	wgConfig := siteConfig
 	wgConfig.AllowedIps = ownedIPs
 
-	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId), pm.PersistentKeepalive); err != nil {
+	if err := ConfigurePeer(pm.device, wgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(siteConfig.SiteId), pm.PersistentKeepalive, pm.publicDNS); err != nil {
 		return err
 	}
 
@@ -356,7 +360,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 			promotedOwnedIPs := pm.getOwnedAllowedIPs(promotedPeerId)
 			promotedWgConfig := promotedPeer
 			promotedWgConfig.AllowedIps = promotedOwnedIPs
-			if err := ConfigurePeer(pm.device, promotedWgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(promotedPeerId), pm.PersistentKeepalive); err != nil {
+			if err := ConfigurePeer(pm.device, promotedWgConfig, pm.privateKey, pm.peerMonitor.IsPeerRelayed(promotedPeerId), pm.PersistentKeepalive, pm.publicDNS); err != nil {
 				logger.Error("Failed to update promoted peer %d: %v", promotedPeerId, err)
 			}
 		}

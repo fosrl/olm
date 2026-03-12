@@ -169,10 +169,17 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		SharedBind:    o.sharedBind,
 		WSClient:      o.websocket,
 		APIServer:     o.apiServer,
+		PublicDNS:     o.tunnelConfig.PublicDNS,
 	})
 
 	for i := range wgData.Sites {
 		site := wgData.Sites[i]
+
+		if site.PublicKey == "" {
+			logger.Warn("Skipping site %d (%s): no public key available (site may not be connected)", site.SiteId, site.Name)
+			continue
+		}
+
 		var siteEndpoint string
 		// here we are going to take the relay endpoint if it exists which means we requested a relay for this peer
 		if site.RelayEndpoint != "" {
