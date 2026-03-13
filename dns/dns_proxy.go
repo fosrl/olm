@@ -745,6 +745,7 @@ func (p *DNSProxy) SetJITHandler(handler func(siteId int)) {
 // domain should be a domain name (e.g., "example.com" or "example.com.")
 // ip should be a valid IPv4 or IPv6 address
 func (p *DNSProxy) AddDNSRecord(domain string, ip net.IP, siteId int) error {
+	logger.Debug("Adding dns record for domain %s with IP %s (siteId=%d)", domain, ip.String(), siteId)
 	return p.recordStore.AddRecord(domain, ip, siteId)
 }
 

@@ -75,8 +75,18 @@ func (s *DNSRecordStore) AddRecord(domain string, ip net.IP, siteId int) error {
 	}
 	rs := m[domain]
 	if isV4 {
+		for _, existing := range rs.A {
+			if existing.Equal(ip) {
+				return nil
+			}
+		}
 		rs.A = append(rs.A, ip)
 	} else {
+		for _, existing := range rs.AAAA {
+			if existing.Equal(ip) {
+				return nil
+			}
+		}
 		rs.AAAA = append(rs.AAAA, ip)
 	}
 
@@ -86,6 +96,7 @@ func (s *DNSRecordStore) AddRecord(domain string, ip net.IP, siteId int) error {
 	}
 	return nil
 }
+
 
 // AddPTRRecord adds a PTR record mapping an IP address to a domain name
 // ip should be a valid IPv4 or IPv6 address

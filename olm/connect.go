@@ -175,21 +175,19 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	for i := range wgData.Sites {
 		site := wgData.Sites[i]
 
-		if site.PublicKey == "" {
-			logger.Warn("Skipping site %d (%s): no public key available (site may not be connected)", site.SiteId, site.Name)
-			continue
+		if site.PublicKey != "" {
+			var siteEndpoint string
+			// here we are going to take the relay endpoint if it exists which means we requested a relay for this peer
+			if site.RelayEndpoint != "" {
+				siteEndpoint = site.RelayEndpoint
+			} else {
+				siteEndpoint = site.Endpoint
+			}
+
+			o.apiServer.AddPeerStatus(site.SiteId, site.Name, false, 0, siteEndpoint, false)
 		}
 
-		var siteEndpoint string
-		// here we are going to take the relay endpoint if it exists which means we requested a relay for this peer
-		if site.RelayEndpoint != "" {
-			siteEndpoint = site.RelayEndpoint
-		} else {
-			siteEndpoint = site.Endpoint
-		}
-
-		o.apiServer.AddPeerStatus(site.SiteId, site.Name, false, 0, siteEndpoint, false)
-
+		// we still call this to add the aliases for jit lookup but we just do that then pass inside. need to skip the above so we dont add to the api
 		if err := o.peerManager.AddPeer(site); err != nil {
 			logger.Error("Failed to add peer: %v", err)
 			return
@@ -311,12 +309,12 @@ func (o *Olm) handleTerminate(msg websocket.WSMessage) {
 			logger.Error("Error unmarshaling terminate error data: %v", err)
 		} else {
 			logger.Info("Terminate reason (code: %s): %s", errorData.Code, errorData.Message)
-			
+
 			if errorData.Code == "TERMINATED_INACTIVITY" {
 				logger.Info("Ignoring...")
 				return
 			}
-			
+
 			// Set the olm error in the API server so it can be exposed via status
 			o.apiServer.SetOlmError(errorData.Code, errorData.Message)
 		}
