@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -803,8 +804,7 @@ func (c *Client) readPumpWithDisconnectDetection() {
 		case <-c.done:
 			return
 		default:
-			var msg WSMessage
-			err := c.conn.ReadJSON(&msg)
+			messageType, p, err := c.conn.ReadMessage()
 			if err != nil {
 				// Check if we're shutting down or explicitly disconnected before logging error
 				select {
@@ -827,6 +827,30 @@ func (c *Client) readPumpWithDisconnectDetection() {
 					}
 					return // triggers reconnect via defer
 				}
+			}
+
+			// Decompress binary frames (gzip-compressed JSON)
+			var data []byte
+			if messageType == websocket.BinaryMessage {
+				gr, gzErr := gzip.NewReader(bytes.NewReader(p))
+				if gzErr != nil {
+					logger.Error("websocket: failed to create gzip reader: %v", gzErr)
+					continue
+				}
+				data, gzErr = io.ReadAll(gr)
+				gr.Close()
+				if gzErr != nil {
+					logger.Error("websocket: failed to decompress message: %v", gzErr)
+					continue
+				}
+			} else {
+				data = p
+			}
+
+			var msg WSMessage
+			if err = json.Unmarshal(data, &msg); err != nil {
+				logger.Error("websocket: failed to parse message: %v", err)
+				continue
 			}
 
 			// Update config version from incoming message
