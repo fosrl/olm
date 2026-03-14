@@ -342,7 +342,6 @@ func (o *Olm) handleWgPeerRelay(msg websocket.WSMessage) {
 	if relayData.RelayEndpointWss != "" {
 		logger.Info("Received websocket relay endpoint for site %d: %s", relayData.SiteId, relayData.RelayEndpointWss)
 		pm.RelayPeerWss(relayData.SiteId, relayData.RelayEndpointWss)
-		o.scheduleRelayTCPFallback(relayData.SiteId, relayData.RelayEndpointWss)
 	}
 
 	pm.RelayPeer(relayData.SiteId, primaryRelay, relayData.RelayPort)

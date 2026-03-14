@@ -56,6 +56,13 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		logger.Info("Got new message. Closing existing tunnel!")
 		o.dev.Close()
 	}
+	o.relaySwitchMu.Lock()
+	if o.wsRelayBind != nil {
+		_ = o.wsRelayBind.Shutdown()
+		o.wsRelayBind = nil
+	}
+	o.wssRelayActive = false
+	o.relaySwitchMu.Unlock()
 
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {
@@ -252,6 +259,7 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	o.apiServer.SetRegistered(true)
 
 	o.registered = true
+	o.scheduleRelaySwitch(8 * time.Second)
 
 	// Start ping monitor now that we are registered and connected
 	o.websocket.StartPingMonitor()

@@ -78,11 +78,14 @@ type Olm struct {
 	// WaitGroup to track tunnel lifecycle
 	tunnelWg sync.WaitGroup
 
-	// Cached websocket relay URL for TCP relay mode
-	relayTunnelURL string
-	relayURLMu     sync.RWMutex
-	relayTimerMu   sync.Mutex
-	relayTimers    map[int]*time.Timer
+	// Cached websocket relay URL for WSS / TCP fallback relay modes
+	relayTunnelURL   string
+	relayURLMu       sync.RWMutex
+	relayTimerMu     sync.Mutex
+	relayTimers      map[int]*time.Timer
+	relaySwitchMu    sync.Mutex
+	relaySwitchTimer *time.Timer
+	wssRelayActive   bool
 }
 
 // getPeerManager safely returns the current peerManager under a read-lock.
@@ -524,7 +527,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 				o.relayURLMu.Lock()
 				o.relayTunnelURL = relayURL
 				o.relayURLMu.Unlock()
-				logger.Debug("Cached websocket relay tunnel URL for TCP relay mode")
+				logger.Debug("Cached websocket relay tunnel URL for WSS relay bind")
 			}
 		}
 
@@ -611,6 +614,10 @@ func (o *Olm) Close() {
 		o.stopRegister()
 		o.stopRegister = nil
 	}
+	o.cancelRelaySwitchTimer()
+	o.relaySwitchMu.Lock()
+	o.wssRelayActive = false
+	o.relaySwitchMu.Unlock()
 
 	// Stop all pending peer init and send senders before closing websocket
 	o.peerSendMu.Lock()

@@ -93,17 +93,17 @@ type Client struct {
 	configNeedsSave   bool // Flag to track if config needs to be saved
 	configVersion     int  // Latest config version received from server
 	configVersionMux  sync.RWMutex
-	token             string       // Cached authentication token
-	exitNodes         []ExitNode   // Cached exit nodes from token response
-	tokenMux          sync.RWMutex // Protects token and exitNodes
-	forceNewToken     bool         // Flag to force fetching a new token on next connection
-	processingMessage bool                   // Flag to track if a message is currently being processed
-	processingMux     sync.RWMutex           // Protects processingMessage
-	processingWg      sync.WaitGroup         // WaitGroup to wait for message processing to complete
-	getPingData       func() map[string]any  // Callback to get additional ping data
-	pingStarted       bool                   // Flag to track if ping monitor has been started
-	pingStartedMux    sync.Mutex             // Protects pingStarted
-	pingDone          chan struct{}          // Channel to stop the ping monitor independently
+	token             string                // Cached authentication token
+	exitNodes         []ExitNode            // Cached exit nodes from token response
+	tokenMux          sync.RWMutex          // Protects token and exitNodes
+	forceNewToken     bool                  // Flag to force fetching a new token on next connection
+	processingMessage bool                  // Flag to track if a message is currently being processed
+	processingMux     sync.RWMutex          // Protects processingMessage
+	processingWg      sync.WaitGroup        // WaitGroup to wait for message processing to complete
+	getPingData       func() map[string]any // Callback to get additional ping data
+	pingStarted       bool                  // Flag to track if ping monitor has been started
+	pingStartedMux    sync.Mutex            // Protects pingStarted
+	pingDone          chan struct{}         // Channel to stop the ping monitor independently
 }
 
 type ClientOption func(*Client)
@@ -152,6 +152,21 @@ func (c *Client) OnConnect(callback func() error) {
 
 func (c *Client) OnTokenUpdate(callback func(token string, exitNodes []ExitNode)) {
 	c.onTokenUpdate = callback
+}
+
+// GetToken returns the currently cached websocket token.
+func (c *Client) GetToken() string {
+	c.tokenMux.RLock()
+	defer c.tokenMux.RUnlock()
+	return c.token
+}
+
+// GetUserToken returns the configured user token for websocket relay auth.
+func (c *Client) GetUserToken() string {
+	if c.config == nil {
+		return ""
+	}
+	return c.config.UserToken
 }
 
 // GetTokenState returns the currently cached token and exit nodes.
@@ -397,10 +412,10 @@ func (c *Client) getToken() (string, []ExitNode, error) {
 	}
 
 	tokenData := map[string]interface{}{
-		"olmId":  c.config.ID,
-		"secret": c.config.Secret,
+		"olmId":     c.config.ID,
+		"secret":    c.config.Secret,
 		"userToken": c.config.UserToken,
-		"orgId":  c.config.OrgID,
+		"orgId":     c.config.OrgID,
 	}
 	jsonData, err := json.Marshal(tokenData)
 
@@ -748,15 +763,15 @@ func (c *Client) pingMonitor() {
 func (c *Client) StartPingMonitor() {
 	c.pingStartedMux.Lock()
 	defer c.pingStartedMux.Unlock()
-	
+
 	if c.pingStarted {
 		return
 	}
 	c.pingStarted = true
-	
+
 	// Create a new pingDone channel for this ping monitor instance
 	c.pingDone = make(chan struct{})
-	
+
 	// Send an initial ping immediately
 	go func() {
 		c.sendPing()
@@ -768,11 +783,11 @@ func (c *Client) StartPingMonitor() {
 func (c *Client) stopPingMonitor() {
 	c.pingStartedMux.Lock()
 	defer c.pingStartedMux.Unlock()
-	
+
 	if !c.pingStarted {
 		return
 	}
-	
+
 	// Close the pingDone channel to stop the monitor
 	close(c.pingDone)
 	c.pingStarted = false

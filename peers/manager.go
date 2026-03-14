@@ -130,10 +130,41 @@ func (pm *PeerManager) IsPeerRelayed(siteID int) bool {
 	return pm.peerMonitor.IsPeerRelayed(siteID)
 }
 
+// ReplaceDevice swaps the active WireGuard device and reapplies current peers.
+func (pm *PeerManager) ReplaceDevice(dev *device.Device) error {
+	if dev == nil {
+		return fmt.Errorf("device is nil")
+	}
+
+	pm.mu.Lock()
+	pm.device = dev
+	peersSnapshot := make([]SiteConfig, 0, len(pm.peers))
+	for _, peer := range pm.peers {
+		peersSnapshot = append(peersSnapshot, peer)
+	}
+	monitor := pm.peerMonitor
+	privateKey := pm.privateKey
+	persistentKeepalive := pm.PersistentKeepalive
+	publicDNS := append([]string(nil), pm.publicDNS...)
+	pm.mu.Unlock()
+
+	for _, peer := range peersSnapshot {
+		relayed := false
+		if monitor != nil {
+			relayed = monitor.IsPeerRelayed(peer.SiteId)
+		}
+		if err := ConfigurePeer(dev, peer, privateKey, relayed, persistentKeepalive, publicDNS); err != nil {
+			return fmt.Errorf("reconfigure peer %d: %w", peer.SiteId, err)
+		}
+	}
+
+	return nil
+}
+
 func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
-	
+
 	for _, alias := range siteConfig.Aliases {
 		address := net.ParseIP(alias.AliasAddress)
 		if address == nil {
@@ -141,7 +172,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 		}
 		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteConfig.SiteId)
 	}
-	
+
 	if siteConfig.PublicKey == "" {
 		logger.Debug("Skip adding site %d because no pub key", siteConfig.SiteId)
 		return nil
@@ -179,7 +210,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	if err := network.AddRoutes(siteConfig.RemoteSubnets, pm.interfaceName); err != nil {
 		logger.Error("Failed to add routes for remote subnets: %v", err)
 	}
-	
+
 	monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
 	monitorPeer := net.JoinHostPort(monitorAddress, strconv.Itoa(int(siteConfig.ServerPort+1))) // +1 for the monitor port
 
@@ -206,7 +237,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 func (pm *PeerManager) UpdateAllPeersPersistentKeepalive(interval int) map[int]error {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
-	
+
 	pm.PersistentKeepalive = interval
 
 	errors := make(map[int]error)
