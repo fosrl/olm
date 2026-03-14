@@ -96,7 +96,8 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	o.middleDev = olmDevice.NewMiddleDevice(o.tdev)
 
 	wgLogger := logger.GetLogger().GetWireGuardLogger("wireguard: ")
-	// Use filtered device instead of raw TUN device
+	// Use filtered device instead of raw TUN device.
+	// Start with the shared UDP bind; websocket relay remains a fallback path.
 	o.dev = device.NewDevice(o.middleDev, o.sharedBind, (*device.Logger)(wgLogger))
 
 	if o.tunnelConfig.EnableUAPI {
@@ -135,7 +136,12 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	}
 
 	if err = o.dev.Up(); err != nil {
-		logger.Error("Failed to bring up WireGuard device: %v", err)
+		logger.Error(
+			"Failed to bring up WireGuard device: %v (holepunch=%v)",
+			err,
+			o.tunnelConfig.Holepunch,
+		)
+		return
 	}
 
 	// Extract interface IP (strip CIDR notation if present)

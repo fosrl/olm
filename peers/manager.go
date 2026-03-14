@@ -829,6 +829,26 @@ endpoint=%s:%d`, util.FixKey(peer.PublicKey), formattedEndpoint, relayPort)
 	logger.Info("Adjusted peer %d to point to relay!\n", siteId)
 }
 
+// RelayPeerWss attempts to switch relay transport to WebSocket tunnel endpoint.
+// Current implementation keeps the existing peer endpoint untouched and marks
+// the peer relayed so the monitor/API reflect transport fallback intent.
+func (pm *PeerManager) RelayPeerWss(siteId int, relayEndpointWss string) {
+	pm.mu.Lock()
+	_, exists := pm.peers[siteId]
+	pm.mu.Unlock()
+
+	if !exists {
+		logger.Error("Cannot switch to websocket relay: peer with site ID %d not found", siteId)
+		return
+	}
+
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.MarkPeerRelayed(siteId, true)
+	}
+
+	logger.Info("Requested websocket relay for peer %d via %s", siteId, relayEndpointWss)
+}
+
 // performRapidInitialTest performs a rapid holepunch test for a newly added peer.
 // If the test fails, it immediately requests relay to minimize connection delay.
 // This runs in a goroutine to avoid blocking AddPeer.

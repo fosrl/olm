@@ -51,6 +51,7 @@ type TokenResponse struct {
 type ExitNode struct {
 	Endpoint  string `json:"endpoint"`
 	RelayPort uint16 `json:"relayPort"`
+	RelayEndpointWss string `json:"relayEndpointWss,omitempty"`
 	PublicKey string `json:"publicKey"`
 	SiteIds   []int  `json:"siteIds"`
 }
@@ -151,6 +152,17 @@ func (c *Client) OnConnect(callback func() error) {
 
 func (c *Client) OnTokenUpdate(callback func(token string, exitNodes []ExitNode)) {
 	c.onTokenUpdate = callback
+}
+
+// GetTokenState returns the currently cached token and exit nodes.
+// A copy of exit nodes is returned to avoid exposing internal mutable state.
+func (c *Client) GetTokenState() (string, []ExitNode) {
+	c.tokenMux.RLock()
+	defer c.tokenMux.RUnlock()
+
+	exitNodesCopy := make([]ExitNode, len(c.exitNodes))
+	copy(exitNodesCopy, c.exitNodes)
+	return c.token, exitNodesCopy
 }
 
 func (c *Client) OnAuthError(callback func(statusCode int, message string)) {

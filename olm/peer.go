@@ -226,6 +226,11 @@ func (o *Olm) handleWgPeerRelay(msg websocket.WSMessage) {
 	// Update HTTP server to mark this peer as using relay
 	o.apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.RelayEndpoint, true)
 
+	if relayData.RelayEndpointWss != "" {
+		logger.Info("Received websocket relay endpoint for site %d: %s", relayData.SiteId, relayData.RelayEndpointWss)
+		pm.RelayPeerWss(relayData.SiteId, relayData.RelayEndpointWss)
+	}
+
 	pm.RelayPeer(relayData.SiteId, primaryRelay, relayData.RelayPort)
 }
 
