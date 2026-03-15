@@ -218,10 +218,10 @@ func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 		olmCtx:          ctx,
 		apiServer:       apiServer,
 		olmConfig:       config,
-		relayTimers:     make(map[int]*time.Timer),
 		stopPeerSends:   make(map[string]func()),
 		stopPeerInits:   make(map[string]func()),
 		jitPendingSites: make(map[int]string),
+		relayTimers:     make(map[int]*time.Timer),
 	}
 
 	newOlm.registerAPICallbacks()
