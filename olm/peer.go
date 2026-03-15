@@ -2,6 +2,7 @@ package olm
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/fosrl/newt/holepunch"
@@ -9,7 +10,106 @@ import (
 	"github.com/fosrl/newt/util"
 	"github.com/fosrl/olm/peers"
 	"github.com/fosrl/olm/websocket"
+	"golang.zx2c4.com/wireguard/device"
 )
+
+func (o *Olm) cancelRelayTCPFallback(siteID int) {
+	o.relayTimerMu.Lock()
+	defer o.relayTimerMu.Unlock()
+	if t, ok := o.relayTimers[siteID]; ok {
+		t.Stop()
+		delete(o.relayTimers, siteID)
+	}
+}
+
+func (o *Olm) scheduleRelayTCPFallback(siteID int, relayEndpointWss string) {
+	if relayEndpointWss == "" {
+		return
+	}
+
+	o.relayTimerMu.Lock()
+	if t, ok := o.relayTimers[siteID]; ok {
+		t.Stop()
+	}
+	o.relayTimers[siteID] = time.AfterFunc(8*time.Second, func() {
+		o.relayTimerMu.Lock()
+		delete(o.relayTimers, siteID)
+		o.relayTimerMu.Unlock()
+
+		if !o.tunnelRunning || o.peerManager == nil {
+			return
+		}
+		if o.peerManager.IsPeerConnected(siteID) {
+			logger.Info("Peer %d connected over UDP relay before TCP fallback timer", siteID)
+			return
+		}
+
+		logger.Warn("Peer %d still disconnected after 8s on UDP relay, switching to websocket relay transport", siteID)
+		if err := o.switchToWebsocketRelayBind(relayEndpointWss); err != nil {
+			logger.Error("Failed to switch to websocket relay transport: %v", err)
+		}
+	})
+	o.relayTimerMu.Unlock()
+}
+
+func (o *Olm) switchToWebsocketRelayBind(relayEndpointWss string) error {
+	if o.peerManager == nil || o.middleDev == nil || o.websocket == nil {
+		return fmt.Errorf("websocket relay switch prerequisites missing")
+	}
+
+	token, _ := o.websocket.GetTokenState()
+	if token == "" {
+		return fmt.Errorf("cached websocket token unavailable for relay switch")
+	}
+
+	relayURL, err := buildRelayTunnelURL(relayEndpointWss, token, o.tunnelConfig.UserToken)
+	if err != nil {
+		return err
+	}
+	o.relayURLMu.Lock()
+	o.relayTunnelURL = relayURL
+	o.relayURLMu.Unlock()
+
+	wsBind := NewWebSocketRelayBind(relayURL, nil)
+	wgLogger := logger.GetLogger().GetWireGuardLogger("wireguard: ")
+	newDev := device.NewDevice(o.middleDev, wsBind, (*device.Logger)(wgLogger))
+	if err := newDev.Up(); err != nil {
+		_ = wsBind.Shutdown()
+		return fmt.Errorf("bring up websocket relay device: %w", err)
+	}
+
+	for _, peer := range o.peerManager.GetAllPeers() {
+		if err := peers.ConfigurePeer(
+			newDev,
+			peer,
+			o.privateKey,
+			o.peerManager.IsPeerRelayed(peer.SiteId),
+			o.peerManager.PersistentKeepalive,
+			o.tunnelConfig.PublicDNS,
+		); err != nil {
+			newDev.Close()
+			_ = wsBind.Shutdown()
+			return fmt.Errorf("reconfigure peer %d on websocket relay device: %w", peer.SiteId, err)
+		}
+	}
+
+	oldDev := o.dev
+	oldWsBind := o.wsRelayBind
+
+	o.dev = newDev
+	o.wsRelayBind = wsBind
+	o.peerManager.SetDevice(newDev)
+
+	if oldWsBind != nil {
+		_ = oldWsBind.Shutdown()
+	}
+	if oldDev != nil {
+		oldDev.Close()
+	}
+
+	logger.Info("Switched WireGuard transport to websocket relay bind")
+	return nil
+}
 
 func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 	logger.Debug("Received add-peer message: %v", msg.Data)
@@ -229,6 +329,7 @@ func (o *Olm) handleWgPeerRelay(msg websocket.WSMessage) {
 	if relayData.RelayEndpointWss != "" {
 		logger.Info("Received websocket relay endpoint for site %d: %s", relayData.SiteId, relayData.RelayEndpointWss)
 		pm.RelayPeerWss(relayData.SiteId, relayData.RelayEndpointWss)
+		o.scheduleRelayTCPFallback(relayData.SiteId, relayData.RelayEndpointWss)
 	}
 
 	pm.RelayPeer(relayData.SiteId, primaryRelay, relayData.RelayPort)
@@ -271,6 +372,7 @@ func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 
 	// Update HTTP server to mark this peer as using relay
 	o.apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.Endpoint, false)
+	o.cancelRelayTCPFallback(relayData.SiteId)
 
 	pm.UnRelayPeer(relayData.SiteId, primaryRelay)
 }

@@ -81,6 +81,8 @@ type Olm struct {
 	// Cached websocket relay URL for TCP relay mode
 	relayTunnelURL string
 	relayURLMu     sync.RWMutex
+	relayTimerMu   sync.Mutex
+	relayTimers    map[int]*time.Timer
 }
 
 // getPeerManager safely returns the current peerManager under a read-lock.
@@ -209,13 +211,14 @@ func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 	apiServer.SetAgent(config.Agent)
 
 	newOlm := &Olm{
-		logFile:       logFile,
-		olmCtx:        ctx,
-		apiServer:     apiServer,
-		olmConfig:     config,
+		logFile:         logFile,
+		olmCtx:          ctx,
+		apiServer:       apiServer,
+		olmConfig:       config,
 		stopPeerSends:   make(map[string]func()),
 		stopPeerInits:   make(map[string]func()),
 		jitPendingSites: make(map[int]string),
+		relayTimers: make(map[int]*time.Timer),
 	}
 
 	newOlm.registerAPICallbacks()

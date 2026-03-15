@@ -719,6 +719,13 @@ func (pm *PeerMonitor) GetHolepunchStatus() map[int]bool {
 	return status
 }
 
+// IsWGConnected returns whether WireGuard is currently connected for a peer.
+func (pm *PeerMonitor) IsWGConnected(siteID int) bool {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+	return pm.wgConnectionStatus[siteID]
+}
+
 // Close stops monitoring and cleans up resources
 func (pm *PeerMonitor) Close() {
 	// Stop holepunch monitor first (outside of mutex to avoid deadlock)

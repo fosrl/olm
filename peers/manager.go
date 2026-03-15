@@ -107,6 +107,29 @@ func (pm *PeerManager) GetAllPeers() []SiteConfig {
 	return peers
 }
 
+// SetDevice swaps the WireGuard device reference used by peer operations.
+func (pm *PeerManager) SetDevice(dev *device.Device) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.device = dev
+}
+
+// IsPeerConnected reports the latest WireGuard connectivity status for a peer.
+func (pm *PeerManager) IsPeerConnected(siteID int) bool {
+	if pm.peerMonitor == nil {
+		return false
+	}
+	return pm.peerMonitor.IsWGConnected(siteID)
+}
+
+// IsPeerRelayed reports whether a peer is currently marked as relayed.
+func (pm *PeerManager) IsPeerRelayed(siteID int) bool {
+	if pm.peerMonitor == nil {
+		return false
+	}
+	return pm.peerMonitor.IsPeerRelayed(siteID)
+}
+
 func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
