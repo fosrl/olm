@@ -167,6 +167,14 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 			delete(o.stopPeerSends, siteConfigMsg.ChainId)
 		}
 		o.peerSendMu.Unlock()
+	} else {
+		// stop all of the stopPeerSends
+		o.peerSendMu.Lock()
+		for _, stop := range o.stopPeerSends {
+			stop()
+		}
+		o.stopPeerSends = make(map[string]func())
+		o.peerSendMu.Unlock()
 	}
 
 	_ = o.holePunchManager.TriggerHolePunch() // Trigger immediate hole punch attempt so that if the peer decides to relay we have already punched close to when we need it
