@@ -42,8 +42,16 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 			delete(o.stopPeerSends, siteConfigMsg.ChainId)
 		}
 		o.peerSendMu.Unlock()
+	} else {
+		// stop all of the stopPeerSends
+		o.peerSendMu.Lock()
+		for _, stop := range o.stopPeerSends {
+			stop()
+		}
+		o.stopPeerSends = make(map[string]func())
+		o.peerSendMu.Unlock()
 	}
-	
+
 	if siteConfigMsg.PublicKey == "" {
 		logger.Warn("Skipping add-peer for site %d (%s): no public key available (site may not be connected)", siteConfigMsg.SiteId, siteConfigMsg.Name)
 		return
@@ -190,7 +198,7 @@ func (o *Olm) handleWgPeerRelay(msg websocket.WSMessage) {
 	}
 
 	primaryRelay, err := util.ResolveDomainUpstream(relayData.RelayEndpoint, o.tunnelConfig.PublicDNS)
-	
+
 	if err != nil {
 		logger.Error("Failed to resolve primary relay endpoint: %v", err)
 		return
@@ -231,7 +239,7 @@ func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 	}
 
 	primaryRelay, err := util.ResolveDomainUpstream(relayData.Endpoint, o.tunnelConfig.PublicDNS)
-	
+
 	if err != nil {
 		logger.Warn("Failed to resolve primary relay endpoint: %v", err)
 	}
@@ -282,6 +290,14 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 		// If this chain was initiated by a DNS-triggered JIT request, clear the
 		// pending entry so the site can be re-triggered if needed in the future.
 		delete(o.jitPendingSites, handshakeData.SiteId)
+		o.peerSendMu.Unlock()
+	} else {
+		// Stop all of the stopPeerInits
+		o.peerSendMu.Lock()
+		for _, stop := range o.stopPeerInits {
+			stop()
+		}
+		o.stopPeerInits = make(map[string]func())
 		o.peerSendMu.Unlock()
 	}
 

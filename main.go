@@ -190,7 +190,7 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 		os.Exit(0)
 	}
 
-	olmVersion := "version_replaceme"
+	olmVersion := "1.4.3"
 	if showVersion {
 		fmt.Println("Olm version " + olmVersion)
 		os.Exit(0)
