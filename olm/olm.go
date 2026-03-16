@@ -375,7 +375,6 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		config.OrgID,
 		config.Endpoint,
 		30*time.Second, // 30 seconds
-		config.PingTimeoutDuration,
 		websocket.WithPingDataProvider(func() map[string]any {
 			o.metaMu.Lock()
 			defer o.metaMu.Unlock()

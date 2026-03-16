@@ -83,7 +83,6 @@ type Client struct {
 	isDisconnected    bool // Flag to track if client is intentionally disconnected
 	reconnectMux      sync.RWMutex
 	pingInterval      time.Duration
-	pingTimeout       time.Duration
 	onConnect         func() error
 	onTokenUpdate     func(token string, exitNodes []ExitNode)
 	onAuthError       func(statusCode int, message string) // Callback for auth errors
@@ -159,7 +158,7 @@ func (c *Client) OnAuthError(callback func(statusCode int, message string)) {
 }
 
 // NewClient creates a new websocket client
-func NewClient(ID, secret, userToken, orgId, endpoint string, pingInterval time.Duration, pingTimeout time.Duration, opts ...ClientOption) (*Client, error) {
+func NewClient(ID, secret, userToken, orgId, endpoint string, pingInterval time.Duration, opts ...ClientOption) (*Client, error) {
 	config := &Config{
 		ID:        ID,
 		Secret:    secret,
@@ -176,7 +175,6 @@ func NewClient(ID, secret, userToken, orgId, endpoint string, pingInterval time.
 		reconnectInterval: 3 * time.Second,
 		isConnected:       false,
 		pingInterval:      pingInterval,
-		pingTimeout:       pingTimeout,
 		clientType:        "olm",
 		pingDone:          make(chan struct{}),
 	}
