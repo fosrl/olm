@@ -2,6 +2,7 @@ package olm
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/fosrl/newt/holepunch"
@@ -220,6 +221,7 @@ func (o *Olm) handleSync(msg websocket.WSMessage) {
 			logger.Info("Sync: Adding new peer for site %d", siteId)
 
 			o.holePunchManager.TriggerHolePunch()
+			o.holePunchManager.ResetServerHolepunchInterval() // start sending immediately again so we fill in the endpoint on the cloud
 
 			// // TODO: do we need to send the message to the cloud to add the peer that way?
 			// if err := o.peerManager.AddPeer(expectedSite); err != nil {
@@ -230,9 +232,17 @@ func (o *Olm) handleSync(msg websocket.WSMessage) {
 
 			// add the peer via the server
 			// this is important because newt needs to get triggered as well to add the peer once the hp is complete
-			o.stopPeerSend, _ = o.websocket.SendMessageInterval("olm/wg/server/peer/add", map[string]interface{}{
-				"siteId": expectedSite.SiteId,
-			}, 1*time.Second, 10)
+			chainId := fmt.Sprintf("sync-%d", expectedSite.SiteId)
+			o.peerSendMu.Lock()
+			if stop, ok := o.stopPeerSends[chainId]; ok {
+				stop()
+			}
+			stopFunc, _ := o.websocket.SendMessageInterval("olm/wg/server/peer/add", map[string]interface{}{
+				"siteId":  expectedSite.SiteId,
+				"chainId": chainId,
+			}, 2*time.Second, 10)
+			o.stopPeerSends[chainId] = stopFunc
+			o.peerSendMu.Unlock()
 
 		} else {
 			// Existing peer - check if update is needed

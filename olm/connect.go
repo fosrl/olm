@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/network"
@@ -173,16 +174,20 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 
 	for i := range wgData.Sites {
 		site := wgData.Sites[i]
-		var siteEndpoint string
-		// here we are going to take the relay endpoint if it exists which means we requested a relay for this peer
-		if site.RelayEndpoint != "" {
-			siteEndpoint = site.RelayEndpoint
-		} else {
-			siteEndpoint = site.Endpoint
+
+		if site.PublicKey != "" {
+			var siteEndpoint string
+			// here we are going to take the relay endpoint if it exists which means we requested a relay for this peer
+			if site.RelayEndpoint != "" {
+				siteEndpoint = site.RelayEndpoint
+			} else {
+				siteEndpoint = site.Endpoint
+			}
+
+			o.apiServer.AddPeerStatus(site.SiteId, site.Name, false, 0, siteEndpoint, false)
 		}
 
-		o.apiServer.AddPeerStatus(site.SiteId, site.Name, false, 0, siteEndpoint, false)
-
+		// we still call this to add the aliases for jit lookup but we just do that then pass inside. need to skip the above so we dont add to the api
 		if err := o.peerManager.AddPeer(site); err != nil {
 			logger.Error("Failed to add peer: %v", err)
 			return
@@ -196,6 +201,36 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	if err := o.dnsProxy.Start(); err != nil { // start DNS proxy first so there is no downtime
 		logger.Error("Failed to start DNS proxy: %v", err)
 	}
+
+	// Register JIT handler: when the DNS proxy resolves a local record, check whether
+	// the owning site is already connected and, if not, initiate a JIT connection.
+	o.dnsProxy.SetJITHandler(func(siteId int) {
+		if o.peerManager == nil || o.websocket == nil {
+			return
+		}
+
+		// Site already has an active peer connection - nothing to do.
+		if _, exists := o.peerManager.GetPeer(siteId); exists {
+			return
+		}
+
+		o.peerSendMu.Lock()
+		defer o.peerSendMu.Unlock()
+
+		// A JIT request for this site is already in-flight - avoid duplicate sends.
+		if _, pending := o.jitPendingSites[siteId]; pending {
+			return
+		}
+
+		chainId := generateChainId()
+		logger.Info("DNS-triggered JIT connect for site %d (chainId=%s)", siteId, chainId)
+		stopFunc, _ := o.websocket.SendMessageInterval("olm/wg/server/peer/init", map[string]interface{}{
+			"siteId":  siteId,
+			"chainId": chainId,
+		}, 2*time.Second, 10)
+		o.stopPeerInits[chainId] = stopFunc
+		o.jitPendingSites[siteId] = chainId
+	})
 
 	if o.tunnelConfig.OverrideDNS {
 		// Set up DNS override to use our DNS proxy
@@ -274,12 +309,12 @@ func (o *Olm) handleTerminate(msg websocket.WSMessage) {
 			logger.Error("Error unmarshaling terminate error data: %v", err)
 		} else {
 			logger.Info("Terminate reason (code: %s): %s", errorData.Code, errorData.Message)
-			
+
 			if errorData.Code == "TERMINATED_INACTIVITY" {
 				logger.Info("Ignoring...")
 				return
 			}
-			
+
 			// Set the olm error in the API server so it can be exposed via status
 			o.apiServer.SetOlmError(errorData.Code, errorData.Message)
 		}

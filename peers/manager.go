@@ -110,6 +110,19 @@ func (pm *PeerManager) GetAllPeers() []SiteConfig {
 func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
+	
+	for _, alias := range siteConfig.Aliases {
+		address := net.ParseIP(alias.AliasAddress)
+		if address == nil {
+			continue
+		}
+		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteConfig.SiteId)
+	}
+	
+	if siteConfig.PublicKey == "" {
+		logger.Debug("Skip adding site %d because no pub key", siteConfig.SiteId)
+		return nil
+	}
 
 	// build the allowed IPs list from the remote subnets and aliases and add them to the peer
 	allowedIPs := make([]string, 0, len(siteConfig.RemoteSubnets)+len(siteConfig.Aliases))
@@ -143,14 +156,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	if err := network.AddRoutes(siteConfig.RemoteSubnets, pm.interfaceName); err != nil {
 		logger.Error("Failed to add routes for remote subnets: %v", err)
 	}
-	for _, alias := range siteConfig.Aliases {
-		address := net.ParseIP(alias.AliasAddress)
-		if address == nil {
-			continue
-		}
-		pm.dnsProxy.AddDNSRecord(alias.Alias, address)
-	}
-
+	
 	monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
 	monitorPeer := net.JoinHostPort(monitorAddress, strconv.Itoa(int(siteConfig.ServerPort+1))) // +1 for the monitor port
 
@@ -437,7 +443,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 		if address == nil {
 			continue
 		}
-		pm.dnsProxy.AddDNSRecord(alias.Alias, address)
+		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteConfig.SiteId)
 	}
 
 	pm.peerMonitor.UpdateHolepunchEndpoint(siteConfig.SiteId, siteConfig.Endpoint)
@@ -717,7 +723,7 @@ func (pm *PeerManager) AddAlias(siteId int, alias Alias) error {
 
 	address := net.ParseIP(alias.AliasAddress)
 	if address != nil {
-		pm.dnsProxy.AddDNSRecord(alias.Alias, address)
+		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteId)
 	}
 
 	// Add an allowed IP for the alias

@@ -32,7 +32,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
-OutputBaseFilename=mysetup
+OutputBaseFilename=olm_windows_installer
 SolidCompression=yes
 WizardStyle=modern
 ; Add this to ensure PATH changes are applied and the system is prompted for a restart if needed
@@ -78,7 +78,7 @@ begin
     Result := True;
     exit;
   end;
-
+  
   // Perform a case-insensitive check to see if the path is already present.
   // We add semicolons to prevent partial matches (e.g., matching C:\App in C:\App2).
   if Pos(';' + UpperCase(Path) + ';', ';' + UpperCase(OrigPath) + ';') > 0 then
@@ -109,7 +109,7 @@ begin
     PathList.Delimiter := ';';
     PathList.StrictDelimiter := True;
     PathList.DelimitedText := OrigPath;
-
+    
     // Find and remove the matching entry (case-insensitive)
     for I := PathList.Count - 1 downto 0 do
     begin
@@ -119,10 +119,10 @@ begin
         PathList.Delete(I);
       end;
     end;
-
+    
     // Reconstruct the PATH
     NewPath := PathList.DelimitedText;
-
+    
     // Write the new PATH back to the registry
     if RegWriteExpandStringValue(HKEY_LOCAL_MACHINE,
       'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
@@ -145,7 +145,7 @@ begin
     // Get the application installation path
     AppPath := ExpandConstant('{app}');
     Log('Removing PATH entry for: ' + AppPath);
-
+    
     // Remove only our path entry from the system PATH
     RemovePathEntry(AppPath);
   end;

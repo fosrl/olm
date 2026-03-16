@@ -18,24 +18,28 @@ const (
 	RecordTypePTR  RecordType = RecordType(dns.TypePTR)
 )
 
-// DNSRecordStore manages local DNS records for A, AAAA, and PTR queries
+// recordSet holds A and AAAA records for a single domain or wildcard pattern
+type recordSet struct {
+	A      []net.IP
+	AAAA   []net.IP
+	SiteId int
+}
+
+// DNSRecordStore manages local DNS records for A, AAAA, and PTR queries.
+// Exact domains are stored in a map; wildcard patterns are in a separate map.
 type DNSRecordStore struct {
-	mu            sync.RWMutex
-	aRecords      map[string][]net.IP // domain -> list of IPv4 addresses
-	aaaaRecords   map[string][]net.IP // domain -> list of IPv6 addresses
-	aWildcards    map[string][]net.IP // wildcard pattern -> list of IPv4 addresses
-	aaaaWildcards map[string][]net.IP // wildcard pattern -> list of IPv6 addresses
-	ptrRecords    map[string]string   // IP address string -> domain name
+	mu         sync.RWMutex
+	exact      map[string]*recordSet // normalized FQDN -> A/AAAA records
+	wildcards  map[string]*recordSet // wildcard pattern -> A/AAAA records
+	ptrRecords map[string]string     // IP address string -> domain name
 }
 
 // NewDNSRecordStore creates a new DNS record store
 func NewDNSRecordStore() *DNSRecordStore {
 	return &DNSRecordStore{
-		aRecords:      make(map[string][]net.IP),
-		aaaaRecords:   make(map[string][]net.IP),
-		aWildcards:    make(map[string][]net.IP),
-		aaaaWildcards: make(map[string][]net.IP),
-		ptrRecords:    make(map[string]string),
+		exact:      make(map[string]*recordSet),
+		wildcards:  make(map[string]*recordSet),
+		ptrRecords: make(map[string]string),
 	}
 }
 
@@ -43,46 +47,56 @@ func NewDNSRecordStore() *DNSRecordStore {
 // domain should be in FQDN format (e.g., "example.com.")
 // domain can contain wildcards: * (0+ chars) and ? (exactly 1 char)
 // ip should be a valid IPv4 or IPv6 address
+// siteId is the site that owns this alias/domain
 // Automatically adds a corresponding PTR record for non-wildcard domains
-func (s *DNSRecordStore) AddRecord(domain string, ip net.IP) error {
+func (s *DNSRecordStore) AddRecord(domain string, ip net.IP, siteId int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Ensure domain ends with a dot (FQDN format)
 	if len(domain) == 0 || domain[len(domain)-1] != '.' {
 		domain = domain + "."
 	}
-
-	// Normalize domain to lowercase FQDN
 	domain = strings.ToLower(dns.Fqdn(domain))
-
-	// Check if domain contains wildcards
 	isWildcard := strings.ContainsAny(domain, "*?")
 
-	if ip.To4() != nil {
-		// IPv4 address
-		if isWildcard {
-			s.aWildcards[domain] = append(s.aWildcards[domain], ip)
-		} else {
-			s.aRecords[domain] = append(s.aRecords[domain], ip)
-			// Automatically add PTR record for non-wildcard domains
-			s.ptrRecords[ip.String()] = domain
-		}
-	} else if ip.To16() != nil {
-		// IPv6 address
-		if isWildcard {
-			s.aaaaWildcards[domain] = append(s.aaaaWildcards[domain], ip)
-		} else {
-			s.aaaaRecords[domain] = append(s.aaaaRecords[domain], ip)
-			// Automatically add PTR record for non-wildcard domains
-			s.ptrRecords[ip.String()] = domain
-		}
-	} else {
+	isV4 := ip.To4() != nil
+	if !isV4 && ip.To16() == nil {
 		return &net.ParseError{Type: "IP address", Text: ip.String()}
 	}
 
+	// Choose the appropriate map based on whether this is a wildcard
+	m := s.exact
+	if isWildcard {
+		m = s.wildcards
+	}
+
+	if m[domain] == nil {
+		m[domain] = &recordSet{SiteId: siteId}
+	}
+	rs := m[domain]
+	if isV4 {
+		for _, existing := range rs.A {
+			if existing.Equal(ip) {
+				return nil
+			}
+		}
+		rs.A = append(rs.A, ip)
+	} else {
+		for _, existing := range rs.AAAA {
+			if existing.Equal(ip) {
+				return nil
+			}
+		}
+		rs.AAAA = append(rs.AAAA, ip)
+	}
+
+	// Add PTR record for non-wildcard domains
+	if !isWildcard {
+		s.ptrRecords[ip.String()] = domain
+	}
 	return nil
 }
+
 
 // AddPTRRecord adds a PTR record mapping an IP address to a domain name
 // ip should be a valid IPv4 or IPv6 address
@@ -112,88 +126,61 @@ func (s *DNSRecordStore) RemoveRecord(domain string, ip net.IP) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Ensure domain ends with a dot (FQDN format)
 	if len(domain) == 0 || domain[len(domain)-1] != '.' {
 		domain = domain + "."
 	}
-
-	// Normalize domain to lowercase FQDN
 	domain = strings.ToLower(dns.Fqdn(domain))
-
-	// Check if domain contains wildcards
 	isWildcard := strings.ContainsAny(domain, "*?")
 
-	if ip == nil {
-		// Remove all records for this domain
-		if isWildcard {
-			delete(s.aWildcards, domain)
-			delete(s.aaaaWildcards, domain)
-		} else {
-			// For non-wildcard domains, remove PTR records for all IPs
-			if ips, ok := s.aRecords[domain]; ok {
-				for _, ipAddr := range ips {
-					// Only remove PTR if it points to this domain
-					if ptrDomain, exists := s.ptrRecords[ipAddr.String()]; exists && ptrDomain == domain {
-						delete(s.ptrRecords, ipAddr.String())
-					}
-				}
-			}
-			if ips, ok := s.aaaaRecords[domain]; ok {
-				for _, ipAddr := range ips {
-					// Only remove PTR if it points to this domain
-					if ptrDomain, exists := s.ptrRecords[ipAddr.String()]; exists && ptrDomain == domain {
-						delete(s.ptrRecords, ipAddr.String())
-					}
-				}
-			}
-			delete(s.aRecords, domain)
-			delete(s.aaaaRecords, domain)
-		}
+	// Choose the appropriate map
+	m := s.exact
+	if isWildcard {
+		m = s.wildcards
+	}
+
+	rs := m[domain]
+	if rs == nil {
 		return
 	}
 
+	if ip == nil {
+		// Remove all records for this domain
+		if !isWildcard {
+			for _, ipAddr := range rs.A {
+				if ptrDomain, exists := s.ptrRecords[ipAddr.String()]; exists && ptrDomain == domain {
+					delete(s.ptrRecords, ipAddr.String())
+				}
+			}
+			for _, ipAddr := range rs.AAAA {
+				if ptrDomain, exists := s.ptrRecords[ipAddr.String()]; exists && ptrDomain == domain {
+					delete(s.ptrRecords, ipAddr.String())
+				}
+			}
+		}
+		delete(m, domain)
+		return
+	}
+
+	// Remove specific IP
 	if ip.To4() != nil {
-		// Remove specific IPv4 address
-		if isWildcard {
-			if ips, ok := s.aWildcards[domain]; ok {
-				s.aWildcards[domain] = removeIP(ips, ip)
-				if len(s.aWildcards[domain]) == 0 {
-					delete(s.aWildcards, domain)
-				}
-			}
-		} else {
-			if ips, ok := s.aRecords[domain]; ok {
-				s.aRecords[domain] = removeIP(ips, ip)
-				if len(s.aRecords[domain]) == 0 {
-					delete(s.aRecords, domain)
-				}
-				// Automatically remove PTR record if it points to this domain
-				if ptrDomain, exists := s.ptrRecords[ip.String()]; exists && ptrDomain == domain {
-					delete(s.ptrRecords, ip.String())
-				}
+		rs.A = removeIP(rs.A, ip)
+		if !isWildcard {
+			if ptrDomain, exists := s.ptrRecords[ip.String()]; exists && ptrDomain == domain {
+				delete(s.ptrRecords, ip.String())
 			}
 		}
-	} else if ip.To16() != nil {
-		// Remove specific IPv6 address
-		if isWildcard {
-			if ips, ok := s.aaaaWildcards[domain]; ok {
-				s.aaaaWildcards[domain] = removeIP(ips, ip)
-				if len(s.aaaaWildcards[domain]) == 0 {
-					delete(s.aaaaWildcards, domain)
-				}
-			}
-		} else {
-			if ips, ok := s.aaaaRecords[domain]; ok {
-				s.aaaaRecords[domain] = removeIP(ips, ip)
-				if len(s.aaaaRecords[domain]) == 0 {
-					delete(s.aaaaRecords, domain)
-				}
-				// Automatically remove PTR record if it points to this domain
-				if ptrDomain, exists := s.ptrRecords[ip.String()]; exists && ptrDomain == domain {
-					delete(s.ptrRecords, ip.String())
-				}
+	} else {
+		rs.AAAA = removeIP(rs.AAAA, ip)
+		if !isWildcard {
+			if ptrDomain, exists := s.ptrRecords[ip.String()]; exists && ptrDomain == domain {
+				delete(s.ptrRecords, ip.String())
 			}
 		}
+	}
+
+	// Clean up empty record sets
+	if len(rs.A) == 0 && len(rs.AAAA) == 0 {
+		delete(m, domain)
 	}
 }
 
@@ -205,61 +192,80 @@ func (s *DNSRecordStore) RemovePTRRecord(ip net.IP) {
 	delete(s.ptrRecords, ip.String())
 }
 
-// GetRecords returns all IP addresses for a domain and record type
-// First checks for exact matches, then checks wildcard patterns
-func (s *DNSRecordStore) GetRecords(domain string, recordType RecordType) []net.IP {
+// GetSiteIdForDomain returns the siteId associated with the given domain.
+// It checks exact matches first, then wildcard patterns.
+// The second return value is false if the domain is not found in local records.
+func (s *DNSRecordStore) GetSiteIdForDomain(domain string) (int, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Normalize domain to lowercase FQDN
 	domain = strings.ToLower(dns.Fqdn(domain))
 
-	var records []net.IP
-	switch recordType {
-	case RecordTypeA:
-		// Check exact match first
-		if ips, ok := s.aRecords[domain]; ok {
-			// Return a copy to prevent external modifications
-			records = make([]net.IP, len(ips))
-			copy(records, ips)
-			return records
-		}
-		// Check wildcard patterns
-		for pattern, ips := range s.aWildcards {
-			if matchWildcard(pattern, domain) {
-				records = append(records, ips...)
-			}
-		}
-		if len(records) > 0 {
-			// Return a copy
-			result := make([]net.IP, len(records))
-			copy(result, records)
-			return result
-		}
+	// Check exact match first
+	if rs, exists := s.exact[domain]; exists {
+		return rs.SiteId, true
+	}
 
-	case RecordTypeAAAA:
-		// Check exact match first
-		if ips, ok := s.aaaaRecords[domain]; ok {
-			// Return a copy to prevent external modifications
-			records = make([]net.IP, len(ips))
-			copy(records, ips)
-			return records
-		}
-		// Check wildcard patterns
-		for pattern, ips := range s.aaaaWildcards {
-			if matchWildcard(pattern, domain) {
-				records = append(records, ips...)
-			}
-		}
-		if len(records) > 0 {
-			// Return a copy
-			result := make([]net.IP, len(records))
-			copy(result, records)
-			return result
+	// Check wildcard matches
+	for pattern, rs := range s.wildcards {
+		if matchWildcard(pattern, domain) {
+			return rs.SiteId, true
 		}
 	}
 
-	return records
+	return 0, false
+}
+
+// GetRecords returns all IP addresses for a domain and record type.
+// The second return value indicates whether the domain exists at all
+// (true = domain exists, use NODATA if no records; false = NXDOMAIN).
+func (s *DNSRecordStore) GetRecords(domain string, recordType RecordType) ([]net.IP, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	domain = strings.ToLower(dns.Fqdn(domain))
+
+	// Check exact match first
+	if rs, exists := s.exact[domain]; exists {
+		var ips []net.IP
+		if recordType == RecordTypeA {
+			ips = rs.A
+		} else {
+			ips = rs.AAAA
+		}
+		if len(ips) > 0 {
+			out := make([]net.IP, len(ips))
+			copy(out, ips)
+			return out, true
+		}
+		// Domain exists but no records of this type
+		return nil, true
+	}
+
+	// Check wildcard matches
+	var records []net.IP
+	matched := false
+	for pattern, rs := range s.wildcards {
+		if !matchWildcard(pattern, domain) {
+			continue
+		}
+		matched = true
+		if recordType == RecordTypeA {
+			records = append(records, rs.A...)
+		} else {
+			records = append(records, rs.AAAA...)
+		}
+	}
+
+	if !matched {
+		return nil, false
+	}
+	if len(records) == 0 {
+		return nil, true
+	}
+	out := make([]net.IP, len(records))
+	copy(out, records)
+	return out, true
 }
 
 // GetPTRRecord returns the domain name for a PTR record query
@@ -288,34 +294,30 @@ func (s *DNSRecordStore) HasRecord(domain string, recordType RecordType) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Normalize domain to lowercase FQDN
 	domain = strings.ToLower(dns.Fqdn(domain))
 
-	switch recordType {
-	case RecordTypeA:
-		// Check exact match
-		if _, ok := s.aRecords[domain]; ok {
+	// Check exact match
+	if rs, exists := s.exact[domain]; exists {
+		if recordType == RecordTypeA && len(rs.A) > 0 {
 			return true
 		}
-		// Check wildcard patterns
-		for pattern := range s.aWildcards {
-			if matchWildcard(pattern, domain) {
-				return true
-			}
-		}
-	case RecordTypeAAAA:
-		// Check exact match
-		if _, ok := s.aaaaRecords[domain]; ok {
+		if recordType == RecordTypeAAAA && len(rs.AAAA) > 0 {
 			return true
-		}
-		// Check wildcard patterns
-		for pattern := range s.aaaaWildcards {
-			if matchWildcard(pattern, domain) {
-				return true
-			}
 		}
 	}
 
+	// Check wildcard matches
+	for pattern, rs := range s.wildcards {
+		if !matchWildcard(pattern, domain) {
+			continue
+		}
+		if recordType == RecordTypeA && len(rs.A) > 0 {
+			return true
+		}
+		if recordType == RecordTypeAAAA && len(rs.AAAA) > 0 {
+			return true
+		}
+	}
 	return false
 }
 
@@ -339,10 +341,8 @@ func (s *DNSRecordStore) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.aRecords = make(map[string][]net.IP)
-	s.aaaaRecords = make(map[string][]net.IP)
-	s.aWildcards = make(map[string][]net.IP)
-	s.aaaaWildcards = make(map[string][]net.IP)
+	s.exact = make(map[string]*recordSet)
+	s.wildcards = make(map[string]*recordSet)
 	s.ptrRecords = make(map[string]string)
 }
 

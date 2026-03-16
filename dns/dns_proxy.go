@@ -45,6 +45,11 @@ type DNSProxy struct {
 	tunnelActivePorts map[uint16]bool
 	tunnelPortsLock   sync.Mutex
 
+	// jitHandler is called when a local record is resolved for a site that may not be
+	// connected yet, giving the caller a chance to initiate a JIT connection.
+	// It is invoked asynchronously so it never blocks DNS resolution.
+	jitHandler func(siteId int)
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -384,6 +389,16 @@ func (p *DNSProxy) handleDNSQuery(udpConn *gonet.UDPConn, queryData []byte, clie
 		response = p.checkLocalRecords(msg, question)
 	}
 
+	// If a local A/AAAA record was found, notify the JIT handler so that the owning
+	// site can be connected on-demand if it is not yet active.
+	if response != nil && p.jitHandler != nil &&
+		(question.Qtype == dns.TypeA || question.Qtype == dns.TypeAAAA) {
+		if siteId, ok := p.recordStore.GetSiteIdForDomain(question.Name); ok && siteId != 0 {
+			handler := p.jitHandler
+			go handler(siteId)
+		}
+	}
+
 	// If no local records, forward to upstream
 	if response == nil {
 		logger.Debug("No local record for %s, forwarding upstream to %v", question.Name, p.upstreamDNS)
@@ -447,19 +462,20 @@ func (p *DNSProxy) checkLocalRecords(query *dns.Msg, question dns.Question) *dns
 		return nil
 	}
 
-	ips := p.recordStore.GetRecords(question.Name, recordType)
-	if len(ips) == 0 {
+	ips, exists := p.recordStore.GetRecords(question.Name, recordType)
+	if !exists {
+		// Domain not found in local records, forward to upstream
 		return nil
 	}
 
 	logger.Debug("Found %d local record(s) for %s", len(ips), question.Name)
 
-	// Create response message
+	// Create response message (NODATA if no records, otherwise with answers)
 	response := new(dns.Msg)
 	response.SetReply(query)
 	response.Authoritative = true
 
-	// Add answer records
+	// Add answer records (loop is a no-op if ips is empty)
 	for _, ip := range ips {
 		var rr dns.RR
 		if question.Qtype == dns.TypeA {
@@ -717,11 +733,20 @@ func (p *DNSProxy) runPacketSender() {
 	}
 }
 
+// SetJITHandler registers a callback that is invoked whenever a local DNS record is
+// resolved for an A or AAAA query. The siteId identifies which site owns the record.
+// The handler is called in its own goroutine so it must be safe to call concurrently.
+// Pass nil to disable JIT notifications.
+func (p *DNSProxy) SetJITHandler(handler func(siteId int)) {
+	p.jitHandler = handler
+}
+
 // AddDNSRecord adds a DNS record to the local store
 // domain should be a domain name (e.g., "example.com" or "example.com.")
 // ip should be a valid IPv4 or IPv6 address
-func (p *DNSProxy) AddDNSRecord(domain string, ip net.IP) error {
-	return p.recordStore.AddRecord(domain, ip)
+func (p *DNSProxy) AddDNSRecord(domain string, ip net.IP, siteId int) error {
+	logger.Debug("Adding dns record for domain %s with IP %s (siteId=%d)", domain, ip.String(), siteId)
+	return p.recordStore.AddRecord(domain, ip, siteId)
 }
 
 // RemoveDNSRecord removes a DNS record from the local store
@@ -730,8 +755,9 @@ func (p *DNSProxy) RemoveDNSRecord(domain string, ip net.IP) {
 	p.recordStore.RemoveRecord(domain, ip)
 }
 
-// GetDNSRecords returns all IP addresses for a domain and record type
-func (p *DNSProxy) GetDNSRecords(domain string, recordType RecordType) []net.IP {
+// GetDNSRecords returns all IP addresses for a domain and record type.
+// The second return value indicates whether the domain exists.
+func (p *DNSProxy) GetDNSRecords(domain string, recordType RecordType) ([]net.IP, bool) {
 	return p.recordStore.GetRecords(domain, recordType)
 }
 
