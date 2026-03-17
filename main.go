@@ -13,6 +13,8 @@ import (
 	olmpkg "github.com/fosrl/olm/olm"
 )
 
+var olmVersion = "version_replaceme"
+
 func main() {
 	// Check if we're running as a Windows service
 	if isWindowsService() {
@@ -190,7 +192,6 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 		os.Exit(0)
 	}
 
-	olmVersion := "1.4.3"
 	if showVersion {
 		fmt.Println("Olm version " + olmVersion)
 		os.Exit(0)
