@@ -20,6 +20,11 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 		return
 	}
 
+	if o.peerManager == nil {
+		logger.Debug("Ignoring add-peer message: peerManager is nil (shutdown in progress)")
+		return
+	}
+
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {
 		logger.Error("Error marshaling data: %v", err)
@@ -76,6 +81,11 @@ func (o *Olm) handleWgPeerRemove(msg websocket.WSMessage) {
 		return
 	}
 
+	if o.peerManager == nil {
+		logger.Debug("Ignoring remove-peer message: peerManager is nil (shutdown in progress)")
+		return
+	}
+
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {
 		logger.Error("Error marshaling data: %v", err)
@@ -110,6 +120,11 @@ func (o *Olm) handleWgPeerUpdate(msg websocket.WSMessage) {
 	// Check if tunnel is still running
 	if !o.tunnelRunning {
 		logger.Debug("Tunnel stopped, ignoring update-peer message")
+		return
+	}
+
+	if o.peerManager == nil {
+		logger.Debug("Ignoring update-peer message: peerManager is nil (shutdown in progress)")
 		return
 	}
 
