@@ -457,7 +457,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 				"userToken":   userToken,
 				"fingerprint": o.fingerprint,
 				"postures":    o.postures,
-			}, 2*time.Second, 10)
+			}, 2*time.Second, 20)
 
 			// Invoke onRegistered callback if configured
 			if o.olmConfig.OnRegistered != nil {
