@@ -219,3 +219,37 @@ func IsResolvconfAvailable() bool {
 	cmd := exec.Command(resolvconfCommand, "--version")
 	return cmd.Run() == nil
 }
+
+// CleanupStaleResolvconfDNS removes any stale DNS configuration left by the resolvconf
+// configurator from a previous unclean shutdown. This is a static function that can be
+// called without creating a configurator instance, useful for cleanup before network operations.
+// The interfaceName parameter specifies which interface entry to clean up (typically "olm").
+func CleanupStaleResolvconfDNS(interfaceName string) error {
+	if !IsResolvconfAvailable() {
+		// resolvconf not available, nothing to clean up
+		return nil
+	}
+
+	// Detect resolvconf implementation type
+	implType, err := detectResolvconfType()
+	if err != nil {
+		// Can't detect type, try default
+		implType = "resolvconf"
+	}
+
+	// Try to delete any existing entry for this interface
+	// This is idempotent - if no entry exists, resolvconf will just return success
+	var cmd *exec.Cmd
+
+	switch implType {
+	case "openresolv":
+		cmd = exec.Command(resolvconfCommand, "-f", "-d", interfaceName)
+	default:
+		cmd = exec.Command(resolvconfCommand, "-d", interfaceName)
+	}
+
+	// Ignore errors - the entry may not exist, which is fine
+	_ = cmd.Run()
+
+	return nil
+}

@@ -61,3 +61,19 @@ func RestoreDNSOverride() error {
 	logger.Info("DNS configuration restored successfully")
 	return nil
 }
+
+// CleanupStaleState removes any stale DNS configuration left over from a previous
+// unclean shutdown (e.g., system crash, power loss while tunnel was active).
+// This function should be called early during startup, before any network operations,
+// to ensure DNS is working properly.
+//
+// On Windows, DNS configuration is tied to the interface GUID. When the WireGuard
+// interface is recreated, it gets a new GUID, so there's no stale state to clean up.
+func CleanupStaleState(interfaceName string) error {
+	// Windows DNS configuration via registry is interface-specific.
+	// When the WireGuard interface is recreated, it gets a new GUID,
+	// so there's no leftover state to clean up from previous sessions.
+	_ = interfaceName
+	logger.Debug("Windows DNS cleanup: no stale state to clean (interface-specific)")
+	return nil
+}
