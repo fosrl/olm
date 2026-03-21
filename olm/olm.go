@@ -47,6 +47,7 @@ type Olm struct {
 	websocket        *websocket.Client
 	holePunchManager *holepunch.Manager
 	peerManager      *peers.PeerManager
+	peerManagerMu    sync.RWMutex
 	// Power mode management
 	currentPowerMode string
 	powerModeMu      sync.Mutex
@@ -74,6 +75,15 @@ type Olm struct {
 
 	// WaitGroup to track tunnel lifecycle
 	tunnelWg sync.WaitGroup
+}
+
+// getPeerManager safely returns the current peerManager under a read-lock.
+// Callers must check the returned value for nil before using it.
+func (o *Olm) getPeerManager() *peers.PeerManager {
+	o.peerManagerMu.RLock()
+	pm := o.peerManager
+	o.peerManagerMu.RUnlock()
+	return pm
 }
 
 // initTunnelInfo creates the shared UDP socket and holepunch manager.
@@ -591,10 +601,12 @@ func (o *Olm) Close() {
 	}
 
 	// Close() also calls Stop() internally
+	o.peerManagerMu.Lock()
 	if o.peerManager != nil {
 		o.peerManager.Close()
 		o.peerManager = nil
 	}
+	o.peerManagerMu.Unlock()
 
 	if o.uapiListener != nil {
 		_ = o.uapiListener.Close()
@@ -806,14 +818,14 @@ func (o *Olm) SetPowerMode(mode string) error {
 
 		lowPowerInterval := 10 * time.Minute
 
-		if o.peerManager != nil {
-			peerMonitor := o.peerManager.GetPeerMonitor()
+		if pm := o.getPeerManager(); pm != nil {
+			peerMonitor := pm.GetPeerMonitor()
 			if peerMonitor != nil {
 				peerMonitor.SetPeerInterval(lowPowerInterval, lowPowerInterval)
 				peerMonitor.SetPeerHolepunchInterval(lowPowerInterval, lowPowerInterval)
 				logger.Info("Set monitoring intervals to 10 minutes for low power mode")
 			}
-			o.peerManager.UpdateAllPeersPersistentKeepalive(0) // disable
+			pm.UpdateAllPeersPersistentKeepalive(0) // disable
 		}
 
 		if o.holePunchManager != nil {
@@ -858,14 +870,14 @@ func (o *Olm) SetPowerMode(mode string) error {
 			}
 
 			// Restore intervals and reconnect websocket
-			if o.peerManager != nil {
-				peerMonitor := o.peerManager.GetPeerMonitor()
+			if pm := o.getPeerManager(); pm != nil {
+				peerMonitor := pm.GetPeerMonitor()
 				if peerMonitor != nil {
 					peerMonitor.ResetPeerHolepunchInterval()
 					peerMonitor.ResetPeerInterval()
 				}
 
-				o.peerManager.UpdateAllPeersPersistentKeepalive(5)
+				pm.UpdateAllPeersPersistentKeepalive(5)
 			}
 
 			if o.holePunchManager != nil {

@@ -32,21 +32,27 @@ func (o *Olm) handleWgPeerAddData(msg websocket.WSMessage) {
 		return
 	}
 
-	if _, exists := o.peerManager.GetPeer(addSubnetsData.SiteId); !exists {
+	pm := o.getPeerManager()
+	if pm == nil {
+		logger.Debug("Ignoring add-remote-subnets-aliases message: peerManager is nil (shutdown in progress)")
+		return
+	}
+
+	if _, exists := pm.GetPeer(addSubnetsData.SiteId); !exists {
 		logger.Debug("Peer %d not found for removing remote subnets and aliases", addSubnetsData.SiteId)
 		return
 	}
 
 	// Add new subnets
 	for _, subnet := range addSubnetsData.RemoteSubnets {
-		if err := o.peerManager.AddRemoteSubnet(addSubnetsData.SiteId, subnet); err != nil {
+		if err := pm.AddRemoteSubnet(addSubnetsData.SiteId, subnet); err != nil {
 			logger.Error("Failed to add allowed IP %s: %v", subnet, err)
 		}
 	}
 
 	// Add new aliases
 	for _, alias := range addSubnetsData.Aliases {
-		if err := o.peerManager.AddAlias(addSubnetsData.SiteId, alias); err != nil {
+		if err := pm.AddAlias(addSubnetsData.SiteId, alias); err != nil {
 			logger.Error("Failed to add alias %s: %v", alias.Alias, err)
 		}
 	}
@@ -73,21 +79,27 @@ func (o *Olm) handleWgPeerRemoveData(msg websocket.WSMessage) {
 		return
 	}
 
-	if _, exists := o.peerManager.GetPeer(removeSubnetsData.SiteId); !exists {
+	pm := o.getPeerManager()
+	if pm == nil {
+		logger.Debug("Ignoring remove-remote-subnets-aliases message: peerManager is nil (shutdown in progress)")
+		return
+	}
+
+	if _, exists := pm.GetPeer(removeSubnetsData.SiteId); !exists {
 		logger.Debug("Peer %d not found for removing remote subnets and aliases", removeSubnetsData.SiteId)
 		return
 	}
 
 	// Remove subnets
 	for _, subnet := range removeSubnetsData.RemoteSubnets {
-		if err := o.peerManager.RemoveRemoteSubnet(removeSubnetsData.SiteId, subnet); err != nil {
+		if err := pm.RemoveRemoteSubnet(removeSubnetsData.SiteId, subnet); err != nil {
 			logger.Error("Failed to remove allowed IP %s: %v", subnet, err)
 		}
 	}
 
 	// Remove aliases
 	for _, alias := range removeSubnetsData.Aliases {
-		if err := o.peerManager.RemoveAlias(removeSubnetsData.SiteId, alias.Alias); err != nil {
+		if err := pm.RemoveAlias(removeSubnetsData.SiteId, alias.Alias); err != nil {
 			logger.Error("Failed to remove alias %s: %v", alias.Alias, err)
 		}
 	}
@@ -114,7 +126,13 @@ func (o *Olm) handleWgPeerUpdateData(msg websocket.WSMessage) {
 		return
 	}
 
-	if _, exists := o.peerManager.GetPeer(updateSubnetsData.SiteId); !exists {
+	pm := o.getPeerManager()
+	if pm == nil {
+		logger.Debug("Ignoring update-remote-subnets-aliases message: peerManager is nil (shutdown in progress)")
+		return
+	}
+
+	if _, exists := pm.GetPeer(updateSubnetsData.SiteId); !exists {
 		logger.Debug("Peer %d not found for updating remote subnets and aliases", updateSubnetsData.SiteId)
 		return
 	}
@@ -123,14 +141,14 @@ func (o *Olm) handleWgPeerUpdateData(msg websocket.WSMessage) {
 	// This ensures that if an old and new subnet are the same on different peers,
 	// the route won't be temporarily removed
 	for _, subnet := range updateSubnetsData.NewRemoteSubnets {
-		if err := o.peerManager.AddRemoteSubnet(updateSubnetsData.SiteId, subnet); err != nil {
+		if err := pm.AddRemoteSubnet(updateSubnetsData.SiteId, subnet); err != nil {
 			logger.Error("Failed to add allowed IP %s: %v", subnet, err)
 		}
 	}
 
 	// Remove old subnets after new ones are added
 	for _, subnet := range updateSubnetsData.OldRemoteSubnets {
-		if err := o.peerManager.RemoveRemoteSubnet(updateSubnetsData.SiteId, subnet); err != nil {
+		if err := pm.RemoveRemoteSubnet(updateSubnetsData.SiteId, subnet); err != nil {
 			logger.Error("Failed to remove allowed IP %s: %v", subnet, err)
 		}
 	}
@@ -139,14 +157,14 @@ func (o *Olm) handleWgPeerUpdateData(msg websocket.WSMessage) {
 	// This ensures that if an old and new alias share the same IP, the IP won't be
 	// temporarily removed from the allowed IPs list
 	for _, alias := range updateSubnetsData.NewAliases {
-		if err := o.peerManager.AddAlias(updateSubnetsData.SiteId, alias); err != nil {
+		if err := pm.AddAlias(updateSubnetsData.SiteId, alias); err != nil {
 			logger.Error("Failed to add alias %s: %v", alias.Alias, err)
 		}
 	}
 
 	// Remove old aliases after new ones are added
 	for _, alias := range updateSubnetsData.OldAliases {
-		if err := o.peerManager.RemoveAlias(updateSubnetsData.SiteId, alias.Alias); err != nil {
+		if err := pm.RemoveAlias(updateSubnetsData.SiteId, alias.Alias); err != nil {
 			logger.Error("Failed to remove alias %s: %v", alias.Alias, err)
 		}
 	}
@@ -163,7 +181,8 @@ func (o *Olm) handleSync(msg websocket.WSMessage) {
 		return
 	}
 
-	if o.peerManager == nil {
+	pm := o.getPeerManager()
+	if pm == nil {
 		logger.Warn("Peer manager not initialized, ignoring sync request")
 		return
 	}
@@ -190,7 +209,7 @@ func (o *Olm) handleSync(msg websocket.WSMessage) {
 	}
 
 	// Get all current peers
-	currentPeers := o.peerManager.GetAllPeers()
+	currentPeers := pm.GetAllPeers()
 	currentPeerMap := make(map[int]peers.SiteConfig)
 	for _, peer := range currentPeers {
 		currentPeerMap[peer.SiteId] = peer
@@ -200,7 +219,7 @@ func (o *Olm) handleSync(msg websocket.WSMessage) {
 	for siteId := range currentPeerMap {
 		if _, exists := expectedPeers[siteId]; !exists {
 			logger.Info("Sync: Removing peer for site %d (no longer in expected config)", siteId)
-			if err := o.peerManager.RemovePeer(siteId); err != nil {
+			if err := pm.RemovePeer(siteId); err != nil {
 				logger.Error("Sync: Failed to remove peer %d: %v", siteId, err)
 			} else {
 				// Remove any exit nodes associated with this peer from hole punching
@@ -301,7 +320,7 @@ func (o *Olm) handleSync(msg websocket.WSMessage) {
 					siteConfig.Aliases = expectedSite.Aliases
 				}
 
-				if err := o.peerManager.UpdatePeer(siteConfig); err != nil {
+				if err := pm.UpdatePeer(siteConfig); err != nil {
 					logger.Error("Sync: Failed to update peer %d: %v", siteId, err)
 				} else {
 					// If the endpoint changed, trigger holepunch to refresh NAT mappings
