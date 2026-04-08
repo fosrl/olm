@@ -218,3 +218,27 @@ func copyFile(src, dst string) error {
 
 	return nil
 }
+
+// CleanupStaleFileDNS removes any stale DNS configuration left by the file-based
+// configurator from a previous unclean shutdown. This is a static function that can be
+// called without creating a configurator instance, useful for cleanup before network operations.
+func CleanupStaleFileDNS() error {
+	// Check if backup file exists from a previous session
+	if _, err := os.Stat(resolvConfBackupPath); os.IsNotExist(err) {
+		// No backup file, nothing to clean up
+		return nil
+	}
+
+	// A backup exists, which means we crashed while DNS was configured
+	// Restore the original resolv.conf
+	if err := copyFile(resolvConfBackupPath, resolvConfPath); err != nil {
+		return fmt.Errorf("restore from backup during cleanup: %w", err)
+	}
+
+	// Remove backup file
+	if err := os.Remove(resolvConfBackupPath); err != nil {
+		return fmt.Errorf("remove backup file during cleanup: %w", err)
+	}
+
+	return nil
+}

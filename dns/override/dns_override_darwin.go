@@ -61,3 +61,20 @@ func RestoreDNSOverride() error {
 	logger.Info("DNS configuration restored successfully")
 	return nil
 }
+
+// CleanupStaleState removes any stale DNS configuration left over from a previous
+// unclean shutdown (e.g., system crash, power loss while tunnel was active).
+// This function should be called early during startup, before any network operations,
+// to ensure DNS is working properly.
+//
+// On macOS, this cleans up any scutil DNS keys that were created but not removed.
+func CleanupStaleState(interfaceName string) error {
+	_ = interfaceName
+	if err := platform.CleanupStaleDarwinDNS(); err != nil {
+		logger.Warn("Failed to cleanup stale Darwin DNS config: %v", err)
+		return fmt.Errorf("Darwin DNS cleanup: %w", err)
+	}
+
+	logger.Info("Stale DNS state cleanup completed successfully")
+	return nil
+}

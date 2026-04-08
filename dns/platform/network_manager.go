@@ -323,3 +323,41 @@ func GetNetworkManagerVersion() (string, error) {
 
 	return version, nil
 }
+
+// CleanupStaleNetworkManagerDNS removes any stale DNS configuration left by NetworkManager
+// configurator from a previous unclean shutdown. This is a static function that can be called
+// without creating a configurator instance, useful for cleanup before network operations.
+func CleanupStaleNetworkManagerDNS() error {
+	confPath := networkManagerConfDir + "/" + networkManagerDNSConfFile
+
+	// Check if our config file exists from a previous session
+	if _, err := os.Stat(confPath); os.IsNotExist(err) {
+		// No config file, nothing to clean up
+		return nil
+	}
+
+	// Remove the stale configuration file
+	if err := os.Remove(confPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale DNS config file: %w", err)
+	}
+
+	// Try to reload NetworkManager if it's available
+	if IsNetworkManagerAvailable() {
+		conn, err := dbus.SystemBus()
+		if err != nil {
+			return fmt.Errorf("connect to system bus for reload: %w", err)
+		}
+		defer conn.Close()
+
+		obj := conn.Object(networkManagerDest, networkManagerDbusObjectNode)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := obj.CallWithContext(ctx, networkManagerDest+".Reload", 0, uint32(0)).Store(); err != nil {
+			return fmt.Errorf("reload NetworkManager after cleanup: %w", err)
+		}
+	}
+
+	return nil
+}
