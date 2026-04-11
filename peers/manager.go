@@ -107,10 +107,64 @@ func (pm *PeerManager) GetAllPeers() []SiteConfig {
 	return peers
 }
 
+// SetDevice swaps the WireGuard device reference used by peer operations.
+func (pm *PeerManager) SetDevice(dev *device.Device) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.device = dev
+}
+
+// IsPeerConnected reports the latest WireGuard connectivity status for a peer.
+func (pm *PeerManager) IsPeerConnected(siteID int) bool {
+	if pm.peerMonitor == nil {
+		return false
+	}
+	return pm.peerMonitor.IsWGConnected(siteID)
+}
+
+// IsPeerRelayed reports whether a peer is currently marked as relayed.
+func (pm *PeerManager) IsPeerRelayed(siteID int) bool {
+	if pm.peerMonitor == nil {
+		return false
+	}
+	return pm.peerMonitor.IsPeerRelayed(siteID)
+}
+
+// ReplaceDevice swaps the active WireGuard device and reapplies current peers.
+func (pm *PeerManager) ReplaceDevice(dev *device.Device) error {
+	if dev == nil {
+		return fmt.Errorf("device is nil")
+	}
+
+	pm.mu.Lock()
+	pm.device = dev
+	peersSnapshot := make([]SiteConfig, 0, len(pm.peers))
+	for _, peer := range pm.peers {
+		peersSnapshot = append(peersSnapshot, peer)
+	}
+	monitor := pm.peerMonitor
+	privateKey := pm.privateKey
+	persistentKeepalive := pm.PersistentKeepalive
+	publicDNS := append([]string(nil), pm.publicDNS...)
+	pm.mu.Unlock()
+
+	for _, peer := range peersSnapshot {
+		relayed := false
+		if monitor != nil {
+			relayed = monitor.IsPeerRelayed(peer.SiteId)
+		}
+		if err := ConfigurePeer(dev, peer, privateKey, relayed, persistentKeepalive, publicDNS); err != nil {
+			return fmt.Errorf("reconfigure peer %d: %w", peer.SiteId, err)
+		}
+	}
+
+	return nil
+}
+
 func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
-	
+
 	for _, alias := range siteConfig.Aliases {
 		address := net.ParseIP(alias.AliasAddress)
 		if address == nil {
@@ -118,7 +172,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 		}
 		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteConfig.SiteId)
 	}
-	
+
 	if siteConfig.PublicKey == "" {
 		logger.Debug("Skip adding site %d because no pub key", siteConfig.SiteId)
 		return nil
@@ -156,7 +210,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	if err := network.AddRoutes(siteConfig.RemoteSubnets, pm.interfaceName); err != nil {
 		logger.Error("Failed to add routes for remote subnets: %v", err)
 	}
-	
+
 	monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
 	monitorPeer := net.JoinHostPort(monitorAddress, strconv.Itoa(int(siteConfig.ServerPort+1))) // +1 for the monitor port
 
@@ -183,7 +237,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 func (pm *PeerManager) UpdateAllPeersPersistentKeepalive(interval int) map[int]error {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
-	
+
 	pm.PersistentKeepalive = interval
 
 	errors := make(map[int]error)
@@ -786,20 +840,6 @@ func (pm *PeerManager) RemoveAlias(siteId int, aliasName string) error {
 
 // RelayPeer handles failover to the relay server when a peer is disconnected
 func (pm *PeerManager) RelayPeer(siteId int, relayEndpoint string, relayPort uint16) {
-	pm.mu.Lock()
-	peer, exists := pm.peers[siteId]
-	if exists {
-		// Store the relay endpoint
-		peer.RelayEndpoint = relayEndpoint
-		pm.peers[siteId] = peer
-	}
-	pm.mu.Unlock()
-
-	if !exists {
-		logger.Error("Cannot handle failover: peer with site ID %d not found", siteId)
-		return
-	}
-
 	// Check for IPv6 and format the endpoint correctly
 	formattedEndpoint := relayEndpoint
 	if strings.Contains(relayEndpoint, ":") {
@@ -810,10 +850,26 @@ func (pm *PeerManager) RelayPeer(siteId int, relayEndpoint string, relayPort uin
 		relayPort = 21820 // fall back to 21820 for backward compatibility
 	}
 
+	relayHostPort := fmt.Sprintf("%s:%d", formattedEndpoint, relayPort)
+
+	pm.mu.Lock()
+	peer, exists := pm.peers[siteId]
+	if exists {
+		// Persist host:port so ReplaceDevice reconfiguration keeps the same relay port.
+		peer.RelayEndpoint = relayHostPort
+		pm.peers[siteId] = peer
+	}
+	pm.mu.Unlock()
+
+	if !exists {
+		logger.Error("Cannot handle failover: peer with site ID %d not found", siteId)
+		return
+	}
+
 	// Update only the endpoint for this peer (update_only preserves other settings)
 	wgConfig := fmt.Sprintf(`public_key=%s
 update_only=true
-endpoint=%s:%d`, util.FixKey(peer.PublicKey), formattedEndpoint, relayPort)
+endpoint=%s`, util.FixKey(peer.PublicKey), relayHostPort)
 
 	err := pm.device.IpcSet(wgConfig)
 	if err != nil {
@@ -827,6 +883,26 @@ endpoint=%s:%d`, util.FixKey(peer.PublicKey), formattedEndpoint, relayPort)
 	}
 
 	logger.Info("Adjusted peer %d to point to relay!\n", siteId)
+}
+
+// RelayPeerWss attempts to switch relay transport to WebSocket tunnel endpoint.
+// Current implementation keeps the existing peer endpoint untouched and marks
+// the peer relayed so the monitor/API reflect transport fallback intent.
+func (pm *PeerManager) RelayPeerWss(siteId int, relayEndpointWss string) {
+	pm.mu.Lock()
+	_, exists := pm.peers[siteId]
+	pm.mu.Unlock()
+
+	if !exists {
+		logger.Error("Cannot switch to websocket relay: peer with site ID %d not found", siteId)
+		return
+	}
+
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.MarkPeerRelayed(siteId, true)
+	}
+
+	logger.Info("Requested websocket relay for peer %d via %s", siteId, relayEndpointWss)
 }
 
 // performRapidInitialTest performs a rapid holepunch test for a newly added peer.

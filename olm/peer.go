@@ -2,6 +2,7 @@ package olm
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/fosrl/newt/holepunch"
@@ -10,6 +11,70 @@ import (
 	"github.com/fosrl/olm/peers"
 	"github.com/fosrl/olm/websocket"
 )
+
+func (o *Olm) cancelRelayTCPFallback(siteID int) {
+	o.relayTimerMu.Lock()
+	defer o.relayTimerMu.Unlock()
+	if t, ok := o.relayTimers[siteID]; ok {
+		t.Stop()
+		delete(o.relayTimers, siteID)
+	}
+}
+
+func (o *Olm) scheduleRelayTCPFallback(siteID int, relayEndpointWss string) {
+	if relayEndpointWss == "" {
+		return
+	}
+
+	o.relayTimerMu.Lock()
+	if t, ok := o.relayTimers[siteID]; ok {
+		t.Stop()
+	}
+	delay := 8 * time.Second
+	o.relayTimers[siteID] = time.AfterFunc(delay, func() {
+		o.relayTimerMu.Lock()
+		delete(o.relayTimers, siteID)
+		o.relayTimerMu.Unlock()
+
+		if !o.tunnelRunning || o.peerManager == nil {
+			return
+		}
+		if o.peerManager.IsPeerConnected(siteID) {
+			logger.Info("Peer %d connected over UDP relay before websocket fallback timer", siteID)
+			return
+		}
+		if o.wsRelayBind != nil {
+			return
+		}
+
+		logger.Warn("Peer %d still disconnected after UDP relay fallback delay (%s), switching to websocket relay transport", siteID, delay)
+		if err := o.switchToWebsocketRelayBind(relayEndpointWss); err != nil {
+			logger.Error("Failed to switch to websocket relay transport: %v", err)
+		}
+	})
+	o.relayTimerMu.Unlock()
+}
+
+func (o *Olm) switchToWebsocketRelayBind(relayEndpointWss string) error {
+	if o.websocket == nil {
+		return fmt.Errorf("websocket relay switch prerequisites missing")
+	}
+
+	token, _ := o.websocket.GetTokenState()
+	if token == "" {
+		return fmt.Errorf("cached websocket token unavailable for relay switch")
+	}
+
+	relayURL, err := buildRelayTunnelURL(relayEndpointWss, token, o.tunnelConfig.UserToken)
+	if err != nil {
+		return err
+	}
+	o.relayURLMu.Lock()
+	o.relayTunnelURL = relayURL
+	o.relayURLMu.Unlock()
+
+	return o.switchToWebSocketRelayWithURL(relayURL)
+}
 
 func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 	logger.Debug("Received add-peer message: %v", msg.Data)
@@ -25,7 +90,6 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 		logger.Debug("Ignoring add-peer message: peerManager is nil (shutdown in progress)")
 		return
 	}
-
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {
 		logger.Error("Error marshaling data: %v", err)
@@ -57,10 +121,25 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 		o.stopPeerSends = make(map[string]func())
 		o.peerSendMu.Unlock()
 	}
-
 	if siteConfigMsg.PublicKey == "" {
 		logger.Warn("Skipping add-peer for site %d (%s): no public key available (site may not be connected)", siteConfigMsg.SiteId, siteConfigMsg.Name)
 		return
+	}
+	if siteConfigMsg.ChainId != "" {
+		o.peerSendMu.Lock()
+		if stop, ok := o.stopPeerSends[siteConfigMsg.ChainId]; ok {
+			stop()
+			delete(o.stopPeerSends, siteConfigMsg.ChainId)
+		}
+		o.peerSendMu.Unlock()
+	} else {
+		// stop all of the stopPeerSends
+		o.peerSendMu.Lock()
+		for _, stop := range o.stopPeerSends {
+			stop()
+		}
+		o.stopPeerSends = make(map[string]func())
+		o.peerSendMu.Unlock()
 	}
 
 	_ = o.holePunchManager.TriggerHolePunch() // Trigger immediate hole punch attempt so that if the peer decides to relay we have already punched close to when we need it
@@ -69,7 +148,6 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 		logger.Error("Failed to add peer: %v", err)
 		return
 	}
-
 	logger.Info("Successfully added peer for site %d", siteConfigMsg.SiteId)
 }
 
@@ -226,6 +304,14 @@ func (o *Olm) handleWgPeerRelay(msg websocket.WSMessage) {
 	// Update HTTP server to mark this peer as using relay
 	o.apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.RelayEndpoint, true)
 
+	if relayData.RelayEndpointWss != "" {
+		logger.Info("Received websocket relay endpoint for site %d: %s", relayData.SiteId, relayData.RelayEndpointWss)
+		pm.RelayPeerWss(relayData.SiteId, relayData.RelayEndpointWss)
+		if !o.tunnelConfig.WebSocketRelay {
+			o.scheduleRelayTCPFallback(relayData.SiteId, relayData.RelayEndpointWss)
+		}
+	}
+
 	pm.RelayPeer(relayData.SiteId, primaryRelay, relayData.RelayPort)
 }
 
@@ -266,6 +352,7 @@ func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 
 	// Update HTTP server to mark this peer as using relay
 	o.apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.Endpoint, false)
+	o.cancelRelayTCPFallback(relayData.SiteId)
 
 	pm.UnRelayPeer(relayData.SiteId, primaryRelay)
 }
