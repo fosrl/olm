@@ -107,7 +107,21 @@ func (o *Olm) switchToWebSocketRelay() error {
 	o.relaySwitchMu.Lock()
 	defer o.relaySwitchMu.Unlock()
 
+	return o.switchToWebSocketRelayLocked("")
+}
+
+func (o *Olm) switchToWebSocketRelayWithURL(relayURL string) error {
+	o.relaySwitchMu.Lock()
+	defer o.relaySwitchMu.Unlock()
+
+	return o.switchToWebSocketRelayLocked(relayURL)
+}
+
+func (o *Olm) switchToWebSocketRelayLocked(prebuiltRelayURL string) error {
 	if o.wssRelayActive {
+		return nil
+	}
+	if o.wsRelayBind != nil {
 		return nil
 	}
 	if !o.tunnelRunning {
@@ -119,9 +133,17 @@ func (o *Olm) switchToWebSocketRelay() error {
 		return fmt.Errorf("peer manager is nil")
 	}
 
-	relayURL, err := o.resolveRelayTunnelURL()
-	if err != nil {
-		return err
+	relayURL := prebuiltRelayURL
+	if relayURL == "" {
+		var err error
+		relayURL, err = o.resolveRelayTunnelURL()
+		if err != nil {
+			return err
+		}
+	} else {
+		o.relayURLMu.Lock()
+		o.relayTunnelURL = relayURL
+		o.relayURLMu.Unlock()
 	}
 	o.requestRelayPreflight(pm)
 

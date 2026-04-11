@@ -840,20 +840,6 @@ func (pm *PeerManager) RemoveAlias(siteId int, aliasName string) error {
 
 // RelayPeer handles failover to the relay server when a peer is disconnected
 func (pm *PeerManager) RelayPeer(siteId int, relayEndpoint string, relayPort uint16) {
-	pm.mu.Lock()
-	peer, exists := pm.peers[siteId]
-	if exists {
-		// Store the relay endpoint
-		peer.RelayEndpoint = relayEndpoint
-		pm.peers[siteId] = peer
-	}
-	pm.mu.Unlock()
-
-	if !exists {
-		logger.Error("Cannot handle failover: peer with site ID %d not found", siteId)
-		return
-	}
-
 	// Check for IPv6 and format the endpoint correctly
 	formattedEndpoint := relayEndpoint
 	if strings.Contains(relayEndpoint, ":") {
@@ -864,10 +850,26 @@ func (pm *PeerManager) RelayPeer(siteId int, relayEndpoint string, relayPort uin
 		relayPort = 21820 // fall back to 21820 for backward compatibility
 	}
 
+	relayHostPort := fmt.Sprintf("%s:%d", formattedEndpoint, relayPort)
+
+	pm.mu.Lock()
+	peer, exists := pm.peers[siteId]
+	if exists {
+		// Persist host:port so ReplaceDevice reconfiguration keeps the same relay port.
+		peer.RelayEndpoint = relayHostPort
+		pm.peers[siteId] = peer
+	}
+	pm.mu.Unlock()
+
+	if !exists {
+		logger.Error("Cannot handle failover: peer with site ID %d not found", siteId)
+		return
+	}
+
 	// Update only the endpoint for this peer (update_only preserves other settings)
 	wgConfig := fmt.Sprintf(`public_key=%s
 update_only=true
-endpoint=%s:%d`, util.FixKey(peer.PublicKey), formattedEndpoint, relayPort)
+endpoint=%s`, util.FixKey(peer.PublicKey), relayHostPort)
 
 	err := pm.device.IpcSet(wgConfig)
 	if err != nil {

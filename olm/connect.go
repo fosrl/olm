@@ -104,8 +104,20 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 
 	wgLogger := logger.GetLogger().GetWireGuardLogger("wireguard: ")
 	// Use filtered device instead of raw TUN device.
-	// Start with the shared UDP bind; websocket relay remains a fallback path.
-	o.dev = device.NewDevice(o.middleDev, o.sharedBind, (*device.Logger)(wgLogger))
+	if o.tunnelConfig.WebSocketRelay {
+		relayURL, err := o.resolveRelayTunnelURL()
+		if err != nil {
+			logger.Error("Forced websocket relay mode requires relay URL: %v", err)
+			return
+		}
+		o.wsRelayBind = NewWebSocketRelayBind(relayURL, nil)
+		o.wssRelayActive = true
+		o.dev = device.NewDevice(o.middleDev, o.wsRelayBind, (*device.Logger)(wgLogger))
+		logger.Info("Using websocket relay bind for forced relay mode")
+	} else {
+		o.dev = device.NewDevice(o.middleDev, o.sharedBind, (*device.Logger)(wgLogger))
+		o.wssRelayActive = false
+	}
 
 	if o.tunnelConfig.EnableUAPI {
 		fileUAPI, err := func() (*os.File, error) {
@@ -259,7 +271,11 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	o.apiServer.SetRegistered(true)
 
 	o.registered = true
-	o.scheduleRelaySwitch(8 * time.Second)
+	if o.tunnelConfig.WebSocketRelay {
+		logger.Debug("Forced websocket relay mode enabled; runtime relay switch timer disabled")
+	} else {
+		logger.Debug("WebSocket relay forced mode disabled; keeping UDP transport until fallback triggers")
+	}
 
 	// Start ping monitor now that we are registered and connected
 	o.websocket.StartPingMonitor()
