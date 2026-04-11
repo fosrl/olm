@@ -10,7 +10,6 @@ import (
 	"github.com/fosrl/newt/util"
 	"github.com/fosrl/olm/peers"
 	"github.com/fosrl/olm/websocket"
-	"golang.zx2c4.com/wireguard/device"
 )
 
 func (o *Olm) cancelRelayTCPFallback(siteID int) {
