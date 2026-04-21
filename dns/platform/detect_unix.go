@@ -11,7 +11,13 @@ import (
 	"github.com/fosrl/newt/logger"
 )
 
-const defaultResolvConfPath = "/etc/resolv.conf"
+const (
+	defaultResolvConfPath = "/etc/resolv.conf"
+	defaultNsswitchPath   = "/etc/nsswitch.conf"
+)
+
+// nsswitchPath is the file consulted by nsswitchPrefersResolved. Overridable for tests.
+var nsswitchPath = defaultNsswitchPath
 
 // DNSManagerType represents the type of DNS manager detected
 type DNSManagerType int
@@ -88,6 +94,68 @@ func (d DNSManagerType) String() string {
 	}
 }
 
+// nsswitchPrefersResolved reports whether /etc/nsswitch.conf routes hostname
+// lookups through systemd-resolved's NSS module (libnss_resolve) ahead of, or
+// to the exclusion of, the classic "dns" service that consults /etc/resolv.conf.
+//
+// This matters because on distributions whose default hosts line is
+//
+//	hosts: mymachines resolve [!UNAVAIL=return] files myhostname dns
+//
+// (common on Arch Linux and other systemd-forward distros), writing nameservers
+// to /etc/resolv.conf has no effect on resolution: NSS consults resolved first,
+// resolved returns NOTFOUND for an interface it knows nothing about, and the
+// [!UNAVAIL=return] action halts fallthrough to the dns service. In that case
+// we must register the DNS server with systemd-resolved via D-Bus for the
+// tunnel interface instead.
+func nsswitchPrefersResolved() bool {
+	data, err := os.ReadFile(nsswitchPath)
+	if err != nil {
+		return false
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "hosts:") {
+			continue
+		}
+
+		fields := strings.Fields(strings.TrimPrefix(trimmed, "hosts:"))
+
+		resolveIdx, dnsIdx := -1, -1
+		for i, f := range fields {
+			// Ignore action clauses like [!UNAVAIL=return] when locating services.
+			if strings.HasPrefix(f, "[") {
+				continue
+			}
+			switch f {
+			case "resolve":
+				if resolveIdx == -1 {
+					resolveIdx = i
+				}
+			case "dns":
+				if dnsIdx == -1 {
+					dnsIdx = i
+				}
+			}
+		}
+
+		if resolveIdx == -1 {
+			return false
+		}
+		// resolve is the sole DNS-facing service: it dominates.
+		if dnsIdx == -1 {
+			return true
+		}
+		// resolve consulted before dns: it answers first, and any halting action
+		// between them (e.g. [!UNAVAIL=return], [NOTFOUND=return]) prevents
+		// fallthrough on failure.
+		return resolveIdx < dnsIdx
+	}
+
+	return false
+}
+
 // DetectDNSManager combines file detection with runtime availability checks
 // to determine the best DNS configurator to use
 func DetectDNSManager(interfaceName string) DNSManagerType {
@@ -108,6 +176,15 @@ func DetectDNSManager(interfaceName string) DNSManagerType {
 	case NetworkManagerManager:
 		// Verify NetworkManager is actually running
 		if IsNetworkManagerAvailable() {
+			// If systemd-resolved is running and NSS is wired to consult it first,
+			// NetworkManager writing /etc/resolv.conf has no effect on resolution:
+			// NSS asks resolved first, resolved has no DNS configured for the tunnel
+			// interface and returns NOTFOUND, and [!UNAVAIL=return]-style actions
+			// halt fallthrough to the dns service. Register with resolved via D-Bus.
+			if IsSystemdResolvedAvailable() && nsswitchPrefersResolved() {
+				logger.Info("NetworkManager is running but NSS routes through systemd-resolved, using systemd-resolved configurator")
+				return SystemdResolvedManager
+			}
 			// Check if NetworkManager is delegating to systemd-resolved
 			if !IsNetworkManagerDNSModeSupported() {
 				logger.Info("NetworkManager is delegating DNS to systemd-resolved, using systemd-resolved configurator")
@@ -121,6 +198,13 @@ func DetectDNSManager(interfaceName string) DNSManagerType {
 		return FileManager
 
 	case ResolvconfManager:
+		// If NSS routes through systemd-resolved, writing /etc/resolv.conf via
+		// resolvconf will not affect hostname resolution — register DNS directly
+		// with resolved instead. See nsswitchPrefersResolved for rationale.
+		if IsSystemdResolvedAvailable() && nsswitchPrefersResolved() {
+			logger.Info("resolvconf is in use but NSS routes through systemd-resolved, using systemd-resolved configurator")
+			return SystemdResolvedManager
+		}
 		// Verify resolvconf is available
 		if IsResolvconfAvailable() {
 			return ResolvconfManager
