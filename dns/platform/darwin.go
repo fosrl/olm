@@ -417,3 +417,59 @@ func (d *DarwinDNSConfigurator) clearState() error {
 	logger.Debug("Cleared DNS state file")
 	return nil
 }
+
+// CleanupStaleDarwinDNS removes any stale DNS configuration left by the Darwin
+// configurator from a previous unclean shutdown. This is a static function that can be
+// called without creating a configurator instance, useful for cleanup before network operations.
+func CleanupStaleDarwinDNS() error {
+	stateFilePath := getDNSStateFilePath()
+
+	// Check if state file exists
+	data, err := os.ReadFile(stateFilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No state file, nothing to clean up
+			return nil
+		}
+		return fmt.Errorf("read state file: %w", err)
+	}
+
+	var state DNSPersistentState
+	if err := json.Unmarshal(data, &state); err != nil {
+		// Invalid state file, remove it
+		os.Remove(stateFilePath)
+		return nil
+	}
+
+	if len(state.CreatedKeys) == 0 {
+		// No keys to clean up
+		return nil
+	}
+
+	logger.Info("Found DNS state from previous session, cleaning up %d keys", len(state.CreatedKeys))
+
+	// Remove all keys from previous session using scutil directly
+	for _, key := range state.CreatedKeys {
+		logger.Debug("Removing leftover DNS key: %s", key)
+		cmd := fmt.Sprintf("open\nremove %s\nquit\n", key)
+		scutilCmd := exec.Command(scutilPath)
+		scutilCmd.Stdin = strings.NewReader(cmd)
+		if err := scutilCmd.Run(); err != nil {
+			logger.Warn("Failed to remove DNS key %s: %v", key, err)
+		}
+	}
+
+	// Clear state file
+	if err := os.Remove(stateFilePath); err != nil && !os.IsNotExist(err) {
+		logger.Warn("Failed to clear DNS state file: %v", err)
+	}
+
+	// Flush DNS cache after cleanup
+	cacheCmd := exec.Command(dscacheutilPath, "-flushcache")
+	_ = cacheCmd.Run()
+
+	killCmd := exec.Command("killall", "-HUP", "mDNSResponder")
+	_ = killCmd.Run()
+
+	return nil
+}
