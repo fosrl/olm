@@ -1,7 +1,7 @@
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
-github.com/fosrl/newt v1.10.3 h1:JO9gFK9LP/w2EeDIn4wU+jKggAFPo06hX5hxFSETqcw=
-github.com/fosrl/newt v1.10.3/go.mod h1:iYuuCAG7iabheiogMOX87r61uQN31S39nKxMKRuLS+s=
+github.com/fosrl/newt v1.11.0 h1:G9XdrkTpwCA6k/7MShSWkaDf0+Uzksf4kIcmkmvSOpA=
+github.com/fosrl/newt v1.11.0/go.mod h1:RHOCxDEylu8mVZssA3vUUdXLNN/Mi3rB8ZI1a7qEU9s=
 github.com/godbus/dbus/v5 v5.2.2 h1:TUR3TgtSVDmjiXOgAAyaZbYmIeP3DPkld3jgKGV8mXQ=
 github.com/godbus/dbus/v5 v5.2.2/go.mod h1:3AAv2+hPq5rdnr5txxxRwiGjPXamgoIHgz9FPBfOp3c=
 github.com/google/btree v1.1.3 h1:CVpQJjYgC4VbzxeGVHfvZrv1ctoYCAI8vbl07Fcxlyg=
