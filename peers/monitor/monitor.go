@@ -85,7 +85,9 @@ type PeerMonitor struct {
 	apiServer *api.API
 
 	// WG connection status tracking
-	wgConnectionStatus map[int]bool // siteID -> WG connected status
+	wgConnectionStatus  map[int]bool          // siteID -> WG connected status
+	wgConnectionRTT     map[int]time.Duration // siteID -> last known RTT
+	statusChangeCallback func(siteId int)      // called when any peer's connection status changes
 }
 
 // NewPeerMonitor creates a new peer monitor with the given callback
@@ -122,6 +124,7 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		rapidTestMaxAttempts: 5,                      // 5 attempts = ~1-1.5 seconds total
 		apiServer:            apiServer,
 		wgConnectionStatus:   make(map[int]bool),
+		wgConnectionRTT:      make(map[int]time.Duration),
 		// Exponential backoff settings for holepunch monitor
 		defaultHolepunchMinInterval: 2 * time.Second,
 		defaultHolepunchMaxInterval: 30 * time.Second,
@@ -392,6 +395,9 @@ func (pm *PeerMonitor) handleConnectionStatusChange(siteID int, status Connectio
 	pm.mutex.Lock()
 	previousStatus, exists := pm.wgConnectionStatus[siteID]
 	pm.wgConnectionStatus[siteID] = status.Connected
+	if status.Connected && status.RTT > 0 {
+		pm.wgConnectionRTT[siteID] = status.RTT
+	}
 	isRelayed := pm.relayedPeers[siteID]
 	endpoint := pm.holepunchEndpoints[siteID]
 	pm.mutex.Unlock()
@@ -408,6 +414,11 @@ func (pm *PeerMonitor) handleConnectionStatusChange(siteID int, status Connectio
 	// Update API with connection status
 	if pm.apiServer != nil {
 		pm.apiServer.UpdatePeerStatus(siteID, status.Connected, status.RTT, endpoint, isRelayed)
+	}
+
+	// Notify route optimizer of status change
+	if pm.statusChangeCallback != nil {
+		pm.statusChangeCallback(siteID)
 	}
 }
 
@@ -519,6 +530,25 @@ func (pm *PeerMonitor) IsPeerRelayed(siteID int) bool {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 	return pm.relayedPeers[siteID]
+}
+
+// SetStatusChangeCallback registers a callback that is invoked whenever a peer's
+// WireGuard connection status changes (connected/disconnected). The callback must
+// be non-blocking (e.g., send to a buffered channel).
+func (pm *PeerMonitor) SetStatusChangeCallback(cb func(siteId int)) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+	pm.statusChangeCallback = cb
+}
+
+// GetConnectionQuality returns the current connection quality metrics for a peer.
+func (pm *PeerMonitor) GetConnectionQuality(siteId int) (connected bool, relayed bool, rtt time.Duration) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+	connected = pm.wgConnectionStatus[siteId]
+	relayed = pm.relayedPeers[siteId]
+	rtt = pm.wgConnectionRTT[siteId]
+	return
 }
 
 // startHolepunchMonitor starts the holepunch connection monitoring

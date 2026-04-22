@@ -20,7 +20,8 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 		return
 	}
 
-	if o.peerManager == nil {
+	pm := o.getPeerManager()
+	if pm == nil {
 		logger.Debug("Ignoring add-peer message: peerManager is nil (shutdown in progress)")
 		return
 	}
@@ -64,7 +65,7 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 
 	_ = o.holePunchManager.TriggerHolePunch() // Trigger immediate hole punch attempt so that if the peer decides to relay we have already punched close to when we need it
 
-	if err := o.peerManager.AddPeer(siteConfigMsg.SiteConfig); err != nil {
+	if err := pm.AddPeer(siteConfigMsg.SiteConfig); err != nil {
 		logger.Error("Failed to add peer: %v", err)
 		return
 	}
@@ -81,7 +82,8 @@ func (o *Olm) handleWgPeerRemove(msg websocket.WSMessage) {
 		return
 	}
 
-	if o.peerManager == nil {
+	pm := o.getPeerManager()
+	if pm == nil {
 		logger.Debug("Ignoring remove-peer message: peerManager is nil (shutdown in progress)")
 		return
 	}
@@ -98,7 +100,7 @@ func (o *Olm) handleWgPeerRemove(msg websocket.WSMessage) {
 		return
 	}
 
-	if err := o.peerManager.RemovePeer(removeData.SiteId); err != nil {
+	if err := pm.RemovePeer(removeData.SiteId); err != nil {
 		logger.Error("Failed to remove peer: %v", err)
 		return
 	}
@@ -123,7 +125,8 @@ func (o *Olm) handleWgPeerUpdate(msg websocket.WSMessage) {
 		return
 	}
 
-	if o.peerManager == nil {
+	pm := o.getPeerManager()
+	if pm == nil {
 		logger.Debug("Ignoring update-peer message: peerManager is nil (shutdown in progress)")
 		return
 	}
@@ -141,7 +144,7 @@ func (o *Olm) handleWgPeerUpdate(msg websocket.WSMessage) {
 	}
 
 	// Get existing peer from PeerManager
-	existingPeer, exists := o.peerManager.GetPeer(updateData.SiteId)
+	existingPeer, exists := pm.GetPeer(updateData.SiteId)
 	if !exists {
 		logger.Warn("Peer with site ID %d not found", updateData.SiteId)
 		return
@@ -169,7 +172,7 @@ func (o *Olm) handleWgPeerUpdate(msg websocket.WSMessage) {
 		siteConfig.RemoteSubnets = updateData.RemoteSubnets
 	}
 
-	if err := o.peerManager.UpdatePeer(siteConfig); err != nil {
+	if err := pm.UpdatePeer(siteConfig); err != nil {
 		logger.Error("Failed to update peer: %v", err)
 		return
 	}
@@ -188,7 +191,8 @@ func (o *Olm) handleWgPeerRelay(msg websocket.WSMessage) {
 	logger.Debug("Received relay-peer message: %v", msg.Data)
 
 	// Check if peerManager is still valid (may be nil during shutdown)
-	if o.peerManager == nil {
+	pm := o.getPeerManager()
+	if pm == nil {
 		logger.Debug("Ignoring relay message: peerManager is nil (shutdown in progress)")
 		return
 	}
@@ -208,7 +212,7 @@ func (o *Olm) handleWgPeerRelay(msg websocket.WSMessage) {
 		return
 	}
 
-	if monitor := o.peerManager.GetPeerMonitor(); monitor != nil {
+	if monitor := pm.GetPeerMonitor(); monitor != nil {
 		monitor.CancelRelaySend(relayData.ChainId)
 	}
 
@@ -222,14 +226,15 @@ func (o *Olm) handleWgPeerRelay(msg websocket.WSMessage) {
 	// Update HTTP server to mark this peer as using relay
 	o.apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.RelayEndpoint, true)
 
-	o.peerManager.RelayPeer(relayData.SiteId, primaryRelay, relayData.RelayPort)
+	pm.RelayPeer(relayData.SiteId, primaryRelay, relayData.RelayPort)
 }
 
 func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 	logger.Debug("Received unrelay-peer message: %v", msg.Data)
 
 	// Check if peerManager is still valid (may be nil during shutdown)
-	if o.peerManager == nil {
+	pm := o.getPeerManager()
+	if pm == nil {
 		logger.Debug("Ignoring unrelay message: peerManager is nil (shutdown in progress)")
 		return
 	}
@@ -249,7 +254,7 @@ func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 		return
 	}
 
-	if monitor := o.peerManager.GetPeerMonitor(); monitor != nil {
+	if monitor := pm.GetPeerMonitor(); monitor != nil {
 		monitor.CancelRelaySend(relayData.ChainId)
 	}
 
@@ -262,7 +267,7 @@ func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 	// Update HTTP server to mark this peer as using relay
 	o.apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.Endpoint, false)
 
-	o.peerManager.UnRelayPeer(relayData.SiteId, primaryRelay)
+	pm.UnRelayPeer(relayData.SiteId, primaryRelay)
 }
 
 func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
@@ -317,7 +322,12 @@ func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 	}
 
 	// Get existing peer from PeerManager
-	_, exists := o.peerManager.GetPeer(handshakeData.SiteId)
+	pm := o.getPeerManager()
+	if pm == nil {
+		logger.Debug("Ignoring peer-handshake message: peerManager is nil (shutdown in progress)")
+		return
+	}
+	_, exists := pm.GetPeer(handshakeData.SiteId)
 	if exists {
 		logger.Warn("Peer with site ID %d already added", handshakeData.SiteId)
 		return

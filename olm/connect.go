@@ -205,12 +205,13 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	// Register JIT handler: when the DNS proxy resolves a local record, check whether
 	// the owning site is already connected and, if not, initiate a JIT connection.
 	o.dnsProxy.SetJITHandler(func(siteId int) {
-		if o.peerManager == nil || o.websocket == nil {
+		pm := o.getPeerManager()
+		if pm == nil || o.websocket == nil {
 			return
 		}
 
 		// Site already has an active peer connection - nothing to do.
-		if _, exists := o.peerManager.GetPeer(siteId); exists {
+		if _, exists := pm.GetPeer(siteId); exists {
 			return
 		}
 
