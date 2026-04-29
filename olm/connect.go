@@ -56,6 +56,13 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		logger.Info("Got new message. Closing existing tunnel!")
 		o.dev.Close()
 	}
+	o.relaySwitchMu.Lock()
+	if o.wsRelayBind != nil {
+		_ = o.wsRelayBind.Shutdown()
+		o.wsRelayBind = nil
+	}
+	o.wssRelayActive = false
+	o.relaySwitchMu.Unlock()
 
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {
@@ -96,8 +103,21 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	o.middleDev = olmDevice.NewMiddleDevice(o.tdev)
 
 	wgLogger := logger.GetLogger().GetWireGuardLogger("wireguard: ")
-	// Use filtered device instead of raw TUN device
-	o.dev = device.NewDevice(o.middleDev, o.sharedBind, (*device.Logger)(wgLogger))
+	// Use filtered device instead of raw TUN device.
+	if o.tunnelConfig.WebSocketRelay {
+		relayURL, err := o.resolveRelayTunnelURL()
+		if err != nil {
+			logger.Error("Forced websocket relay mode requires relay URL: %v", err)
+			return
+		}
+		o.wsRelayBind = NewWebSocketRelayBind(relayURL, nil)
+		o.wssRelayActive = true
+		o.dev = device.NewDevice(o.middleDev, o.wsRelayBind, (*device.Logger)(wgLogger))
+		logger.Info("Using websocket relay bind for forced relay mode")
+	} else {
+		o.dev = device.NewDevice(o.middleDev, o.sharedBind, (*device.Logger)(wgLogger))
+		o.wssRelayActive = false
+	}
 
 	if o.tunnelConfig.EnableUAPI {
 		fileUAPI, err := func() (*os.File, error) {
@@ -135,7 +155,12 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	}
 
 	if err = o.dev.Up(); err != nil {
-		logger.Error("Failed to bring up WireGuard device: %v", err)
+		logger.Error(
+			"Failed to bring up WireGuard device: %v (holepunch=%v)",
+			err,
+			o.tunnelConfig.Holepunch,
+		)
+		return
 	}
 
 	// Extract interface IP (strip CIDR notation if present)
@@ -246,6 +271,11 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	o.apiServer.SetRegistered(true)
 
 	o.registered = true
+	if o.tunnelConfig.WebSocketRelay {
+		logger.Debug("Forced websocket relay mode enabled; runtime relay switch timer disabled")
+	} else {
+		logger.Debug("WebSocket relay forced mode disabled; keeping UDP transport until fallback triggers")
+	}
 
 	// Start ping monitor now that we are registered and connected
 	o.websocket.StartPingMonitor()

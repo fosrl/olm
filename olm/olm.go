@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -41,6 +42,7 @@ type Olm struct {
 	tdev         tun.Device
 	middleDev    *olmDevice.MiddleDevice
 	sharedBind   *bind.SharedBind
+	wsRelayBind  *WebSocketRelayBind
 
 	dnsProxy         *dns.DNSProxy
 	apiServer        *api.API
@@ -68,13 +70,22 @@ type Olm struct {
 	stopRegister   func()
 	updateRegister func(newData any)
 
-	stopPeerSends  map[string]func()
-	stopPeerInits  map[string]func()
+	stopPeerSends   map[string]func()
+	stopPeerInits   map[string]func()
 	jitPendingSites map[int]string // siteId -> chainId for in-flight JIT requests
-	peerSendMu    sync.Mutex
+	peerSendMu      sync.Mutex
 
 	// WaitGroup to track tunnel lifecycle
 	tunnelWg sync.WaitGroup
+
+	// Cached websocket relay URL for WSS / TCP fallback relay modes
+	relayTunnelURL   string
+	relayURLMu       sync.RWMutex
+	relayTimerMu     sync.Mutex
+	relayTimers      map[int]*time.Timer
+	relaySwitchMu    sync.Mutex
+	relaySwitchTimer *time.Timer
+	wssRelayActive   bool
 }
 
 // getPeerManager safely returns the current peerManager under a read-lock.
@@ -138,6 +149,21 @@ func generateChainId() string {
 	return hex.EncodeToString(b)
 }
 
+func buildRelayTunnelURL(baseEndpointWss, token, userToken string) (string, error) {
+	u, err := url.Parse(baseEndpointWss)
+	if err != nil {
+		return "", fmt.Errorf("invalid relay endpoint wss URL: %w", err)
+	}
+
+	q := u.Query()
+	q.Set("token", token)
+	if userToken != "" {
+		q.Set("userToken", userToken)
+	}
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
 func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 	logger.GetLogger().SetLevel(util.ParseLogLevel(config.LogLevel))
 
@@ -188,13 +214,14 @@ func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 	apiServer.SetAgent(config.Agent)
 
 	newOlm := &Olm{
-		logFile:       logFile,
-		olmCtx:        ctx,
-		apiServer:     apiServer,
-		olmConfig:     config,
+		logFile:         logFile,
+		olmCtx:          ctx,
+		apiServer:       apiServer,
+		olmConfig:       config,
 		stopPeerSends:   make(map[string]func()),
 		stopPeerInits:   make(map[string]func()),
 		jitPendingSites: make(map[int]string),
+		relayTimers:     make(map[int]*time.Timer),
 	}
 
 	newOlm.registerAPICallbacks()
@@ -457,10 +484,10 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		}
 
 		if o.stopRegister == nil {
-			logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !config.Holepunch)
+			logger.Debug("Sending registration message to server with public key: %s and relay: false", publicKey)
 			o.stopRegister, o.updateRegister = o.websocket.SendMessageInterval("olm/wg/register", map[string]any{
 				"publicKey":   publicKey.String(),
-				"relay":       !config.Holepunch,
+				"relay":       false,
 				"olmVersion":  o.olmConfig.Version,
 				"olmAgent":    o.olmConfig.Agent,
 				"orgId":       config.OrgID,
@@ -479,9 +506,33 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	})
 
 	o.websocket.OnTokenUpdate(func(token string, exitNodes []websocket.ExitNode) {
-		// Check if tunnel is still running and hole punch manager exists
-		if !o.tunnelRunning || o.holePunchManager == nil {
-			logger.Debug("Tunnel stopped or hole punch manager nil, ignoring token update")
+		// Check if tunnel is still running
+		if !o.tunnelRunning {
+			logger.Debug("Tunnel stopped, ignoring token update")
+			return
+		}
+
+		var relayEndpointWss string
+		for i := range exitNodes {
+			relayEndpointWss = exitNodes[i].RelayEndpointWss
+			if relayEndpointWss != "" {
+				break
+			}
+		}
+		if relayEndpointWss != "" {
+			relayURL, err := buildRelayTunnelURL(relayEndpointWss, token, userToken)
+			if err != nil {
+				logger.Warn("Failed to build relay tunnel URL: %v", err)
+			} else {
+				o.relayURLMu.Lock()
+				o.relayTunnelURL = relayURL
+				o.relayURLMu.Unlock()
+				logger.Debug("Cached websocket relay tunnel URL for WSS relay bind")
+			}
+		}
+
+		if o.holePunchManager == nil {
+			logger.Debug("Hole punch manager nil, ignoring token update")
 			return
 		}
 
@@ -563,6 +614,10 @@ func (o *Olm) Close() {
 		o.stopRegister()
 		o.stopRegister = nil
 	}
+	o.cancelRelaySwitchTimer()
+	o.relaySwitchMu.Lock()
+	o.wssRelayActive = false
+	o.relaySwitchMu.Unlock()
 
 	// Stop all pending peer init and send senders before closing websocket
 	o.peerSendMu.Lock()
@@ -652,10 +707,14 @@ func (o *Olm) Close() {
 	// Now close WireGuard device - its TUN reader should have exited by now
 	// This will call sharedBind.Close() which releases WireGuard's reference
 	if o.dev != nil {
+		if o.wsRelayBind != nil {
+			_ = o.wsRelayBind.Shutdown()
+		}
 		logger.Debug("Closing WireGuard device")
 		o.dev.Close()
 		o.dev = nil
 	}
+	o.wsRelayBind = nil
 
 	// Release the hole punch reference to the shared bind (WireGuard already
 	// released its reference via dev.Close())

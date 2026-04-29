@@ -45,6 +45,7 @@ type OlmConfig struct {
 	OverrideDNS      bool   `json:"overrideDNS"`
 	TunnelDNS        bool   `json:"tunnelDNS"`
 	DisableRelay     bool   `json:"disableRelay"`
+	WebSocketRelay   bool   `json:"websocketRelay"`
 	// DoNotCreateNewClient bool   `json:"doNotCreateNewClient"`
 
 	// Parsed values (not in JSON)
@@ -110,6 +111,7 @@ func DefaultConfig() *OlmConfig {
 	config.sources["overrideDNS"] = string(SourceDefault)
 	config.sources["tunnelDNS"] = string(SourceDefault)
 	config.sources["disableRelay"] = string(SourceDefault)
+	config.sources["websocketRelay"] = string(SourceDefault)
 	// config.sources["doNotCreateNewClient"] = string(SourceDefault)
 
 	return config
@@ -269,6 +271,10 @@ func loadConfigFromEnv(config *OlmConfig) {
 		config.DisableRelay = true
 		config.sources["disableRelay"] = string(SourceEnv)
 	}
+	if val := os.Getenv("WEBSOCKET_RELAY"); val == "true" {
+		config.WebSocketRelay = true
+		config.sources["websocketRelay"] = string(SourceEnv)
+	}
 	if val := os.Getenv("TUNNEL_DNS"); val == "true" {
 		config.TunnelDNS = true
 		config.sources["tunnelDNS"] = string(SourceEnv)
@@ -303,6 +309,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 		"disableHolepunch": config.DisableHolepunch,
 		"overrideDNS":      config.OverrideDNS,
 		"disableRelay":     config.DisableRelay,
+		"websocketRelay":   config.WebSocketRelay,
 		"tunnelDNS":        config.TunnelDNS,
 		// "doNotCreateNewClient": config.DoNotCreateNewClient,
 	}
@@ -327,6 +334,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	serviceFlags.BoolVar(&config.DisableHolepunch, "disable-holepunch", config.DisableHolepunch, "Disable hole punching")
 	serviceFlags.BoolVar(&config.OverrideDNS, "override-dns", config.OverrideDNS, "When enabled, the client uses custom DNS servers to resolve internal resources and aliases. This overrides your system's default DNS settings. Queries that cannot be resolved as a Pangolin resource will be forwarded to your configured Upstream DNS Server. (default false)")
 	serviceFlags.BoolVar(&config.DisableRelay, "disable-relay", config.DisableRelay, "Disable relay connections")
+	serviceFlags.BoolVar(&config.WebSocketRelay, "websocket-relay", config.WebSocketRelay, "Force WebSocket relay transport without waiting for fallback")
 	serviceFlags.BoolVar(&config.TunnelDNS, "tunnel-dns", config.TunnelDNS, "When enabled, DNS queries are routed through the tunnel for remote resolution. To ensure queries are tunneled correctly, you must define the DNS server as a Pangolin resource and enter its address as an Upstream DNS Server. (default false)")
 	// serviceFlags.BoolVar(&config.DoNotCreateNewClient, "do-not-create-new-client", config.DoNotCreateNewClient, "Do not create new client")
 
@@ -402,6 +410,9 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	}
 	if config.DisableRelay != origValues["disableRelay"].(bool) {
 		config.sources["disableRelay"] = string(SourceCLI)
+	}
+	if config.WebSocketRelay != origValues["websocketRelay"].(bool) {
+		config.sources["websocketRelay"] = string(SourceCLI)
 	}
 	if config.TunnelDNS != origValues["tunnelDNS"].(bool) {
 		config.sources["tunnelDNS"] = string(SourceCLI)
@@ -530,6 +541,10 @@ func mergeConfigs(dest, src *OlmConfig) {
 		dest.DisableRelay = src.DisableRelay
 		dest.sources["disableRelay"] = string(SourceFile)
 	}
+	if src.WebSocketRelay {
+		dest.WebSocketRelay = src.WebSocketRelay
+		dest.sources["websocketRelay"] = string(SourceFile)
+	}
 	// if src.DoNotCreateNewClient {
 	// 	dest.DoNotCreateNewClient = src.DoNotCreateNewClient
 	// 	dest.sources["doNotCreateNewClient"] = string(SourceFile)
@@ -621,6 +636,7 @@ func (c *OlmConfig) ShowConfig() {
 	fmt.Printf("  override-dns          = %v [%s]\n", c.OverrideDNS, getSource("overrideDNS"))
 	fmt.Printf("  tunnel-dns            = %v [%s]\n", c.TunnelDNS, getSource("tunnelDNS"))
 	fmt.Printf("  disable-relay         = %v [%s]\n", c.DisableRelay, getSource("disableRelay"))
+	fmt.Printf("  websocket-relay       = %v [%s]\n", c.WebSocketRelay, getSource("websocketRelay"))
 	// fmt.Printf("  do-not-create-new-client = %v [%s]\n", c.DoNotCreateNewClient, getSource("doNotCreateNewClient"))
 	if c.TlsClientCert != "" {
 		fmt.Printf("  tls-cert              = %s [%s]\n", c.TlsClientCert, getSource("tlsClientCert"))
