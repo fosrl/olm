@@ -20,6 +20,12 @@ func (o *Olm) handleWgPeerAdd(msg websocket.WSMessage) {
 		return
 	}
 
+	// Check if connection setup is complete
+	if !o.registered {
+		logger.Warn("Not connected, ignoring add-peer message")
+		return
+	}
+
 	pm := o.getPeerManager()
 	if pm == nil {
 		logger.Debug("Ignoring add-peer message: peerManager is nil (shutdown in progress)")
@@ -82,6 +88,12 @@ func (o *Olm) handleWgPeerRemove(msg websocket.WSMessage) {
 		return
 	}
 
+	// Check if connection setup is complete
+	if !o.registered {
+		logger.Warn("Not connected, ignoring remove-peer message")
+		return
+	}
+
 	pm := o.getPeerManager()
 	if pm == nil {
 		logger.Debug("Ignoring remove-peer message: peerManager is nil (shutdown in progress)")
@@ -122,6 +134,12 @@ func (o *Olm) handleWgPeerUpdate(msg websocket.WSMessage) {
 	// Check if tunnel is still running
 	if !o.tunnelRunning {
 		logger.Debug("Tunnel stopped, ignoring update-peer message")
+		return
+	}
+
+	// Check if connection setup is complete
+	if !o.registered {
+		logger.Warn("Not connected, ignoring update-peer message")
 		return
 	}
 
@@ -180,8 +198,10 @@ func (o *Olm) handleWgPeerUpdate(msg websocket.WSMessage) {
 	// If the endpoint changed, trigger holepunch to refresh NAT mappings
 	if updateData.Endpoint != "" && updateData.Endpoint != existingPeer.Endpoint {
 		logger.Info("Endpoint changed for site %d, triggering holepunch to refresh NAT mappings", updateData.SiteId)
-		_ = o.holePunchManager.TriggerHolePunch()
-		o.holePunchManager.ResetServerHolepunchInterval()
+		if o.holePunchManager != nil {
+			_ = o.holePunchManager.TriggerHolePunch()
+			o.holePunchManager.ResetServerHolepunchInterval()
+		}
 	}
 
 	logger.Info("Successfully updated peer for site %d", updateData.SiteId)
