@@ -33,7 +33,7 @@ type PeerManagerConfig struct {
 	SharedBind *bind.SharedBind
 	// WSClient is optional - if nil, relay messages won't be sent
 	WSClient  *websocket.Client
-	APIServer   *api.API
+	APIServer *api.API
 	PublicDNS []string
 }
 
@@ -52,7 +52,7 @@ type PeerManager struct {
 	// key is the CIDR string, value is a set of siteIds that want this IP
 	allowedIPClaims map[string]map[int]bool
 	APIServer       *api.API
-	publicDNS     []string
+	publicDNS       []string
 
 	PersistentKeepalive int
 
@@ -71,7 +71,7 @@ func NewPeerManager(config PeerManagerConfig) *PeerManager {
 		allowedIPOwners: make(map[string]int),
 		allowedIPClaims: make(map[string]map[int]bool),
 		APIServer:       config.APIServer,
-		publicDNS:     config.PublicDNS,
+		publicDNS:       config.PublicDNS,
 	}
 
 	// Create the peer monitor
@@ -116,7 +116,7 @@ func (pm *PeerManager) GetAllPeers() []SiteConfig {
 func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
-	
+
 	for _, alias := range siteConfig.Aliases {
 		address := net.ParseIP(alias.AliasAddress)
 		if address == nil {
@@ -124,7 +124,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 		}
 		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteConfig.SiteId)
 	}
-	
+
 	if siteConfig.PublicKey == "" {
 		logger.Debug("Skip adding site %d because no pub key", siteConfig.SiteId)
 		return nil
@@ -162,7 +162,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	if err := network.AddRoutes(siteConfig.RemoteSubnets, pm.interfaceName); err != nil {
 		logger.Error("Failed to add routes for remote subnets: %v", err)
 	}
-	
+
 	monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
 	monitorPeer := net.JoinHostPort(monitorAddress, strconv.Itoa(int(siteConfig.ServerPort+1))) // +1 for the monitor port
 
@@ -189,7 +189,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 func (pm *PeerManager) UpdateAllPeersPersistentKeepalive(interval int) map[int]error {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
-	
+
 	pm.PersistentKeepalive = interval
 
 	errors := make(map[int]error)
@@ -309,6 +309,29 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 	oldPeer, exists := pm.peers[siteConfig.SiteId]
 	if !exists {
 		return fmt.Errorf("peer with site ID %d not found", siteConfig.SiteId)
+	}
+
+	// Update aliases
+	// Remove old aliases
+	for _, alias := range oldPeer.Aliases {
+		address := net.ParseIP(alias.AliasAddress)
+		if address == nil {
+			continue
+		}
+		pm.dnsProxy.RemoveDNSRecord(alias.Alias, address)
+	}
+	// Add new aliases
+	for _, alias := range siteConfig.Aliases {
+		address := net.ParseIP(alias.AliasAddress)
+		if address == nil {
+			continue
+		}
+		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteConfig.SiteId)
+	}
+
+	if siteConfig.PublicKey == "" {
+		logger.Debug("Skip updating site %d because no pub key", siteConfig.SiteId)
+		return nil
 	}
 
 	// If public key changed, remove old peer first
@@ -432,24 +455,6 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 		if err := network.AddRoutes(addedSubnets, pm.interfaceName); err != nil {
 			logger.Error("Failed to add routes: %v", err)
 		}
-	}
-
-	// Update aliases
-	// Remove old aliases
-	for _, alias := range oldPeer.Aliases {
-		address := net.ParseIP(alias.AliasAddress)
-		if address == nil {
-			continue
-		}
-		pm.dnsProxy.RemoveDNSRecord(alias.Alias, address)
-	}
-	// Add new aliases
-	for _, alias := range siteConfig.Aliases {
-		address := net.ParseIP(alias.AliasAddress)
-		if address == nil {
-			continue
-		}
-		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteConfig.SiteId)
 	}
 
 	pm.peerMonitor.UpdateHolepunchEndpoint(siteConfig.SiteId, siteConfig.Endpoint)

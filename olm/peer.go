@@ -189,6 +189,9 @@ func (o *Olm) handleWgPeerUpdate(msg websocket.WSMessage) {
 	if updateData.RemoteSubnets != nil {
 		siteConfig.RemoteSubnets = updateData.RemoteSubnets
 	}
+	if updateData.Aliases != nil {
+		siteConfig.Aliases = updateData.Aliases
+	}
 
 	if err := pm.UpdatePeer(siteConfig); err != nil {
 		logger.Error("Failed to update peer: %v", err)
