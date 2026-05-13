@@ -236,18 +236,21 @@ func (o *Olm) handleSync(msg websocket.WSMessage) {
 	// Find peers to add (in expected but not in current) and peers to update
 	for siteId, expectedSite := range expectedPeers {
 		if _, exists := currentPeerMap[siteId]; !exists {
+			// Only trigger add if this is NOT a JIT-only config (i.e., has more than just siteId and aliases)
+			jitOnly := expectedSite.PublicKey == ""
+			if jitOnly {
+				logger.Debug("Sync: Registering aliases for JIT-only site %d", siteId)
+				if err := pm.AddPeer(expectedSite); err != nil {
+					logger.Error("Sync: Failed to register aliases for JIT site %d: %v", siteId, err)
+				}
+				continue
+			}
+
 			// New peer - add it using the add flow (with holepunch)
 			logger.Info("Sync: Adding new peer for site %d", siteId)
 
 			o.holePunchManager.TriggerHolePunch()
 			o.holePunchManager.ResetServerHolepunchInterval() // start sending immediately again so we fill in the endpoint on the cloud
-
-			// // TODO: do we need to send the message to the cloud to add the peer that way?
-			// if err := o.peerManager.AddPeer(expectedSite); err != nil {
-			// 	logger.Error("Sync: Failed to add peer %d: %v", siteId, err)
-			// } else {
-			// 	logger.Info("Sync: Successfully added peer for site %d", siteId)
-			// }
 
 			// add the peer via the server
 			// this is important because newt needs to get triggered as well to add the peer once the hp is complete
