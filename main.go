@@ -249,6 +249,7 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 			OrgID:                config.OrgID,
 			OverrideDNS:          config.OverrideDNS,
 			DisableRelay:         config.DisableRelay,
+			WebSocketRelay:       config.WebSocketRelay,
 			EnableUAPI:           true,
 		}
 		go olm.StartTunnel(tunnelConfig)

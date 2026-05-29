@@ -87,4 +87,5 @@ type TunnelConfig struct {
 	InitialPostures    map[string]any
 
 	DisableRelay bool
+	WebSocketRelay bool
 }

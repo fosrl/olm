@@ -34,6 +34,7 @@ type RelayPeerData struct {
 	SiteId        int    `json:"siteId"`
 	RelayEndpoint string `json:"relayEndpoint"`
 	RelayPort     uint16 `json:"relayPort"`
+	RelayEndpointWss string `json:"relayEndpointWss,omitempty"`
 }
 
 type UnRelayPeerData struct {
