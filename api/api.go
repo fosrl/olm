@@ -13,6 +13,16 @@ import (
 	"github.com/fosrl/newt/network"
 )
 
+// StatusAPIServiceOutdated is returned for API paths the running Olm instance does not
+// implement. Clients should treat this as a stale daemon that must be restarted after upgrading.
+const StatusAPIServiceOutdated = http.StatusUpgradeRequired
+
+// APIErrorResponse is a machine-readable error payload for API error responses.
+type APIErrorResponse struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+}
+
 // ConnectionRequest defines the structure for an incoming connection request
 type ConnectionRequest struct {
 	ID            string   `json:"id"`
@@ -170,16 +180,7 @@ func (s *API) Start() error {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/connect", s.handleConnect)
-	mux.HandleFunc("/status", s.handleStatus)
-	mux.HandleFunc("/switch-org", s.handleSwitchOrg)
-	mux.HandleFunc("/metadata", s.handleMetadataChange)
-	mux.HandleFunc("/disconnect", s.handleDisconnect)
-	mux.HandleFunc("/exit", s.handleExit)
-	mux.HandleFunc("/health", s.handleHealth)
-	mux.HandleFunc("/rebind", s.handleRebind)
-	mux.HandleFunc("/power-mode", s.handlePowerMode)
-	mux.HandleFunc("/jit-connect", s.handleJITConnect)
+	s.registerRoutes(mux)
 
 	s.server = &http.Server{
 		Handler: mux,
@@ -730,5 +731,29 @@ func (s *API) handlePowerMode(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": fmt.Sprintf("power mode changed to %s successfully", req.Mode),
+	})
+}
+
+func (s *API) registerRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/connect", s.handleConnect)
+	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/switch-org", s.handleSwitchOrg)
+	mux.HandleFunc("/metadata", s.handleMetadataChange)
+	mux.HandleFunc("/disconnect", s.handleDisconnect)
+	mux.HandleFunc("/exit", s.handleExit)
+	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/rebind", s.handleRebind)
+	mux.HandleFunc("/power-mode", s.handlePowerMode)
+	mux.HandleFunc("/jit-connect", s.handleJITConnect)
+	mux.HandleFunc("/", s.handleUnknownRoute)
+}
+
+// handleUnknownRoute handles requests to API paths this Olm instance does not implement.
+func (s *API) handleUnknownRoute(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(StatusAPIServiceOutdated)
+	_ = json.NewEncoder(w).Encode(APIErrorResponse{
+		Error:   "api_route_unavailable",
+		Message: "This API path is not supported by the running Olm instance. Restart the client after upgrading.",
 	})
 }
