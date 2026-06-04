@@ -68,10 +68,10 @@ type Olm struct {
 	stopRegister   func()
 	updateRegister func(newData any)
 
-	stopPeerSends  map[string]func()
-	stopPeerInits  map[string]func()
+	stopPeerSends   map[string]func()
+	stopPeerInits   map[string]func()
 	jitPendingSites map[int]string // siteId -> chainId for in-flight JIT requests
-	peerSendMu    sync.Mutex
+	peerSendMu      sync.Mutex
 
 	// WaitGroup to track tunnel lifecycle
 	tunnelWg sync.WaitGroup
@@ -188,10 +188,10 @@ func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 	apiServer.SetAgent(config.Agent)
 
 	newOlm := &Olm{
-		logFile:       logFile,
-		olmCtx:        ctx,
-		apiServer:     apiServer,
-		olmConfig:     config,
+		logFile:         logFile,
+		olmCtx:          ctx,
+		apiServer:       apiServer,
+		olmConfig:       config,
 		stopPeerSends:   make(map[string]func()),
 		stopPeerInits:   make(map[string]func()),
 		jitPendingSites: make(map[int]string),
@@ -467,7 +467,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 				"userToken":   userToken,
 				"fingerprint": o.fingerprint,
 				"postures":    o.postures,
-			}, 2*time.Second, 20)
+			}, 2*time.Second, 20) // after 18 tries on the server side we send the error so dont change this without changing that
 
 			// Invoke onRegistered callback if configured
 			if o.olmConfig.OnRegistered != nil {
