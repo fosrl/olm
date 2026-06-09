@@ -467,6 +467,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 				"userToken":   userToken,
 				"fingerprint": o.fingerprint,
 				"postures":    o.postures,
+				"chainId":     generateChainId(), // use a random chainId for registration updates - it won't be used for cancellation since registration is a one-time message but for tracking the session
 			}, 2*time.Second, 20) // after 18 tries on the server side we send the error so dont change this without changing that
 
 			// Invoke onRegistered callback if configured
