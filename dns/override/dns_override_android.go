@@ -20,3 +20,9 @@ func CleanupStaleState(interfaceName string) error {
 	_ = interfaceName
 	return nil
 }
+
+// ForceResetDNS is a no-op on Android.
+func ForceResetDNS(interfaceName string) error {
+	_ = interfaceName
+	return nil
+}

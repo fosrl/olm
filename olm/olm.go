@@ -9,6 +9,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -75,6 +76,10 @@ type Olm struct {
 
 	// WaitGroup to track tunnel lifecycle
 	tunnelWg sync.WaitGroup
+
+	// External DNS watchdog process (spawned after DNS override is installed).
+	// nil when no watchdog is running.
+	dnsWatchdogCmd *exec.Cmd
 }
 
 // getPeerManager safely returns the current peerManager under a read-lock.
@@ -325,6 +330,54 @@ func (o *Olm) registerAPICallbacks() {
 			return nil
 		},
 	)
+}
+
+// startDNSWatchdog launches an external watchdog process that will reset
+// system DNS if this olm process dies before it can call
+// RestoreDNSOverride. It is a no-op when the OlmConfig has no
+// WatchdogSubcommand configured, or when the watchdog has already been
+// started for this Olm instance.
+func (o *Olm) startDNSWatchdog(interfaceName string) {
+	if o.dnsWatchdogCmd != nil {
+		return
+	}
+	if len(o.olmConfig.WatchdogSubcommand) == 0 {
+		logger.Debug("DNS watchdog disabled (no WatchdogSubcommand configured)")
+		return
+	}
+
+	executable := o.olmConfig.WatchdogExecutable
+	if executable == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			logger.Warn("DNS watchdog: failed to resolve executable: %v", err)
+			return
+		}
+		executable = exe
+	}
+
+	cmd, err := dnsOverride.SpawnWatchdog(dnsOverride.SpawnWatchdogConfig{
+		Executable:    executable,
+		Subcommand:    o.olmConfig.WatchdogSubcommand,
+		InterfaceName: interfaceName,
+		SocketPath:    o.olmConfig.SocketPath,
+		LogFile:       o.olmConfig.WatchdogLogFile,
+	})
+	if err != nil {
+		logger.Warn("DNS watchdog: spawn failed: %v", err)
+		return
+	}
+	o.dnsWatchdogCmd = cmd
+}
+
+// stopDNSWatchdog stops any previously spawned DNS watchdog process.
+// Safe to call when no watchdog was started.
+func (o *Olm) stopDNSWatchdog() {
+	if o.dnsWatchdogCmd == nil {
+		return
+	}
+	dnsOverride.StopWatchdog(o.dnsWatchdogCmd)
+	o.dnsWatchdogCmd = nil
 }
 
 func (o *Olm) StartTunnel(config TunnelConfig) {
@@ -595,6 +648,11 @@ func (o *Olm) Close() {
 	if err := dnsOverride.RestoreDNSOverride(); err != nil {
 		logger.Error("Failed to restore DNS: %v", err)
 	}
+
+	// Stop the watchdog *after* a successful DNS restore so that if we
+	// somehow crash mid-restore the watchdog still has a chance to clean
+	// up. The watchdog itself is a no-op if it was never spawned.
+	o.stopDNSWatchdog()
 
 	if o.holePunchManager != nil {
 		o.holePunchManager.Stop()

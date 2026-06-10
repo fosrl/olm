@@ -15,6 +15,12 @@ var configurator platform.DNSConfigurator
 // SetupDNSOverride configures the system DNS to use the DNS proxy on Windows
 // Uses registry-based configuration (automatically extracts interface GUID)
 func SetupDNSOverride(interfaceName string, proxyIp netip.Addr) error {
+	// Defensively clear any stale DNS state from a previous unclean shutdown
+	// before installing the new override.
+	if err := CleanupStaleState(interfaceName); err != nil {
+		logger.Warn("Pre-setup stale DNS cleanup failed (continuing): %v", err)
+	}
+
 	var err error
 	configurator, err = platform.NewWindowsDNSConfigurator(interfaceName)
 	if err != nil {
@@ -76,4 +82,18 @@ func CleanupStaleState(interfaceName string) error {
 	_ = interfaceName
 	logger.Debug("Windows DNS cleanup: no stale state to clean (interface-specific)")
 	return nil
+}
+
+// ForceResetDNS forcibly clears any DNS override state. On Windows this is
+// largely a no-op because the registry override is tied to the interface
+// GUID and is reclaimed when the interface is torn down.
+func ForceResetDNS(interfaceName string) error {
+	logger.Info("Forcing DNS reset on Windows (interface=%s)", interfaceName)
+	if configurator != nil {
+		if err := configurator.RestoreDNS(); err != nil {
+			logger.Warn("ForceResetDNS: in-memory restore failed: %v", err)
+		}
+		configurator = nil
+	}
+	return CleanupStaleState(interfaceName)
 }

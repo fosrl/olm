@@ -48,6 +48,21 @@ type OlmConfig struct {
 	OnAuthError  func(statusCode int, message string) // Called when auth fails (401/403)
 	OnOlmError   func(code string, message string)    // Called when registration fails
 	OnExit       func()                               // Called when exit is requested via API
+
+	// DNS watchdog (optional). When WatchdogSubcommand is non-empty, the
+	// olm package will spawn an external watchdog subprocess after a DNS
+	// override is installed. The watchdog will reset the system DNS if
+	// this process dies before it can call RestoreDNSOverride.
+	//
+	// The watchdog is launched as:
+	//   <WatchdogExecutable> <WatchdogSubcommand...> \
+	//       --parent-pid=<pid> --interface=<name> [--socket=<path>]
+	//
+	// When WatchdogExecutable is empty, os.Executable() of the calling
+	// process is used. WatchdogLogFile defaults to /dev/null.
+	WatchdogExecutable string
+	WatchdogSubcommand []string
+	WatchdogLogFile    string
 }
 
 type TunnelConfig struct {
@@ -61,7 +76,7 @@ type TunnelConfig struct {
 	MTU           int
 	DNS           string
 	UpstreamDNS   []string
-	PublicDNS   []string
+	PublicDNS     []string
 	InterfaceName string
 
 	// Advanced
