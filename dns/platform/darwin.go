@@ -422,6 +422,17 @@ func (d *DarwinDNSConfigurator) clearState() error {
 // configurator from a previous unclean shutdown. This is a static function that can be
 // called without creating a configurator instance, useful for cleanup before network operations.
 func CleanupStaleDarwinDNS() error {
+	// Always sweep orphaned Olm scutil keys regardless of whether a state
+	// file exists. This protects against cases where the state file was
+	// lost (e.g., user home wiped, write failed) but DNS keys are still
+	// installed in the running scutil session.
+	defer func() {
+		_ = SweepOlmScutilKeys()
+		// Flush DNS cache after any sweep so changes take effect.
+		_ = exec.Command(dscacheutilPath, "-flushcache").Run()
+		_ = exec.Command("killall", "-HUP", "mDNSResponder").Run()
+	}()
+
 	stateFilePath := getDNSStateFilePath()
 
 	// Check if state file exists
@@ -472,4 +483,60 @@ func CleanupStaleDarwinDNS() error {
 	_ = killCmd.Run()
 
 	return nil
+}
+
+// SweepOlmScutilKeys enumerates scutil State:/Network/Service/Olm-* keys and
+// removes any that are present. This is a best-effort safety net used when
+// state files have been lost or never written.
+func SweepOlmScutilKeys() error {
+	// list scutil keys matching our naming convention
+	listOutput, err := runScutilOnce("list State:/Network/Service/Olm-.*/DNS\n")
+	if err != nil {
+		return fmt.Errorf("scutil list: %w", err)
+	}
+
+	var keys []string
+	scanner := bufio.NewScanner(bytes.NewReader(listOutput))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		// scutil output format: subKey [0] = State:/Network/Service/Olm-Override/DNS
+		idx := strings.Index(line, "State:/Network/Service/Olm-")
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[idx:])
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	logger.Info("Sweeping %d orphaned Olm scutil DNS keys", len(keys))
+
+	var commands strings.Builder
+	for _, key := range keys {
+		commands.WriteString(fmt.Sprintf("remove %s\n", key))
+	}
+
+	if _, err := runScutilOnce(commands.String()); err != nil {
+		return fmt.Errorf("scutil sweep remove: %w", err)
+	}
+
+	return nil
+}
+
+// runScutilOnce runs a one-shot scutil command sequence wrapped with open/quit
+// without requiring a configurator instance.
+func runScutilOnce(commands string) ([]byte, error) {
+	wrapped := fmt.Sprintf("open\n%squit\n", commands)
+	cmd := exec.Command(scutilPath)
+	cmd.Stdin = strings.NewReader(wrapped)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("scutil command failed: %w, output: %s", err, output)
+	}
+	return output, nil
 }

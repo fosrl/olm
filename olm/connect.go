@@ -240,6 +240,12 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 			return
 		}
 
+		// Start the external watchdog (if configured). The watchdog will
+		// reset DNS if this process dies before it can call
+		// RestoreDNSOverride. This is a no-op when no watchdog
+		// subcommand has been configured on the OlmConfig.
+		o.startDNSWatchdog(o.tunnelConfig.InterfaceName)
+
 		network.SetDNSServers([]string{o.dnsProxy.GetProxyIP().String()})
 	}
 

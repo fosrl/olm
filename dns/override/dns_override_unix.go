@@ -15,6 +15,13 @@ var configurator platform.DNSConfigurator
 // SetupDNSOverride configures the system DNS to use the DNS proxy on Linux/FreeBSD
 // Detects the DNS manager by reading /etc/resolv.conf and verifying runtime availability
 func SetupDNSOverride(interfaceName string, proxyIp netip.Addr) error {
+	// Defensively clear any stale DNS state from a previous unclean shutdown
+	// before installing the new override. This makes a second tunnel start
+	// safe even if the previous client crashed without restoring DNS.
+	if err := CleanupStaleState(interfaceName); err != nil {
+		logger.Warn("Pre-setup stale DNS cleanup failed (continuing): %v", err)
+	}
+
 	var err error
 
 	// Detect which DNS manager is in use by checking /etc/resolv.conf and runtime availability
@@ -143,4 +150,26 @@ func CleanupStaleState(interfaceName string) error {
 
 	logger.Info("Stale DNS state cleanup completed successfully")
 	return nil
+}
+
+// ForceResetDNS forcibly clears any DNS override state, whether or not the
+// current process installed it. This is intended for the "reset-dns" CLI
+// command and for the watchdog process to recover from a stuck override
+// left behind by a crashed client.
+func ForceResetDNS(interfaceName string) error {
+	logger.Info("Forcing DNS reset on Linux/FreeBSD (interface=%s)", interfaceName)
+
+	// First clean up any persisted state from a previous session.
+	cleanupErr := CleanupStaleState(interfaceName)
+
+	// Then, if the current process happens to hold a live configurator,
+	// instruct it to restore DNS as well so in-memory state is consistent.
+	if configurator != nil {
+		if err := configurator.RestoreDNS(); err != nil {
+			logger.Warn("ForceResetDNS: in-memory restore failed: %v", err)
+		}
+		configurator = nil
+	}
+
+	return cleanupErr
 }

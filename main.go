@@ -164,6 +164,26 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Internal DNS subcommands. These are handled before normal flag
+	// parsing because they have their own argument layouts and need to
+	// run without setting up the full olm runtime.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "watchdog", "dns-watchdog":
+			if err := runDNSWatchdogCommand(signalCtx, os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "watchdog failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "reset-dns":
+			if err := runResetDNSCommand(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "reset-dns failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
 	// Run in console mode
 	runOlmMainWithArgs(ctx, cancel, signalCtx, os.Args[1:])
 }
@@ -221,6 +241,8 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 		OnExit:       cancel, // Pass cancel function directly to trigger shutdown
 		OnTerminated: cancel,
 		PprofAddr:    ":4444", // TODO: REMOVE OR MAKE CONFIGURABLE
+		// Re-invoke this binary in watchdog mode to clean up DNS if we die.
+		WatchdogSubcommand: []string{"watchdog"},
 	}
 
 	olm, err := olmpkg.Init(ctx, olmConfig)
