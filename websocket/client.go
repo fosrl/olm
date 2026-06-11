@@ -92,17 +92,17 @@ type Client struct {
 	configNeedsSave   bool // Flag to track if config needs to be saved
 	configVersion     int  // Latest config version received from server
 	configVersionMux  sync.RWMutex
-	token             string       // Cached authentication token
-	exitNodes         []ExitNode   // Cached exit nodes from token response
-	tokenMux          sync.RWMutex // Protects token and exitNodes
-	forceNewToken     bool         // Flag to force fetching a new token on next connection
-	processingMessage bool                   // Flag to track if a message is currently being processed
-	processingMux     sync.RWMutex           // Protects processingMessage
-	processingWg      sync.WaitGroup         // WaitGroup to wait for message processing to complete
-	getPingData       func() map[string]any  // Callback to get additional ping data
-	pingStarted       bool                   // Flag to track if ping monitor has been started
-	pingStartedMux    sync.Mutex             // Protects pingStarted
-	pingDone          chan struct{}          // Channel to stop the ping monitor independently
+	token             string                // Cached authentication token
+	exitNodes         []ExitNode            // Cached exit nodes from token response
+	tokenMux          sync.RWMutex          // Protects token and exitNodes
+	forceNewToken     bool                  // Flag to force fetching a new token on next connection
+	processingMessage bool                  // Flag to track if a message is currently being processed
+	processingMux     sync.RWMutex          // Protects processingMessage
+	processingWg      sync.WaitGroup        // WaitGroup to wait for message processing to complete
+	getPingData       func() map[string]any // Callback to get additional ping data
+	pingStarted       bool                  // Flag to track if ping monitor has been started
+	pingStartedMux    sync.Mutex            // Protects pingStarted
+	pingDone          chan struct{}         // Channel to stop the ping monitor independently
 }
 
 type ClientOption func(*Client)
@@ -462,32 +462,29 @@ func (c *Client) getToken() (string, []ExitNode, error) {
 }
 
 func (c *Client) connectWithRetry() {
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
 		select {
 		case <-c.done:
 			return
-		default:
-			err := c.establishConnection()
-			if err != nil {
-				// Check if this is an auth error (401/403)
-				var authErr *AuthError
-				if errors.As(err, &authErr) {
-					logger.Error("Authentication failed: %v. Terminating tunnel and retrying...", authErr)
-					// Trigger auth error callback if set (this should terminate the tunnel)
-					if c.onAuthError != nil {
-						c.onAuthError(authErr.StatusCode, authErr.Message)
-					}
-					// Continue retrying after auth error
-					time.Sleep(c.reconnectInterval)
-					continue
-				}
-				// For other errors (5xx, network issues), continue retrying
-				logger.Error("websocket: Failed to connect: %v. Retrying in %v...", err, c.reconnectInterval)
-				time.Sleep(c.reconnectInterval)
-				continue
-			}
+		case <-timer.C:
+			// Timer fired (immediate first time, then after reconnectInterval)
+		}
+		err := c.establishConnection()
+		if err == nil {
 			return
 		}
+		var authErr *AuthError
+		if !errors.As(err, &authErr) {
+			logger.Error("websocket: Failed to connect: %v. Retrying in %v...", err, c.reconnectInterval)
+		} else {
+			logger.Error("Authentication failed: %v. Terminating tunnel and retrying...", authErr)
+			if c.onAuthError != nil {
+				c.onAuthError(authErr.StatusCode, authErr.Message)
+			}
+		}
+		timer.Reset(c.reconnectInterval)
 	}
 }
 
@@ -736,15 +733,15 @@ func (c *Client) pingMonitor() {
 func (c *Client) StartPingMonitor() {
 	c.pingStartedMux.Lock()
 	defer c.pingStartedMux.Unlock()
-	
+
 	if c.pingStarted {
 		return
 	}
 	c.pingStarted = true
-	
+
 	// Create a new pingDone channel for this ping monitor instance
 	c.pingDone = make(chan struct{})
-	
+
 	// Send an initial ping immediately
 	go func() {
 		c.sendPing()
@@ -756,11 +753,11 @@ func (c *Client) StartPingMonitor() {
 func (c *Client) stopPingMonitor() {
 	c.pingStartedMux.Lock()
 	defer c.pingStartedMux.Unlock()
-	
+
 	if !c.pingStarted {
 		return
 	}
-	
+
 	// Close the pingDone channel to stop the monitor
 	close(c.pingDone)
 	c.pingStarted = false
