@@ -23,6 +23,7 @@ type recordSet struct {
 	A      []net.IP
 	AAAA   []net.IP
 	SiteId int
+	owners map[string]map[int]bool // IP string -> owning site IDs
 }
 
 // DNSRecordStore manages local DNS records for A, AAAA, and PTR queries.
@@ -71,9 +72,17 @@ func (s *DNSRecordStore) AddRecord(domain string, ip net.IP, siteId int) error {
 	}
 
 	if m[domain] == nil {
-		m[domain] = &recordSet{SiteId: siteId}
+		m[domain] = &recordSet{SiteId: siteId, owners: make(map[string]map[int]bool)}
 	}
 	rs := m[domain]
+	if rs.owners == nil {
+		rs.owners = make(map[string]map[int]bool)
+	}
+	ipKey := ip.String()
+	if rs.owners[ipKey] == nil {
+		rs.owners[ipKey] = make(map[int]bool)
+	}
+	rs.owners[ipKey][siteId] = true
 	if isV4 {
 		for _, existing := range rs.A {
 			if existing.Equal(ip) {
@@ -96,7 +105,6 @@ func (s *DNSRecordStore) AddRecord(domain string, ip net.IP, siteId int) error {
 	}
 	return nil
 }
-
 
 // AddPTRRecord adds a PTR record mapping an IP address to a domain name
 // ip should be a valid IPv4 or IPv6 address
@@ -123,6 +131,16 @@ func (s *DNSRecordStore) AddPTRRecord(ip net.IP, domain string) error {
 // If ip is nil, removes all records for the domain (including wildcards)
 // Automatically removes corresponding PTR records for non-wildcard domains
 func (s *DNSRecordStore) RemoveRecord(domain string, ip net.IP) {
+	s.removeRecord(domain, ip, 0, false)
+}
+
+// RemoveRecordForSite removes DNS records owned by a specific site.
+// If ip is nil, it removes all records for the domain owned by that site.
+func (s *DNSRecordStore) RemoveRecordForSite(domain string, ip net.IP, siteId int) {
+	s.removeRecord(domain, ip, siteId, true)
+}
+
+func (s *DNSRecordStore) removeRecord(domain string, ip net.IP, siteId int, bySite bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -142,8 +160,20 @@ func (s *DNSRecordStore) RemoveRecord(domain string, ip net.IP) {
 	if rs == nil {
 		return
 	}
+	if rs.owners == nil {
+		rs.owners = make(map[string]map[int]bool)
+	}
 
 	if ip == nil {
+		if bySite {
+			rs.A = s.removeOwnedIPs(rs, rs.A, siteId, !isWildcard, domain)
+			rs.AAAA = s.removeOwnedIPs(rs, rs.AAAA, siteId, !isWildcard, domain)
+			if len(rs.A) == 0 && len(rs.AAAA) == 0 {
+				delete(m, domain)
+			}
+			return
+		}
+
 		// Remove all records for this domain
 		if !isWildcard {
 			for _, ipAddr := range rs.A {
@@ -162,6 +192,19 @@ func (s *DNSRecordStore) RemoveRecord(domain string, ip net.IP) {
 	}
 
 	// Remove specific IP
+	ipKey := ip.String()
+	if bySite {
+		owners := rs.owners[ipKey]
+		if len(owners) == 0 {
+			return
+		}
+		delete(owners, siteId)
+		if len(owners) > 0 {
+			return
+		}
+		delete(rs.owners, ipKey)
+	}
+
 	if ip.To4() != nil {
 		rs.A = removeIP(rs.A, ip)
 		if !isWildcard {
@@ -177,11 +220,39 @@ func (s *DNSRecordStore) RemoveRecord(domain string, ip net.IP) {
 			}
 		}
 	}
+	delete(rs.owners, ipKey)
 
 	// Clean up empty record sets
 	if len(rs.A) == 0 && len(rs.AAAA) == 0 {
 		delete(m, domain)
 	}
+}
+
+func (s *DNSRecordStore) removeOwnedIPs(rs *recordSet, ips []net.IP, siteId int, removePTR bool, domain string) []net.IP {
+	kept := make([]net.IP, 0, len(ips))
+	for _, ipAddr := range ips {
+		ipKey := ipAddr.String()
+		owners := rs.owners[ipKey]
+		if len(owners) == 0 {
+			kept = append(kept, ipAddr)
+			continue
+		}
+
+		delete(owners, siteId)
+		if len(owners) > 0 {
+			kept = append(kept, ipAddr)
+			continue
+		}
+
+		delete(rs.owners, ipKey)
+		if removePTR {
+			if ptrDomain, exists := s.ptrRecords[ipKey]; exists && ptrDomain == domain {
+				delete(s.ptrRecords, ipKey)
+			}
+		}
+	}
+
+	return kept
 }
 
 // RemovePTRRecord removes a PTR record for an IP address

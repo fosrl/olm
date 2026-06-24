@@ -755,6 +755,12 @@ func (p *DNSProxy) RemoveDNSRecord(domain string, ip net.IP) {
 	p.recordStore.RemoveRecord(domain, ip)
 }
 
+// RemoveDNSRecordForSite removes DNS records for a domain that are owned by a specific site.
+// If ip is nil, removes all records for the domain that are owned by that site.
+func (p *DNSProxy) RemoveDNSRecordForSite(domain string, ip net.IP, siteId int) {
+	p.recordStore.RemoveRecordForSite(domain, ip, siteId)
+}
+
 // GetDNSRecords returns all IP addresses for a domain and record type.
 // The second return value indicates whether the domain exists.
 func (p *DNSProxy) GetDNSRecords(domain string, recordType RecordType) ([]net.IP, bool) {

@@ -782,6 +782,37 @@ func TestAutomaticPTRRecordOnRemove(t *testing.T) {
 	}
 }
 
+func TestRemoveRecordForSiteKeepsSharedAliasIP(t *testing.T) {
+	store := NewDNSRecordStore()
+
+	domain := "shared.example.com."
+	ip := net.ParseIP("192.168.1.100")
+
+	if err := store.AddRecord(domain, ip, 10); err != nil {
+		t.Fatalf("Failed to add record for site 10: %v", err)
+	}
+	if err := store.AddRecord(domain, ip, 20); err != nil {
+		t.Fatalf("Failed to add record for site 20: %v", err)
+	}
+
+	store.RemoveRecordForSite(domain, ip, 10)
+
+	ips, exists := store.GetRecords(domain, RecordTypeA)
+	if !exists {
+		t.Fatal("Expected shared record to still exist after removing one site owner")
+	}
+	if len(ips) != 1 || !ips[0].Equal(ip) {
+		t.Fatalf("Expected shared IP to remain after first owner removal, got %v", ips)
+	}
+
+	store.RemoveRecordForSite(domain, ip, 20)
+
+	ips, exists = store.GetRecords(domain, RecordTypeA)
+	if exists {
+		t.Fatalf("Expected domain to be removed after last owner removal, got %v", ips)
+	}
+}
+
 func TestAutomaticPTRRecordOnRemoveAll(t *testing.T) {
 	store := NewDNSRecordStore()
 
