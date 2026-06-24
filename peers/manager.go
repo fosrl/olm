@@ -250,6 +250,9 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 
 	// For aliases
 	for _, alias := range peer.Aliases {
+		if pm.isAliasInUseByOtherPeer(siteId, alias) {
+			continue
+		}
 		address := net.ParseIP(alias.AliasAddress)
 		if address == nil {
 			continue
@@ -312,8 +315,11 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 	}
 
 	// Update aliases
-	// Remove old aliases
+	// Remove old aliases that are not present anymore and not used by other peers.
 	for _, alias := range oldPeer.Aliases {
+		if hasAlias(siteConfig.Aliases, alias) || pm.isAliasInUseByOtherPeer(siteConfig.SiteId, alias) {
+			continue
+		}
 		address := net.ParseIP(alias.AliasAddress)
 		if address == nil {
 			continue
@@ -526,6 +532,30 @@ func (pm *PeerManager) getOwnedAllowedIPs(siteId int) []string {
 		}
 	}
 	return owned
+}
+
+// hasAlias returns true when aliases contains the same alias name and alias address.
+func hasAlias(aliases []Alias, target Alias) bool {
+	for _, alias := range aliases {
+		if strings.EqualFold(alias.Alias, target.Alias) && alias.AliasAddress == target.AliasAddress {
+			return true
+		}
+	}
+	return false
+}
+
+// isAliasInUseByOtherPeer returns true when another peer has the same alias name and address.
+// Must be called with lock held.
+func (pm *PeerManager) isAliasInUseByOtherPeer(excludeSiteId int, target Alias) bool {
+	for otherSiteId, otherPeer := range pm.peers {
+		if otherSiteId == excludeSiteId {
+			continue
+		}
+		if hasAlias(otherPeer.Aliases, target) {
+			return true
+		}
+	}
+	return false
 }
 
 // addAllowedIp adds an IP (subnet) to the allowed IPs list of a peer
@@ -765,7 +795,11 @@ func (pm *PeerManager) RemoveAlias(siteId int, aliasName string) error {
 		newAliases = append(newAliases, a)
 	}
 
-	if aliasToRemove != nil {
+	if aliasToRemove == nil {
+		return nil
+	}
+
+	if !pm.isAliasInUseByOtherPeer(siteId, *aliasToRemove) {
 		address := net.ParseIP(aliasToRemove.AliasAddress)
 		if address != nil {
 			pm.dnsProxy.RemoveDNSRecord(aliasName, address)
