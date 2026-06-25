@@ -768,7 +768,7 @@ func (pm *PeerManager) RemoveAlias(siteId int, aliasName string) error {
 	if aliasToRemove != nil {
 		address := net.ParseIP(aliasToRemove.AliasAddress)
 		if address != nil {
-			pm.dnsProxy.RemoveDNSRecord(aliasName, address)
+			pm.dnsProxy.RemoveDNSRecordForSite(aliasName, address, siteId)
 		}
 	}
 
