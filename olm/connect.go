@@ -150,6 +150,14 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		logger.Error("Failed to create DNS proxy: %v", err)
 	}
 
+	// Tell the system DNS monitor to exclude the proxy IP so that subsequent
+	// polls never mistake the proxy for a real upstream server (on Linux the OS
+	// DNS is overridden to point at this IP, which would otherwise feed back
+	// into UpstreamDNS or PublicDNS on the next poll).
+	if o.dnsMonitor != nil && o.dnsProxy != nil {
+		o.dnsMonitor.SetExcludeIP(o.dnsProxy.GetProxyIP())
+	}
+
 	if err = network.ConfigureInterface(o.tunnelConfig.InterfaceName, wgData.TunnelIP, o.tunnelConfig.MTU); err != nil {
 		logger.Error("Failed to o.tunnelConfigure interface: %v", err)
 	}

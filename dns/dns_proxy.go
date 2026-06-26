@@ -741,6 +741,16 @@ func (p *DNSProxy) SetJITHandler(handler func(siteId int)) {
 	p.jitHandler = handler
 }
 
+// SetUpstreamDNS replaces the list of upstream DNS servers used to forward
+// queries that are not served by local records.  The servers must be in
+// "host:port" format (e.g. "8.8.8.8:53").
+func (p *DNSProxy) SetUpstreamDNS(servers []string) {
+	if len(servers) == 0 {
+		return
+	}
+	p.upstreamDNS = servers
+}
+
 // AddDNSRecord adds a DNS record to the local store
 // domain should be a domain name (e.g., "example.com" or "example.com.")
 // ip should be a valid IPv4 or IPv6 address
