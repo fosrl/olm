@@ -9,9 +9,14 @@ import (
 	"time"
 
 	"github.com/fosrl/newt/logger"
+	"github.com/miekg/dns"
 )
 
 const defaultPollInterval = 30 * time.Second
+
+// dnsHealthCheckTimeout bounds how long we wait for a candidate DNS server to
+// answer a health-check query before considering it unusable.
+const dnsHealthCheckTimeout = 2 * time.Second
 
 // SystemDNSMonitor monitors the host system's DNS configuration and notifies
 // callers when it changes. The reported servers are in "host:port" format
@@ -29,7 +34,8 @@ const defaultPollInterval = 30 * time.Second
 //   - Other platforms: returns an empty list (no-op monitor).
 type SystemDNSMonitor struct {
 	mu         sync.RWMutex
-	current    []string
+	current    []string // last health-checked, applied server list
+	lastRaw    []string // last raw (exclude-filtered but unvalidated) candidate list seen
 	onChange   func(servers []string)
 	interval   time.Duration
 	stopCh     chan struct{}
@@ -65,15 +71,7 @@ func (m *SystemDNSMonitor) SetExcludeIP(ip netip.Addr) {
 // Start reads the current system DNS immediately, fires onChange, then polls
 // in the background until Stop is called or ctx is cancelled.
 func (m *SystemDNSMonitor) Start(ctx context.Context) {
-	servers := m.readFiltered()
-	m.mu.Lock()
-	m.current = servers
-	m.mu.Unlock()
-
-	if m.onChange != nil && len(servers) > 0 {
-		m.onChange(servers)
-	}
-
+	m.applyCandidates(m.readFiltered())
 	go m.run(ctx)
 }
 
@@ -100,18 +98,25 @@ func (m *SystemDNSMonitor) Current() []string {
 // excluded the function returns nil so the caller can retain the last
 // known-good value.
 func (m *SystemDNSMonitor) readFiltered() []string {
-	raw := readSystemDNS()
+	return m.filterExcluded(readSystemDNS())
+}
 
+// filterExcluded removes any addresses that have been excluded via
+// SetExcludeIP from servers. Used both for the internally-polled server list
+// (readFiltered) and for server lists reported externally (ReportExternal) by
+// platforms - Android, iOS - where olm cannot read the OS's DNS configuration
+// itself.
+func (m *SystemDNSMonitor) filterExcluded(servers []string) []string {
 	m.excludeMu.RLock()
 	excludeIPs := m.excludeIPs
 	m.excludeMu.RUnlock()
 
 	if len(excludeIPs) == 0 {
-		return raw
+		return servers
 	}
 
 	var filtered []string
-	for _, s := range raw {
+	for _, s := range servers {
 		host, _, err := net.SplitHostPort(s)
 		if err != nil {
 			filtered = append(filtered, s)
@@ -126,6 +131,16 @@ func (m *SystemDNSMonitor) readFiltered() []string {
 	return filtered
 }
 
+// ReportExternal applies an externally-observed DNS server list (e.g. from
+// Android's ConnectivityManager or iOS's SCDynamicStore, where the platform
+// itself - not olm - must detect the OS's real DNS configuration) through the
+// same exclude-IP filtering, health-check validation, and change-detection as
+// the internal poll loop, firing onChange if the result differs from the last
+// known value.
+func (m *SystemDNSMonitor) ReportExternal(servers []string) {
+	m.applyCandidates(m.filterExcluded(servers))
+}
+
 func (m *SystemDNSMonitor) run(ctx context.Context) {
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
@@ -137,24 +152,100 @@ func (m *SystemDNSMonitor) run(ctx context.Context) {
 		case <-m.stopCh:
 			return
 		case <-ticker.C:
-			servers := m.readFiltered()
-			if len(servers) == 0 {
-				continue
-			}
-
-			m.mu.Lock()
-			changed := !dnsSlicesEqual(m.current, servers)
-			if changed {
-				m.current = servers
-			}
-			m.mu.Unlock()
-
-			if changed && m.onChange != nil {
-				logger.Info("System DNS changed: %v", servers)
-				m.onChange(servers)
-			}
+			m.applyCandidates(m.readFiltered())
 		}
 	}
+}
+
+// applyCandidates takes an exclude-filtered (but not yet health-checked) list
+// of candidate DNS servers - from either the internal poll loop or
+// ReportExternal - and, only if it differs from the last raw list seen (to
+// avoid re-running network health checks on every 30-second poll tick when
+// nothing has actually changed), health-checks it via filterUnreachable and
+// applies whatever passes, firing onChange if the result changed.
+//
+// If none of the candidates pass the health check, the previous known-good
+// value is retained rather than clobbered - this is what protects against
+// e.g. a carrier reporting a DNS server (such as T-Mobile's internal ULA
+// DNS64 resolvers) that is technically "the system DNS" but not actually
+// reachable/usable from wherever queries are sent.
+func (m *SystemDNSMonitor) applyCandidates(raw []string) {
+	if len(raw) == 0 {
+		return
+	}
+
+	m.mu.Lock()
+	if dnsSlicesEqual(m.lastRaw, raw) {
+		m.mu.Unlock()
+		return
+	}
+	m.lastRaw = raw
+	m.mu.Unlock()
+
+	validated := filterUnreachable(raw)
+	if len(validated) == 0 {
+		logger.Warn("None of the detected DNS servers answered a health-check query, keeping previous value: %v", raw)
+		return
+	}
+
+	m.mu.Lock()
+	changed := !dnsSlicesEqual(m.current, validated)
+	if changed {
+		m.current = validated
+	}
+	m.mu.Unlock()
+
+	if changed && m.onChange != nil {
+		logger.Info("System DNS changed: %v", validated)
+		m.onChange(validated)
+	}
+}
+
+// dnsServerReachable is a seam for tests; production code always uses probeDNSServer.
+var dnsServerReachable = probeDNSServer
+
+// filterUnreachable validates that each candidate server actually answers a
+// DNS query before it's trusted, rather than statically guessing from the
+// address (e.g. rejecting all private/ULA addresses, which would also reject
+// a perfectly valid home router forwarding to a real resolver). Checks run
+// concurrently so multiple candidates don't serialize the timeout.
+func filterUnreachable(servers []string) []string {
+	if len(servers) == 0 {
+		return servers
+	}
+
+	reachable := make([]bool, len(servers))
+	var wg sync.WaitGroup
+	for i, server := range servers {
+		wg.Add(1)
+		go func(i int, server string) {
+			defer wg.Done()
+			reachable[i] = dnsServerReachable(server)
+		}(i, server)
+	}
+	wg.Wait()
+
+	var result []string
+	for i, server := range servers {
+		if reachable[i] {
+			result = append(result, server)
+		} else {
+			logger.Debug("Discarding DNS server %s: failed health check", server)
+		}
+	}
+	return result
+}
+
+// probeDNSServer sends a minimal root NS query to confirm a candidate server
+// actually answers, without depending on any specific external hostname being
+// reachable (which could itself be blocked/filtered independently of whether
+// the resolver works).
+func probeDNSServer(server string) bool {
+	client := &dns.Client{Timeout: dnsHealthCheckTimeout}
+	msg := new(dns.Msg)
+	msg.SetQuestion(".", dns.TypeNS)
+	_, _, err := client.Exchange(msg, server)
+	return err == nil
 }
 
 // dnsSlicesEqual reports whether two server lists are equal regardless of order.
