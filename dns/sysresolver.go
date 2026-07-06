@@ -177,11 +177,13 @@ func (m *SystemDNSMonitor) applyCandidates(raw []string) {
 	m.mu.Lock()
 	if dnsSlicesEqual(m.lastRaw, raw) {
 		m.mu.Unlock()
+		logger.Debug("System DNS candidates unchanged, skipping health check: %v", raw)
 		return
 	}
 	m.lastRaw = raw
 	m.mu.Unlock()
 
+	logger.Debug("System DNS candidates changed, health-checking: %v", raw)
 	validated := filterUnreachable(raw)
 	if len(validated) == 0 {
 		logger.Warn("None of the detected DNS servers answered a health-check query, keeping previous value: %v", raw)
@@ -201,8 +203,8 @@ func (m *SystemDNSMonitor) applyCandidates(raw []string) {
 	}
 }
 
-// dnsServerReachable is a seam for tests; production code always uses probeDNSServer.
-var dnsServerReachable = probeDNSServer
+// dnsServerReachable is a seam for tests; production code always uses probeDNSServerErr.
+var dnsServerReachable = probeDNSServerErr
 
 // filterUnreachable validates that each candidate server actually answers a
 // DNS query before it's trusted, rather than statically guessing from the
@@ -215,12 +217,13 @@ func filterUnreachable(servers []string) []string {
 	}
 
 	reachable := make([]bool, len(servers))
+	errs := make([]error, len(servers))
 	var wg sync.WaitGroup
 	for i, server := range servers {
 		wg.Add(1)
 		go func(i int, server string) {
 			defer wg.Done()
-			reachable[i] = dnsServerReachable(server)
+			reachable[i], errs[i] = dnsServerReachable(server)
 		}(i, server)
 	}
 	wg.Wait()
@@ -230,22 +233,23 @@ func filterUnreachable(servers []string) []string {
 		if reachable[i] {
 			result = append(result, server)
 		} else {
-			logger.Debug("Discarding DNS server %s: failed health check", server)
+			logger.Debug("Discarding DNS server %s: failed health check: %v", server, errs[i])
 		}
 	}
 	return result
 }
 
-// probeDNSServer sends a minimal root NS query to confirm a candidate server
+// probeDNSServerErr sends a minimal root NS query to confirm a candidate server
 // actually answers, without depending on any specific external hostname being
 // reachable (which could itself be blocked/filtered independently of whether
-// the resolver works).
-func probeDNSServer(server string) bool {
+// the resolver works). The returned error is kept (rather than just a bool) so
+// callers can log why a candidate was rejected (unreachable route, timeout, etc.).
+func probeDNSServerErr(server string) (bool, error) {
 	client := &dns.Client{Timeout: dnsHealthCheckTimeout}
 	msg := new(dns.Msg)
 	msg.SetQuestion(".", dns.TypeNS)
 	_, _, err := client.Exchange(msg, server)
-	return err == nil
+	return err == nil, err
 }
 
 // dnsSlicesEqual reports whether two server lists are equal regardless of order.

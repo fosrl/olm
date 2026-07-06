@@ -12,7 +12,7 @@ import (
 func stubReachable(t *testing.T, fn func(server string) bool) {
 	t.Helper()
 	orig := dnsServerReachable
-	dnsServerReachable = fn
+	dnsServerReachable = func(server string) (bool, error) { return fn(server), nil }
 	t.Cleanup(func() { dnsServerReachable = orig })
 }
 

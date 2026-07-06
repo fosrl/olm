@@ -404,6 +404,9 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	// with whatever DNS the host network is currently using.
 	upstreamFromConfig := len(config.UpstreamDNS) > 0 &&
 		!(len(config.UpstreamDNS) == 1 && config.UpstreamDNS[0] == "8.8.8.8:53")
+	if upstreamFromConfig {
+		logger.Info("UpstreamDNS is statically configured (%v); automatic system DNS detection will only update PublicDNS, DNS forwarding will keep using the configured value even if it becomes unreachable on a new network", config.UpstreamDNS)
+	}
 
 	// Start the system DNS monitor. The callback fires synchronously once with
 	// the initial values so that PublicDNS (and optionally UpstreamDNS) are
@@ -433,6 +436,8 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 			if o.dnsProxy != nil {
 				o.dnsProxy.SetUpstreamDNS(servers)
 			}
+		} else {
+			logger.Debug("Not updating UpstreamDNS: statically configured to %v", config.UpstreamDNS)
 		}
 	})
 	o.dnsMonitor.Start(o.olmCtx)
@@ -897,6 +902,7 @@ func (o *Olm) SetPostures(data map[string]any) {
 // changes. The list is applied through the same exclude-IP filtering and
 // change detection as the internally-polled SystemDNSMonitor.
 func (o *Olm) SetSystemDNS(servers []string) {
+	logger.Info("SetSystemDNS called with: %v", servers)
 	if o.dnsMonitor == nil {
 		// StartTunnel hasn't created the monitor yet (mobile platforms may push a
 		// value the moment they start observing, before the tunnel goroutine has
@@ -905,6 +911,7 @@ func (o *Olm) SetSystemDNS(servers []string) {
 		o.pendingSystemDNSMu.Lock()
 		o.pendingSystemDNS = servers
 		o.pendingSystemDNSMu.Unlock()
+		logger.Debug("dnsMonitor not yet started, queued SetSystemDNS value")
 		return
 	}
 	o.dnsMonitor.ReportExternal(servers)
