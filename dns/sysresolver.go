@@ -29,8 +29,8 @@ const dnsHealthCheckTimeout = 2 * time.Second
 //     finally /etc/resolv.conf.
 //   - macOS: reads /etc/resolv.conf, which is never modified by olm's
 //     supplemental scutil DNS override.
-//   - Windows: enumerates DHCP-assigned DNS servers from every network adapter
-//     in the registry.
+//   - Windows: enumerates every network adapter's effective DNS servers
+//     (static if set, else DHCP-assigned) from the registry.
 //   - Other platforms: returns an empty list (no-op monitor).
 type SystemDNSMonitor struct {
 	mu         sync.RWMutex
