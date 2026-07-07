@@ -16,12 +16,18 @@ import (
 
 const (
 	// NetworkManager D-Bus constants
-	networkManagerDest                       = "org.freedesktop.NetworkManager"
-	networkManagerDbusObjectNode             = "/org/freedesktop/NetworkManager"
-	networkManagerDbusDNSManagerInterface    = "org.freedesktop.NetworkManager.DnsManager"
-	networkManagerDbusDNSManagerObjectNode   = networkManagerDbusObjectNode + "/DnsManager"
-	networkManagerDbusDNSManagerModeProperty = networkManagerDbusDNSManagerInterface + ".Mode"
-	networkManagerDbusVersionProperty        = "org.freedesktop.NetworkManager.Version"
+	networkManagerDest                        = "org.freedesktop.NetworkManager"
+	networkManagerDbusObjectNode              = "/org/freedesktop/NetworkManager"
+	networkManagerDbusDNSManagerInterface     = "org.freedesktop.NetworkManager.DnsManager"
+	networkManagerDbusDNSManagerObjectNode    = networkManagerDbusObjectNode + "/DnsManager"
+	networkManagerDbusDNSManagerModeProperty  = networkManagerDbusDNSManagerInterface + ".Mode"
+	networkManagerDbusVersionProperty         = "org.freedesktop.NetworkManager.Version"
+	networkManagerDbusActiveConnsProperty     = networkManagerDest + ".ActiveConnections"
+	networkManagerDbusActiveInterface         = "org.freedesktop.NetworkManager.Connection.Active"
+	networkManagerDbusActiveIP4ConfigProperty = networkManagerDbusActiveInterface + ".Ip4Config"
+	networkManagerDbusActiveIP6ConfigProperty = networkManagerDbusActiveInterface + ".Ip6Config"
+	networkManagerDbusIP4ConfigInterface      = "org.freedesktop.NetworkManager.IP4Config"
+	networkManagerDbusIP6ConfigInterface      = "org.freedesktop.NetworkManager.IP6Config"
 
 	// NetworkManager dispatcher script path
 	networkManagerDispatcherDir  = "/etc/NetworkManager/dispatcher.d"
@@ -299,6 +305,89 @@ func GetNetworkManagerDNSMode() (string, error) {
 	}
 
 	return mode, nil
+}
+
+// GetNetworkManagerNameservers returns the DNS servers NetworkManager has
+// computed for every active connection, read live via D-Bus from each
+// connection's IP4Config/IP6Config NameserverData property.
+//
+// Unlike reading /etc/resolv.conf, this reflects NetworkManager's own view of
+// DNS regardless of its DnsManager.Mode: in "dnsmasq" or "unbound" mode
+// /etc/resolv.conf only contains a loopback stub address pointing at
+// NetworkManager's local resolver, not the real upstream servers, and even in
+// "default" mode this stays live and unaffected if something else (such as
+// olm's own override) has since overwritten /etc/resolv.conf directly instead
+// of going through NetworkManager.
+func GetNetworkManagerNameservers() ([]netip.Addr, error) {
+	conn, err := dbus.SystemBus()
+	if err != nil {
+		return nil, fmt.Errorf("connect to system bus: %w", err)
+	}
+	defer conn.Close()
+
+	nm := conn.Object(networkManagerDest, networkManagerDbusObjectNode)
+
+	activeVariant, err := nm.GetProperty(networkManagerDbusActiveConnsProperty)
+	if err != nil {
+		return nil, fmt.Errorf("get active connections: %w", err)
+	}
+	activePaths, ok := activeVariant.Value().([]dbus.ObjectPath)
+	if !ok {
+		return nil, errors.New("ActiveConnections is not a list of object paths")
+	}
+
+	ipConfigSources := []struct {
+		activeProperty string
+		configIface    string
+	}{
+		{networkManagerDbusActiveIP4ConfigProperty, networkManagerDbusIP4ConfigInterface},
+		{networkManagerDbusActiveIP6ConfigProperty, networkManagerDbusIP6ConfigInterface},
+	}
+
+	seen := make(map[netip.Addr]bool)
+	var servers []netip.Addr
+	for _, activePath := range activePaths {
+		active := conn.Object(networkManagerDest, activePath)
+		for _, src := range ipConfigSources {
+			cfgVariant, err := active.GetProperty(src.activeProperty)
+			if err != nil {
+				continue
+			}
+			cfgPath, ok := cfgVariant.Value().(dbus.ObjectPath)
+			if !ok || cfgPath == "" || cfgPath == "/" {
+				continue
+			}
+
+			nsVariant, err := conn.Object(networkManagerDest, cfgPath).GetProperty(src.configIface + ".NameserverData")
+			if err != nil {
+				continue
+			}
+			entries, ok := nsVariant.Value().([]map[string]dbus.Variant)
+			if !ok {
+				continue
+			}
+			for _, entry := range entries {
+				addrVariant, ok := entry["address"]
+				if !ok {
+					continue
+				}
+				addrStr, ok := addrVariant.Value().(string)
+				if !ok {
+					continue
+				}
+				addr, err := netip.ParseAddr(addrStr)
+				if err != nil || addr.IsLoopback() || addr.IsLinkLocalUnicast() {
+					continue
+				}
+				if !seen[addr] {
+					seen[addr] = true
+					servers = append(servers, addr)
+				}
+			}
+		}
+	}
+
+	return servers, nil
 }
 
 // GetNetworkManagerVersion returns the version of NetworkManager
