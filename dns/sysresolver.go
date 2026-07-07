@@ -27,8 +27,10 @@ const dnsHealthCheckTimeout = 2 * time.Second
 //     systemd-resolved on every DHCP change), then falls back to
 //     /etc/resolv.conf.olm.backup (written before olm overrides DNS), and
 //     finally /etc/resolv.conf.
-//   - macOS: reads /etc/resolv.conf, which is never modified by olm's
-//     supplemental scutil DNS override.
+//   - macOS: reads the unscoped resolvers from `scutil --dns`, falling back
+//     to /etc/resolv.conf if scutil is unavailable. This includes olm's own
+//     supplemental scutil DNS override entry, which is expected to be
+//     filtered out via SetExcludeIP.
 //   - Windows: enumerates every network adapter's effective DNS servers
 //     (static if set, else DHCP-assigned) from the registry.
 //   - Other platforms: returns an empty list (no-op monitor).
