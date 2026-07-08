@@ -36,7 +36,7 @@ type PeerMonitor struct {
 	timeout     time.Duration
 	maxAttempts int
 	wsClient    *websocket.Client
-	publicDNS []string
+	publicDNS   []string
 
 	// Relay sender tracking
 	relaySends  map[string]func()
@@ -85,8 +85,8 @@ type PeerMonitor struct {
 	apiServer *api.API
 
 	// WG connection status tracking
-	wgConnectionStatus  map[int]bool          // siteID -> WG connected status
-	wgConnectionRTT     map[int]time.Duration // siteID -> last known RTT
+	wgConnectionStatus   map[int]bool          // siteID -> WG connected status
+	wgConnectionRTT      map[int]time.Duration // siteID -> last known RTT
 	statusChangeCallback func(siteId int)      // called when any peer's connection status changes
 }
 
@@ -106,7 +106,7 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		wsClient:             wsClient,
 		middleDev:            middleDev,
 		localIP:              localIP,
-		publicDNS:          publicDNS,
+		publicDNS:            publicDNS,
 		activePorts:          make(map[uint16]bool),
 		nsCtx:                ctx,
 		nsCancel:             cancel,
@@ -146,6 +146,19 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 	}
 
 	return pm
+}
+
+// SetPublicDNS replaces the DNS servers used to resolve peer endpoints and
+// hole-punch exit nodes.  The servers must be in "host:port" format.
+func (pm *PeerMonitor) SetPublicDNS(servers []string) {
+	pm.mutex.Lock()
+	pm.publicDNS = servers
+	tester := pm.holepunchTester
+	pm.mutex.Unlock()
+
+	if tester != nil {
+		tester.SetPublicDNS(servers)
+	}
 }
 
 // SetInterval changes how frequently peers are checked

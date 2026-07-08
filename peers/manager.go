@@ -103,6 +103,21 @@ func (pm *PeerManager) GetPeerMonitor() *monitor.PeerMonitor {
 	return pm.peerMonitor
 }
 
+// SetPublicDNS replaces the DNS servers used to resolve WireGuard peer
+// endpoints and hole-punch targets.  The servers must be in "host:port" format
+// (e.g. "8.8.8.8:53").  The change takes effect for all future peer
+// configuration calls; existing WireGuard peers are not re-resolved.
+func (pm *PeerManager) SetPublicDNS(servers []string) {
+	pm.mu.Lock()
+	pm.publicDNS = servers
+	mon := pm.peerMonitor
+	pm.mu.Unlock()
+
+	if mon != nil {
+		mon.SetPublicDNS(servers)
+	}
+}
+
 func (pm *PeerManager) GetAllPeers() []SiteConfig {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()

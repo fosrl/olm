@@ -43,12 +43,18 @@ type Olm struct {
 	middleDev    *olmDevice.MiddleDevice
 	sharedBind   *bind.SharedBind
 
-	dnsProxy         *dns.DNSProxy
-	apiServer        *api.API
-	websocket        *websocket.Client
-	holePunchManager *holepunch.Manager
-	peerManager      *peers.PeerManager
-	peerManagerMu    sync.RWMutex
+	dnsProxy   *dns.DNSProxy
+	dnsMonitor *dns.SystemDNSMonitor
+	// pendingSystemDNS holds a SetSystemDNS report received before dnsMonitor exists
+	// (e.g. Android/iOS push a value while the tunnel is still starting up), so it
+	// isn't silently dropped. Drained into dnsMonitor as soon as StartTunnel creates it.
+	pendingSystemDNSMu sync.Mutex
+	pendingSystemDNS   []string
+	apiServer          *api.API
+	websocket          *websocket.Client
+	holePunchManager   *holepunch.Manager
+	peerManager        *peers.PeerManager
+	peerManagerMu      sync.RWMutex
 	// Power mode management
 	currentPowerMode string
 	powerModeMu      sync.Mutex
@@ -392,11 +398,66 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	o.tunnelRunning = true // Also set it here in case it is called externally
 	o.tunnelConfig = config
 
-	// TODO: we are hardcoding this for now but we should really pull it from the current config of the system
-	if o.tunnelConfig.DNS != "" {
-		o.tunnelConfig.PublicDNS = []string{o.tunnelConfig.DNS + ":53"}
-	} else {
-		o.tunnelConfig.PublicDNS = []string{"8.8.8.8:53"}
+	// Determine whether the system DNS monitor should also manage UpstreamDNS.
+	// If the caller did not provide an explicit UpstreamDNS (it was defaulted to
+	// 8.8.8.8:53 by the API handler), we want the monitor to keep it updated
+	// with whatever DNS the host network is currently using.
+	upstreamFromConfig := len(config.UpstreamDNS) > 0 &&
+		!(len(config.UpstreamDNS) == 1 && config.UpstreamDNS[0] == "8.8.8.8:53")
+	if upstreamFromConfig {
+		logger.Info("UpstreamDNS is statically configured (%v); automatic system DNS detection will only update PublicDNS, DNS forwarding will keep using the configured value even if it becomes unreachable on a new network", config.UpstreamDNS)
+	}
+
+	// Start the system DNS monitor. The callback fires synchronously once with
+	// the initial values so that PublicDNS (and optionally UpstreamDNS) are
+	// populated before the tunnel goroutine proceeds.
+	o.dnsMonitor = dns.NewSystemDNSMonitor(0, func(servers []string) {
+		if len(servers) == 0 {
+			return
+		}
+		logger.Info("Applying system DNS: %v", servers)
+
+		// PublicDNS must always reflect the physical-network DNS so that
+		// WireGuard endpoint hostnames and hole-punch targets can be resolved
+		// even after the system resolver has been overridden by olm.
+		o.tunnelConfig.PublicDNS = servers
+		if o.holePunchManager != nil {
+			o.holePunchManager.SetPublicDNS(servers)
+		}
+		if pm := o.getPeerManager(); pm != nil {
+			pm.SetPublicDNS(servers)
+		}
+
+		// UpstreamDNS is updated only when the caller did not supply an
+		// explicit value; dynamic updates keep the proxy forwarding to the
+		// network's real resolver as the host moves between networks.
+		if !upstreamFromConfig {
+			o.tunnelConfig.UpstreamDNS = servers
+			if o.dnsProxy != nil {
+				o.dnsProxy.SetUpstreamDNS(servers)
+			}
+		} else {
+			logger.Debug("Not updating UpstreamDNS: statically configured to %v", config.UpstreamDNS)
+		}
+	})
+	o.dnsMonitor.Start(o.olmCtx)
+
+	// Apply any SetSystemDNS report that arrived before dnsMonitor existed (e.g. an
+	// Android/iOS push that raced ahead of this goroutine).
+	if pending := o.takePendingSystemDNS(); len(pending) > 0 {
+		o.dnsMonitor.ReportExternal(pending)
+	}
+
+	// Fall back to hardcoded DNS if the system monitor could not detect any.
+	if len(o.tunnelConfig.PublicDNS) == 0 {
+		if o.tunnelConfig.DNS != "" {
+			o.tunnelConfig.PublicDNS = []string{o.tunnelConfig.DNS + ":53"}
+		} else {
+			o.tunnelConfig.PublicDNS = []string{"8.8.8.8:53"}
+		}
+	}
+	if len(o.tunnelConfig.UpstreamDNS) == 0 {
+		o.tunnelConfig.UpstreamDNS = []string{"8.8.8.8:53"}
 	}
 
 	// Reset terminated status when tunnel starts
@@ -659,6 +720,13 @@ func (o *Olm) Close() {
 		o.holePunchManager = nil
 	}
 
+	// Stop the system DNS monitor after hole punch is stopped (it feeds
+	// publicDNS into the hole punch manager).
+	if o.dnsMonitor != nil {
+		o.dnsMonitor.Stop()
+		o.dnsMonitor = nil
+	}
+
 	// Close() also calls Stop() internally
 	o.peerManagerMu.Lock()
 	if o.peerManager != nil {
@@ -825,6 +893,38 @@ func (o *Olm) SetPostures(data map[string]any) {
 	defer o.metaMu.Unlock()
 
 	o.postures = data
+}
+
+// SetSystemDNS reports DNS servers observed by platform-native code. On
+// Android and iOS olm cannot read the OS's DNS configuration itself (unlike
+// Linux/macOS/Windows, see dns.readSystemDNS), so the app/extension detects
+// the real pre-override DNS servers and pushes them here as the network
+// changes. The list is applied through the same exclude-IP filtering and
+// change detection as the internally-polled SystemDNSMonitor.
+func (o *Olm) SetSystemDNS(servers []string) {
+	logger.Info("SetSystemDNS called with: %v", servers)
+	if o.dnsMonitor == nil {
+		// StartTunnel hasn't created the monitor yet (mobile platforms may push a
+		// value the moment they start observing, before the tunnel goroutine has
+		// gotten far enough to construct it). Stash it so StartTunnel can apply it
+		// instead of falling back to a hardcoded default DNS server.
+		o.pendingSystemDNSMu.Lock()
+		o.pendingSystemDNS = servers
+		o.pendingSystemDNSMu.Unlock()
+		logger.Debug("dnsMonitor not yet started, queued SetSystemDNS value")
+		return
+	}
+	o.dnsMonitor.ReportExternal(servers)
+}
+
+// takePendingSystemDNS returns and clears any SetSystemDNS value reported before
+// dnsMonitor existed.
+func (o *Olm) takePendingSystemDNS() []string {
+	o.pendingSystemDNSMu.Lock()
+	defer o.pendingSystemDNSMu.Unlock()
+	pending := o.pendingSystemDNS
+	o.pendingSystemDNS = nil
+	return pending
 }
 
 // SetPowerMode switches between normal and low power modes

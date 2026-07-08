@@ -4,6 +4,7 @@ package dns
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -16,12 +17,25 @@ import (
 
 const (
 	// NetworkManager D-Bus constants
-	networkManagerDest                       = "org.freedesktop.NetworkManager"
-	networkManagerDbusObjectNode             = "/org/freedesktop/NetworkManager"
-	networkManagerDbusDNSManagerInterface    = "org.freedesktop.NetworkManager.DnsManager"
-	networkManagerDbusDNSManagerObjectNode   = networkManagerDbusObjectNode + "/DnsManager"
-	networkManagerDbusDNSManagerModeProperty = networkManagerDbusDNSManagerInterface + ".Mode"
-	networkManagerDbusVersionProperty        = "org.freedesktop.NetworkManager.Version"
+	networkManagerDest                        = "org.freedesktop.NetworkManager"
+	networkManagerDbusObjectNode              = "/org/freedesktop/NetworkManager"
+	networkManagerDbusDNSManagerInterface     = "org.freedesktop.NetworkManager.DnsManager"
+	networkManagerDbusDNSManagerObjectNode    = networkManagerDbusObjectNode + "/DnsManager"
+	networkManagerDbusDNSManagerModeProperty  = networkManagerDbusDNSManagerInterface + ".Mode"
+	networkManagerDbusVersionProperty         = "org.freedesktop.NetworkManager.Version"
+	networkManagerDbusActiveConnsProperty     = networkManagerDest + ".ActiveConnections"
+	networkManagerDbusActiveInterface         = "org.freedesktop.NetworkManager.Connection.Active"
+	networkManagerDbusActiveIP4ConfigProperty = networkManagerDbusActiveInterface + ".Ip4Config"
+	networkManagerDbusActiveIP6ConfigProperty = networkManagerDbusActiveInterface + ".Ip6Config"
+	networkManagerDbusActiveDevicesProperty   = networkManagerDbusActiveInterface + ".Devices"
+	networkManagerDbusIP4ConfigInterface      = "org.freedesktop.NetworkManager.IP4Config"
+	networkManagerDbusIP6ConfigInterface      = "org.freedesktop.NetworkManager.IP6Config"
+	networkManagerDbusDeviceInterface         = "org.freedesktop.NetworkManager.Device"
+	networkManagerDbusDeviceDhcp4ConfigProp   = networkManagerDbusDeviceInterface + ".Dhcp4Config"
+	networkManagerDbusDeviceDhcp6ConfigProp   = networkManagerDbusDeviceInterface + ".Dhcp6Config"
+	networkManagerDbusDhcp4ConfigInterface    = "org.freedesktop.NetworkManager.DHCP4Config"
+	networkManagerDbusDhcp6ConfigInterface    = "org.freedesktop.NetworkManager.DHCP6Config"
+	networkManagerDbusGetAppliedConnMethod    = networkManagerDbusDeviceInterface + ".GetAppliedConnection"
 
 	// NetworkManager dispatcher script path
 	networkManagerDispatcherDir  = "/etc/NetworkManager/dispatcher.d"
@@ -299,6 +313,220 @@ func GetNetworkManagerDNSMode() (string, error) {
 	}
 
 	return mode, nil
+}
+
+// GetNetworkManagerNameservers returns the DNS servers NetworkManager knows
+// about for every active connection, read live via D-Bus.
+//
+// olm's own NetworkManager DNS override (see NetworkManagerDNSConfigurator)
+// works by writing a [global-dns-domain-*] section to
+// /etc/NetworkManager/conf.d/olm-dns.conf and reloading NetworkManager. That
+// is NetworkManager's global DNS override mechanism: it replaces the DNS
+// servers NetworkManager's DnsManager computes as "effective" system-wide,
+// for every connection - not just what gets written to /etc/resolv.conf. So
+// once olm's override is active, even each connection's merged
+// IP4Config/IP6Config.NameserverData (the previous, sole source used here)
+// can end up reporting olm's own proxy address instead of the real network
+// DNS.
+//
+// To recover the real DNS regardless, this also reads two further sources
+// that NetworkManager's DNS merging - and therefore olm's global-dns override
+// - never touches, since both are populated independently of it:
+//   - Dhcp4Config/Dhcp6Config.Options["*name_servers"]: the raw nameserver
+//     list straight from the DHCP lease.
+//   - Device.GetAppliedConnection()'s ipv4.dns/ipv6.dns: the DNS servers
+//     explicitly configured on the connection profile itself, e.g. a static
+//     DNS override set by the user directly in NetworkManager (the
+//     NetworkManager equivalent of a manually-set Windows adapter DNS).
+//
+// IP4Config/IP6Config.NameserverData is still queried too, as a fallback for
+// setups the other two don't cover. Any of olm's own address that leaks
+// through any of these sources is expected to be dropped by the caller via
+// SystemDNSMonitor.SetExcludeIP.
+func GetNetworkManagerNameservers() ([]netip.Addr, error) {
+	conn, err := dbus.SystemBus()
+	if err != nil {
+		return nil, fmt.Errorf("connect to system bus: %w", err)
+	}
+	defer conn.Close()
+
+	nm := conn.Object(networkManagerDest, networkManagerDbusObjectNode)
+
+	activeVariant, err := nm.GetProperty(networkManagerDbusActiveConnsProperty)
+	if err != nil {
+		return nil, fmt.Errorf("get active connections: %w", err)
+	}
+	activePaths, ok := activeVariant.Value().([]dbus.ObjectPath)
+	if !ok {
+		return nil, errors.New("ActiveConnections is not a list of object paths")
+	}
+
+	ipConfigSources := []struct {
+		activeProperty string
+		configIface    string
+	}{
+		{networkManagerDbusActiveIP4ConfigProperty, networkManagerDbusIP4ConfigInterface},
+		{networkManagerDbusActiveIP6ConfigProperty, networkManagerDbusIP6ConfigInterface},
+	}
+
+	seen := make(map[netip.Addr]bool)
+	var servers []netip.Addr
+	add := func(addr netip.Addr) {
+		addr = addr.Unmap()
+		if !addr.IsValid() || addr.IsLoopback() || addr.IsLinkLocalUnicast() {
+			return
+		}
+		if !seen[addr] {
+			seen[addr] = true
+			servers = append(servers, addr)
+		}
+	}
+
+	for _, activePath := range activePaths {
+		active := conn.Object(networkManagerDest, activePath)
+
+		for _, src := range ipConfigSources {
+			cfgVariant, err := active.GetProperty(src.activeProperty)
+			if err != nil {
+				continue
+			}
+			cfgPath, ok := cfgVariant.Value().(dbus.ObjectPath)
+			if !ok || cfgPath == "" || cfgPath == "/" {
+				continue
+			}
+
+			nsVariant, err := conn.Object(networkManagerDest, cfgPath).GetProperty(src.configIface + ".NameserverData")
+			if err != nil {
+				continue
+			}
+			entries, ok := nsVariant.Value().([]map[string]dbus.Variant)
+			if !ok {
+				continue
+			}
+			for _, entry := range entries {
+				addrVariant, ok := entry["address"]
+				if !ok {
+					continue
+				}
+				addrStr, ok := addrVariant.Value().(string)
+				if !ok {
+					continue
+				}
+				if addr, err := netip.ParseAddr(addrStr); err == nil {
+					add(addr)
+				}
+			}
+		}
+
+		devicesVariant, err := active.GetProperty(networkManagerDbusActiveDevicesProperty)
+		if err != nil {
+			continue
+		}
+		devicePaths, ok := devicesVariant.Value().([]dbus.ObjectPath)
+		if !ok {
+			continue
+		}
+
+		for _, devicePath := range devicePaths {
+			device := conn.Object(networkManagerDest, devicePath)
+
+			for _, addr := range dhcpLeaseNameservers(conn, device, networkManagerDbusDeviceDhcp4ConfigProp, networkManagerDbusDhcp4ConfigInterface, "domain_name_servers") {
+				add(addr)
+			}
+			for _, addr := range dhcpLeaseNameservers(conn, device, networkManagerDbusDeviceDhcp6ConfigProp, networkManagerDbusDhcp6ConfigInterface, "dhcp6_name_servers") {
+				add(addr)
+			}
+			for _, addr := range appliedConnectionNameservers(device) {
+				add(addr)
+			}
+		}
+	}
+
+	return servers, nil
+}
+
+// dhcpLeaseNameservers reads a space-separated nameserver list out of a
+// device's Dhcp4Config/Dhcp6Config Options, straight from the DHCP lease -
+// data NetworkManager's DNS merging (and therefore olm's own global-dns
+// override) never touches.
+func dhcpLeaseNameservers(conn *dbus.Conn, device dbus.BusObject, configProperty, configIface, optionsKey string) []netip.Addr {
+	cfgVariant, err := device.GetProperty(configProperty)
+	if err != nil {
+		return nil
+	}
+	cfgPath, ok := cfgVariant.Value().(dbus.ObjectPath)
+	if !ok || cfgPath == "" || cfgPath == "/" {
+		return nil
+	}
+
+	optsVariant, err := conn.Object(networkManagerDest, cfgPath).GetProperty(configIface + ".Options")
+	if err != nil {
+		return nil
+	}
+	opts, ok := optsVariant.Value().(map[string]dbus.Variant)
+	if !ok {
+		return nil
+	}
+	raw, ok := opts[optionsKey]
+	if !ok {
+		return nil
+	}
+	str, ok := raw.Value().(string)
+	if !ok {
+		return nil
+	}
+
+	var addrs []netip.Addr
+	for _, field := range strings.Fields(str) {
+		if addr, err := netip.ParseAddr(field); err == nil {
+			addrs = append(addrs, addr)
+		}
+	}
+	return addrs
+}
+
+// appliedConnectionNameservers reads the ipv4.dns/ipv6.dns servers configured
+// on the device's currently-applied connection profile - e.g. a static DNS
+// override set by the user directly in NetworkManager - independent of DHCP
+// and of olm's own global-dns override.
+func appliedConnectionNameservers(device dbus.BusObject) []netip.Addr {
+	var settings map[string]map[string]dbus.Variant
+	var versionID uint64
+	if err := device.Call(networkManagerDbusGetAppliedConnMethod, 0, uint32(0)).Store(&settings, &versionID); err != nil {
+		return nil
+	}
+
+	var addrs []netip.Addr
+
+	if ipv4, ok := settings["ipv4"]; ok {
+		if dnsVariant, ok := ipv4["dns"]; ok {
+			if raw, ok := dnsVariant.Value().([]uint32); ok {
+				for _, v := range raw {
+					var b [4]byte
+					// NetworkManager encodes IPv4 addresses in this setting as
+					// network-byte-order bytes reinterpreted as a native uint32.
+					binary.LittleEndian.PutUint32(b[:], v)
+					addrs = append(addrs, netip.AddrFrom4(b))
+				}
+			}
+		}
+	}
+
+	if ipv6, ok := settings["ipv6"]; ok {
+		if dnsVariant, ok := ipv6["dns"]; ok {
+			if raw, ok := dnsVariant.Value().([][]byte); ok {
+				for _, b := range raw {
+					if len(b) == 16 {
+						var arr [16]byte
+						copy(arr[:], b)
+						addrs = append(addrs, netip.AddrFrom16(arr))
+					}
+				}
+			}
+		}
+	}
+
+	return addrs
 }
 
 // GetNetworkManagerVersion returns the version of NetworkManager
