@@ -15,8 +15,14 @@ import (
 // readSystemDNS returns the current system DNS servers in "host:53" format.
 //
 // Resolution order:
-//  1. /run/systemd/resolve/resolv.conf — maintained by systemd-resolved with
-//     the real per-link DNS servers; updated on every DHCP change and never
+//  1. /run/systemd/resolve/resolv.conf, but only when systemd-resolved is
+//     actually running (checked live via D-Bus) — the file lives in /run and
+//     can linger there, frozen at whatever it last contained, long after the
+//     service that maintained it has stopped (e.g. it ran earlier in the
+//     boot and was since disabled). Trusting its mere existence would report
+//     that stale snapshot forever instead of falling through to a live
+//     source. When the service is actually up the file is maintained with
+//     the real per-link DNS servers, updated on every DHCP change and never
 //     touched by olm's D-Bus DNS override.
 //  2. NetworkManager, queried live over D-Bus — NetworkManager's own view of
 //     each active connection's DNS servers, independent of what is currently
@@ -25,7 +31,11 @@ import (
 //     stub address, and stays accurate even if olm's own override has
 //     directly overwritten /etc/resolv.conf, without going stale the way a
 //     one-time backup snapshot would if the real DNS changes mid-override
-//     (e.g. the user switches WiFi networks).
+//     (e.g. the user switches WiFi networks). olm's own NetworkManager
+//     override is itself a NetworkManager-level global DNS override (see
+//     platform.GetNetworkManagerNameservers), so this also reads each
+//     device's raw DHCP lease and applied-connection settings, which that
+//     override does not touch, to recover the real servers.
 //  3. /etc/resolv.conf.olm.backup — written by olm before it overrides
 //     /etc/resolv.conf on non-systemd systems, for when NetworkManager isn't
 //     in use at all.
@@ -34,9 +44,13 @@ import (
 // Loopback and link-local addresses (e.g. 127.0.0.53, ::1) are excluded
 // because they are stub resolver addresses, not real upstream servers.
 func readSystemDNS() []string {
-	// Prefer systemd-resolved's resolved (non-stub) resolv.conf.
-	if servers := parseResolvConf("/run/systemd/resolve/resolv.conf"); len(servers) > 0 {
-		return servers
+	// Prefer systemd-resolved's resolved (non-stub) resolv.conf, but only if
+	// systemd-resolved is actually alive right now - see resolution order
+	// note above on why the file's existence alone isn't enough.
+	if platform.IsSystemdResolvedAvailable() {
+		if servers := parseResolvConf("/run/systemd/resolve/resolv.conf"); len(servers) > 0 {
+			return servers
+		}
 	}
 
 	if servers := readNetworkManagerDNS(); len(servers) > 0 {
