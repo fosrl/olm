@@ -231,6 +231,7 @@ func (o *Olm) registerAPICallbacks() {
 				Holepunch:     req.Holepunch,
 				TlsClientCert: req.TlsClientCert,
 				OrgID:         req.OrgID,
+				MatchDomains:  req.MatchDomains,
 			}
 
 			var err error
@@ -426,6 +427,11 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		}
 		if pm := o.getPeerManager(); pm != nil {
 			pm.SetPublicDNS(servers)
+		}
+		// Keep the DNS proxy's local-DNS fallback (used for MatchDomains
+		// misses) in sync with the host's real system DNS servers.
+		if o.dnsProxy != nil {
+			o.dnsProxy.SetLocalDNS(servers)
 		}
 
 		// UpstreamDNS is updated only when the caller did not supply an

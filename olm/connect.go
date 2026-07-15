@@ -145,7 +145,7 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	}
 
 	// Create and start DNS proxy
-	o.dnsProxy, err = dns.NewDNSProxy(o.middleDev, o.tunnelConfig.MTU, wgData.UtilitySubnet, o.tunnelConfig.UpstreamDNS, o.tunnelConfig.TunnelDNS, interfaceIP)
+	o.dnsProxy, err = dns.NewDNSProxy(o.middleDev, o.tunnelConfig.MTU, wgData.UtilitySubnet, o.tunnelConfig.UpstreamDNS, o.tunnelConfig.TunnelDNS, interfaceIP, o.tunnelConfig.MatchDomains, o.tunnelConfig.PublicDNS)
 	if err != nil {
 		logger.Error("Failed to create DNS proxy: %v", err)
 	}

@@ -79,6 +79,13 @@ type TunnelConfig struct {
 	PublicDNS     []string
 	InterfaceName string
 
+	// MatchDomains lists FQDN wildcard patterns (using * and ? wildcards) that
+	// olm should check against local records / resolve via UpstreamDNS. Queries
+	// that don't match any pattern are sent directly to the host's own system
+	// DNS servers (PublicDNS) instead of being handled by the DNS proxy at all.
+	// An empty MatchDomains matches every query, preserving prior behavior.
+	MatchDomains []string
+
 	// Advanced
 	Holepunch     bool
 	TlsClientCert string

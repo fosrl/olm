@@ -29,6 +29,7 @@ type ConnectionRequest struct {
 	PingInterval  string   `json:"pingInterval,omitempty"`
 	PingTimeout   string   `json:"pingTimeout,omitempty"`
 	OrgID         string   `json:"orgId,omitempty"`
+	MatchDomains  []string `json:"matchDomains,omitempty"`
 }
 
 // SwitchOrgRequest defines the structure for switching organizations
