@@ -196,7 +196,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 
 	// Perform rapid initial holepunch test (outside of lock to avoid blocking)
 	// This quickly determines if holepunch is viable and triggers relay if not
-	go pm.performRapidInitialTest(siteConfig.SiteId, siteConfig.Endpoint)
+	go pm.performRapidInitialTest(siteConfig.SiteId, siteConfig.Endpoint, siteConfig.LocalEndpoints)
 
 	return nil
 }
@@ -868,15 +868,43 @@ endpoint=%s:%d`, util.FixKey(peer.PublicKey), formattedEndpoint, relayPort)
 }
 
 // performRapidInitialTest performs a rapid holepunch test for a newly added peer.
-// If the test fails, it immediately requests relay to minimize connection delay.
-// This runs in a goroutine to avoid blocking AddPeer.
-func (pm *PeerManager) performRapidInitialTest(siteId int, endpoint string) {
+// It races a test of the public endpoint against a test of the local candidate endpoints
+// (if any) and waits for both to finish before acting, so we never request relay only to
+// have it immediately superseded by a local connection (or vice versa). Local wins if it's
+// viable at all; otherwise relay is requested only if the public endpoint isn't viable.
+// This runs in a goroutine to avoid blocking AddPeer - the peer already starts out pointed
+// at the public endpoint (set synchronously in AddPeer), so this just settles the peer onto
+// its steady-state connection within ~1-2 seconds.
+func (pm *PeerManager) performRapidInitialTest(siteId int, endpoint string, localEndpoints []string) {
 	if pm.peerMonitor == nil {
 		return
 	}
 
-	// Perform rapid test - this takes ~1-2 seconds max
-	holepunchViable := pm.peerMonitor.RapidTestPeer(siteId, endpoint)
+	var wg sync.WaitGroup
+	var localWinner string
+	var holepunchViable bool
+
+	if len(localEndpoints) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			localWinner = pm.peerMonitor.RapidTestLocalEndpoints(siteId, localEndpoints)
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		holepunchViable = pm.peerMonitor.RapidTestPeer(siteId, endpoint)
+	}()
+
+	wg.Wait()
+
+	if localWinner != "" {
+		logger.Info("Rapid test: local connection viable for site %d, switching to %s", siteId, localWinner)
+		pm.LocalPeer(siteId, localWinner)
+		return
+	}
 
 	if !holepunchViable {
 		// Holepunch failed rapid test, request relay immediately

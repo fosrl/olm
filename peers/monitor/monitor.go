@@ -370,6 +370,49 @@ func (pm *PeerMonitor) RapidTestPeer(siteID int, endpoint string) bool {
 	return false
 }
 
+// RapidTestLocalEndpoints performs a rapid connectivity test of local candidate endpoints
+// for a newly added peer, so local viability is known within the same ~1-2 second window as
+// RapidTestPeer's public-endpoint test (rather than waiting for the next backoff-loop tick,
+// which could be tens of seconds away). Candidates are tried in order (best-to-worst) and
+// the first reachable one wins. Returns the winning endpoint, or "" if none are reachable.
+func (pm *PeerMonitor) RapidTestLocalEndpoints(siteID int, endpoints []string) string {
+	if pm.holepunchTester == nil || len(endpoints) == 0 {
+		return ""
+	}
+
+	pm.mutex.Lock()
+	timeout := pm.rapidTestTimeout
+	pm.mutex.Unlock()
+
+	for _, endpoint := range endpoints {
+		result := pm.holepunchTester.TestEndpoint(endpoint, timeout)
+		if !result.Success {
+			continue
+		}
+
+		logger.Info("Rapid test: local endpoint %s for site %d SUCCEEDED (RTT: %v)", endpoint, siteID, result.RTT)
+
+		pm.mutex.Lock()
+		// Peer may have been removed while we were testing.
+		stillTracked := false
+		if _, tracked := pm.localEndpoints[siteID]; tracked {
+			stillTracked = true
+			pm.localActiveEndpoint[siteID] = endpoint
+			pm.localFailures[siteID] = 0
+		}
+		pm.mutex.Unlock()
+
+		if stillTracked {
+			pm.sendLocal(siteID, endpoint)
+		}
+
+		return endpoint
+	}
+
+	logger.Info("Rapid test: no local endpoint reachable for site %d", siteID)
+	return ""
+}
+
 // UpdatePeerEndpoint updates the monitor endpoint for a peer
 func (pm *PeerMonitor) UpdatePeerEndpoint(siteID int, monitorPeer string) {
 	pm.mutex.Lock()
