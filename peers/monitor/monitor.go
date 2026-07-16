@@ -67,6 +67,23 @@ type PeerMonitor struct {
 	holepunchMaxAttempts int          // max consecutive failures before triggering relay
 	holepunchFailures    map[int]int  // siteID -> consecutive failure count
 
+	// Local endpoint testing fields. Local endpoints are ip:port addresses on the
+	// site host's local network interfaces (ordered best-to-worst by the server).
+	// When one is reachable it takes priority over both the public endpoint and
+	// the relay.
+	localEndpoints      map[int][]string // siteID -> ordered candidate local endpoints
+	localActiveEndpoint map[int]string   // siteID -> currently active local endpoint ("" = not using local)
+	localFailures       map[int]int      // siteID -> consecutive failures of the active local endpoint
+	localTestTimeout    time.Duration    // timeout for each local endpoint probe
+
+	// Local connection switch callbacks, set by the PeerManager
+	localSwitchCallback   func(siteId int, endpoint string) // invoked when a local endpoint becomes active
+	localFallbackCallback func(siteId int)                  // invoked when we fall back from a local endpoint
+
+	// Local connection sender tracking, keyed by siteID (informational messages only)
+	localSendStops map[int]func()
+	localSendMu    sync.Mutex
+
 	// Exponential backoff fields for holepunch monitor
 	defaultHolepunchMinInterval time.Duration // Minimum interval (initial)
 	defaultHolepunchMaxInterval time.Duration
@@ -118,6 +135,11 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		relaySends:           make(map[string]func()),
 		holepunchMaxAttempts: 3, // Trigger relay after 3 consecutive failures
 		holepunchFailures:    make(map[int]int),
+		localEndpoints:       make(map[int][]string),
+		localActiveEndpoint:  make(map[int]string),
+		localFailures:        make(map[int]int),
+		localTestTimeout:     300 * time.Millisecond, // local network round trips should be fast
+		localSendStops:       make(map[int]func()),
 		// Rapid initial test settings: complete within ~1.5 seconds
 		rapidTestInterval:    200 * time.Millisecond, // 200ms between attempts
 		rapidTestTimeout:     400 * time.Millisecond, // 400ms timeout per attempt
@@ -235,7 +257,7 @@ func (pm *PeerMonitor) ResetPeerHolepunchInterval() {
 }
 
 // AddPeer adds a new peer to monitor
-func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, holepunchEndpoint string) error {
+func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, holepunchEndpoint string, localEndpoints []string) error {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 
@@ -253,6 +275,9 @@ func (pm *PeerMonitor) AddPeer(siteID int, endpoint string, holepunchEndpoint st
 
 	pm.holepunchEndpoints[siteID] = holepunchEndpoint
 	pm.holepunchStatus[siteID] = false // Initially unknown/disconnected
+	pm.localEndpoints[siteID] = localEndpoints
+	pm.localActiveEndpoint[siteID] = ""
+	pm.localFailures[siteID] = 0
 
 	if pm.running {
 		if err := client.StartMonitor(func(status ConnectionStatus) {
@@ -273,6 +298,25 @@ func (pm *PeerMonitor) UpdateHolepunchEndpoint(siteID int, endpoint string) {
 	defer pm.mutex.Unlock()
 	pm.holepunchEndpoints[siteID] = endpoint
 	logger.Debug("Updated holepunch endpoint for site %d to %s", siteID, endpoint)
+}
+
+// UpdateLocalEndpoints updates the candidate local endpoints for a peer
+func (pm *PeerMonitor) UpdateLocalEndpoints(siteID int, localEndpoints []string) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+	pm.localEndpoints[siteID] = localEndpoints
+	logger.Debug("Updated local endpoints for site %d: %v", siteID, localEndpoints)
+}
+
+// SetLocalConnectionCallbacks registers the callbacks invoked when a peer switches to
+// or falls back from a local network endpoint. onLocal is called with the endpoint that
+// became active; onFallback is called when we give up on the active local endpoint and
+// resume the normal public/relay monitoring logic.
+func (pm *PeerMonitor) SetLocalConnectionCallbacks(onLocal func(siteId int, endpoint string), onFallback func(siteId int)) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+	pm.localSwitchCallback = onLocal
+	pm.localFallbackCallback = onFallback
 }
 
 // RapidTestPeer performs a rapid connectivity test for a newly added peer.
@@ -359,15 +403,25 @@ func (pm *PeerMonitor) removePeerUnlocked(siteID int) {
 // RemovePeer stops monitoring a peer and removes it from the monitor
 func (pm *PeerMonitor) RemovePeer(siteID int) {
 	pm.mutex.Lock()
-	defer pm.mutex.Unlock()
 
 	// remove the holepunch endpoint info
 	delete(pm.holepunchEndpoints, siteID)
 	delete(pm.holepunchStatus, siteID)
 	delete(pm.relayedPeers, siteID)
 	delete(pm.holepunchFailures, siteID)
+	delete(pm.localEndpoints, siteID)
+	delete(pm.localActiveEndpoint, siteID)
+	delete(pm.localFailures, siteID)
 
 	pm.removePeerUnlocked(siteID)
+	pm.mutex.Unlock()
+
+	pm.localSendMu.Lock()
+	if stop, ok := pm.localSendStops[siteID]; ok {
+		stop()
+		delete(pm.localSendStops, siteID)
+	}
+	pm.localSendMu.Unlock()
 }
 
 func (pm *PeerMonitor) RemoveHolepunchEndpoint(siteID int) {
@@ -479,6 +533,47 @@ func (pm *PeerMonitor) sendUnRelay(siteID int) error {
 
 	logger.Info("Sent unrelay message for site %d (chain %s)", siteID, chainId)
 	return nil
+}
+
+// sendLocal notifies the server that this peer switched to a local network endpoint.
+// This is informational only (e.g. so the server can relay the information to newt) -
+// olm does not wait for an acknowledgement before using the local connection.
+func (pm *PeerMonitor) sendLocal(siteID int, endpoint string) {
+	if pm.wsClient == nil {
+		return
+	}
+
+	pm.localSendMu.Lock()
+	if stop, ok := pm.localSendStops[siteID]; ok {
+		stop()
+	}
+	stopFunc, _ := pm.wsClient.SendMessageInterval("olm/wg/local", map[string]interface{}{
+		"siteId":   siteID,
+		"endpoint": endpoint,
+	}, 2*time.Second, 5)
+	pm.localSendStops[siteID] = stopFunc
+	pm.localSendMu.Unlock()
+
+	logger.Info("Sent local-connection message for site %d (%s)", siteID, endpoint)
+}
+
+// sendUnLocal notifies the server that this peer fell back from its local network endpoint.
+func (pm *PeerMonitor) sendUnLocal(siteID int) {
+	if pm.wsClient == nil {
+		return
+	}
+
+	pm.localSendMu.Lock()
+	if stop, ok := pm.localSendStops[siteID]; ok {
+		stop()
+	}
+	stopFunc, _ := pm.wsClient.SendMessageInterval("olm/wg/unlocal", map[string]interface{}{
+		"siteId": siteID,
+	}, 2*time.Second, 5)
+	pm.localSendStops[siteID] = stopFunc
+	pm.localSendMu.Unlock()
+
+	logger.Info("Sent unlocal-connection message for site %d", siteID)
 }
 
 // CancelRelaySend stops the interval sender for the given chainId, if one exists.
@@ -628,7 +723,8 @@ func (pm *PeerMonitor) runHolepunchMonitor() {
 			timer.Reset(currentInterval)
 			logger.Debug("Holepunch monitor interval updated, reset to %v", currentInterval)
 		case <-timer.C:
-			anyStatusChanged := pm.checkHolepunchEndpoints()
+			localChanged := pm.checkLocalEndpoints()
+			anyStatusChanged := pm.checkHolepunchEndpoints() || localChanged
 
 			pm.mutex.Lock()
 			if anyStatusChanged {
@@ -650,6 +746,127 @@ func (pm *PeerMonitor) runHolepunchMonitor() {
 	}
 }
 
+// checkLocalEndpoints tests local network endpoints for sites that have them configured.
+// For a site not currently using a local endpoint, it probes each candidate in order
+// (candidates are ordered best-to-worst by the server) and switches to the first one that
+// succeeds. For a site already using a local endpoint, it re-tests that endpoint and falls
+// back to the normal public/relay logic after a few consecutive failures.
+// Returns true if any site's local-connection status changed.
+func (pm *PeerMonitor) checkLocalEndpoints() bool {
+	pm.mutex.Lock()
+	if !pm.running {
+		pm.mutex.Unlock()
+		return false
+	}
+	if pm.holepunchTester == nil {
+		pm.mutex.Unlock()
+		return false
+	}
+	candidates := make(map[int][]string, len(pm.localEndpoints))
+	for siteID, eps := range pm.localEndpoints {
+		if len(eps) > 0 {
+			candidates[siteID] = eps
+		}
+	}
+	active := make(map[int]string, len(pm.localActiveEndpoint))
+	for siteID, ep := range pm.localActiveEndpoint {
+		active[siteID] = ep
+	}
+	timeout := pm.localTestTimeout
+	maxAttempts := pm.holepunchMaxAttempts
+	pm.mutex.Unlock()
+
+	anyChanged := false
+
+	for siteID, endpoints := range candidates {
+		if activeEndpoint := active[siteID]; activeEndpoint != "" {
+			// Already using a local endpoint - verify it's still working.
+			result := pm.holepunchTester.TestEndpoint(activeEndpoint, timeout)
+
+			pm.mutex.Lock()
+			if _, stillTracked := pm.localEndpoints[siteID]; !stillTracked {
+				pm.mutex.Unlock()
+				continue // peer was removed while we were testing
+			}
+			if result.Success {
+				pm.localFailures[siteID] = 0
+				pm.mutex.Unlock()
+				continue
+			}
+			pm.localFailures[siteID]++
+			failureCount := pm.localFailures[siteID]
+			pm.mutex.Unlock()
+
+			if failureCount >= maxAttempts {
+				logger.Warn("Local endpoint %s for site %d failed %d times, falling back to public/relay logic", activeEndpoint, siteID, failureCount)
+
+				pm.mutex.Lock()
+				pm.localActiveEndpoint[siteID] = ""
+				pm.localFailures[siteID] = 0
+				pm.holepunchFailures[siteID] = 0 // don't immediately re-trigger relay on stale failures
+				pm.mutex.Unlock()
+
+				anyChanged = true
+				pm.deactivateLocalEndpoint(siteID)
+			}
+			continue
+		}
+
+		// Not currently using a local endpoint - probe candidates in order.
+		for _, endpoint := range endpoints {
+			result := pm.holepunchTester.TestEndpoint(endpoint, timeout)
+
+			pm.mutex.Lock()
+			if _, stillTracked := pm.localEndpoints[siteID]; !stillTracked {
+				pm.mutex.Unlock()
+				break // peer was removed while we were testing
+			}
+			if !result.Success {
+				pm.mutex.Unlock()
+				continue
+			}
+			pm.localActiveEndpoint[siteID] = endpoint
+			pm.localFailures[siteID] = 0
+			pm.mutex.Unlock()
+
+			logger.Info("Local endpoint %s for site %d is reachable (RTT: %v), switching to local connection", endpoint, siteID, result.RTT)
+			anyChanged = true
+			pm.activateLocalEndpoint(siteID, endpoint)
+			break
+		}
+	}
+
+	return anyChanged
+}
+
+// activateLocalEndpoint invokes the switch callback and notifies the server that a local
+// endpoint became active for the given site.
+func (pm *PeerMonitor) activateLocalEndpoint(siteID int, endpoint string) {
+	pm.mutex.Lock()
+	cb := pm.localSwitchCallback
+	pm.mutex.Unlock()
+
+	if cb != nil {
+		cb(siteID, endpoint)
+	}
+
+	pm.sendLocal(siteID, endpoint)
+}
+
+// deactivateLocalEndpoint invokes the fallback callback and notifies the server that the
+// given site fell back from its local endpoint.
+func (pm *PeerMonitor) deactivateLocalEndpoint(siteID int) {
+	pm.mutex.Lock()
+	cb := pm.localFallbackCallback
+	pm.mutex.Unlock()
+
+	if cb != nil {
+		cb(siteID)
+	}
+
+	pm.sendUnLocal(siteID)
+}
+
 // checkHolepunchEndpoints tests all holepunch endpoints
 // Returns true if any endpoint's status changed
 func (pm *PeerMonitor) checkHolepunchEndpoints() bool {
@@ -661,6 +878,9 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() bool {
 	}
 	endpoints := make(map[int]string, len(pm.holepunchEndpoints))
 	for siteID, endpoint := range pm.holepunchEndpoints {
+		if pm.localActiveEndpoint[siteID] != "" {
+			continue // using a local connection, skip public/relay monitoring
+		}
 		endpoints[siteID] = endpoint
 	}
 	timeout := pm.holepunchTimeout
@@ -776,6 +996,16 @@ func (pm *PeerMonitor) Close() {
 		delete(pm.relaySends, chainId)
 	}
 	pm.relaySendMu.Unlock()
+
+	// Stop all pending local-connection senders
+	pm.localSendMu.Lock()
+	for siteID, stop := range pm.localSendStops {
+		if stop != nil {
+			stop()
+		}
+		delete(pm.localSendStops, siteID)
+	}
+	pm.localSendMu.Unlock()
 
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()

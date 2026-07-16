@@ -86,6 +86,8 @@ func NewPeerManager(config PeerManagerConfig) *PeerManager {
 
 	pm.optimizerTrigger = make(chan struct{}, 1)
 
+	pm.peerMonitor.SetLocalConnectionCallbacks(pm.LocalPeer, pm.UnLocalPeer)
+
 	return pm
 }
 
@@ -181,7 +183,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
 	monitorPeer := net.JoinHostPort(monitorAddress, strconv.Itoa(int(siteConfig.ServerPort+1))) // +1 for the monitor port
 
-	err := pm.peerMonitor.AddPeer(siteConfig.SiteId, monitorPeer, siteConfig.Endpoint) // always use the real site endpoint for hole punch monitoring
+	err := pm.peerMonitor.AddPeer(siteConfig.SiteId, monitorPeer, siteConfig.Endpoint, siteConfig.LocalEndpoints) // always use the real site endpoint for hole punch monitoring
 	if err != nil {
 		logger.Warn("Failed to setup monitoring for site %d: %v", siteConfig.SiteId, err)
 	} else {
@@ -325,6 +327,10 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 	if !exists {
 		return fmt.Errorf("peer with site ID %d not found", siteConfig.SiteId)
 	}
+
+	// Preserve the currently active local endpoint (if any) across updates so an in-progress
+	// local connection isn't disrupted by an unrelated site update.
+	siteConfig.ActiveLocalEndpoint = oldPeer.ActiveLocalEndpoint
 
 	// Update aliases
 	// Remove old aliases
@@ -473,6 +479,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 	}
 
 	pm.peerMonitor.UpdateHolepunchEndpoint(siteConfig.SiteId, siteConfig.Endpoint)
+	pm.peerMonitor.UpdateLocalEndpoints(siteConfig.SiteId, siteConfig.LocalEndpoints)
 
 	monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
 	monitorPeer := net.JoinHostPort(monitorAddress, strconv.Itoa(int(siteConfig.ServerPort+1))) // +1 for the monitor port
@@ -814,6 +821,11 @@ func (pm *PeerManager) RemoveAlias(siteId int, aliasName string) error {
 func (pm *PeerManager) RelayPeer(siteId int, relayEndpoint string, relayPort uint16) {
 	pm.mu.Lock()
 	peer, exists := pm.peers[siteId]
+	if exists && peer.ActiveLocalEndpoint != "" {
+		pm.mu.Unlock()
+		logger.Info("Ignoring relay request for site %d: local connection is active", siteId)
+		return
+	}
 	if exists {
 		// Store the relay endpoint
 		peer.RelayEndpoint = relayEndpoint
@@ -926,6 +938,11 @@ func (pm *PeerManager) MarkPeerRelayed(siteID int, relayed bool) {
 func (pm *PeerManager) UnRelayPeer(siteId int, endpoint string) error {
 	pm.mu.Lock()
 	peer, exists := pm.peers[siteId]
+	if exists && peer.ActiveLocalEndpoint != "" {
+		pm.mu.Unlock()
+		logger.Info("Ignoring unrelay request for site %d: local connection is active", siteId)
+		return nil
+	}
 	if exists {
 		// Store the relay endpoint
 		peer.Endpoint = endpoint
@@ -956,6 +973,66 @@ endpoint=%s`, util.FixKey(peer.PublicKey), endpoint)
 
 	logger.Info("Switched peer %d back to direct connection at %s", siteId, endpoint)
 	return nil
+}
+
+// LocalPeer switches a peer to a local network endpoint discovered by the peer monitor.
+// Local endpoints take priority over both the public endpoint and the relay, so this
+// bypasses relay/public-endpoint bookkeeping entirely and just updates the WireGuard
+// endpoint directly.
+func (pm *PeerManager) LocalPeer(siteId int, localEndpoint string) {
+	pm.mu.Lock()
+	peer, exists := pm.peers[siteId]
+	if exists {
+		peer.ActiveLocalEndpoint = localEndpoint
+		pm.peers[siteId] = peer
+	}
+	pm.mu.Unlock()
+
+	if !exists {
+		logger.Error("Cannot switch to local connection: peer with site ID %d not found", siteId)
+		return
+	}
+
+	// Update only the endpoint for this peer (update_only preserves other settings)
+	wgConfig := fmt.Sprintf(`public_key=%s
+update_only=true
+endpoint=%s`, util.FixKey(peer.PublicKey), localEndpoint)
+
+	if err := pm.device.IpcSet(wgConfig); err != nil {
+		logger.Error("Failed to switch peer %d to local connection: %v", siteId, err)
+		return
+	}
+
+	logger.Info("Switched peer %d to local connection at %s", siteId, localEndpoint)
+}
+
+// UnLocalPeer switches a peer away from its active local endpoint back to the public
+// endpoint, resuming the normal public/relay monitoring logic from scratch (which will
+// re-trigger relay on its own if the public endpoint also turns out to be unreachable).
+func (pm *PeerManager) UnLocalPeer(siteId int) {
+	pm.mu.Lock()
+	peer, exists := pm.peers[siteId]
+	publicDNS := pm.publicDNS
+	if exists {
+		peer.ActiveLocalEndpoint = ""
+		pm.peers[siteId] = peer
+	}
+	pm.mu.Unlock()
+
+	if !exists {
+		logger.Error("Cannot fall back from local connection: peer with site ID %d not found", siteId)
+		return
+	}
+
+	resolved, err := util.ResolveDomainUpstream(formatEndpoint(peer.Endpoint), publicDNS)
+	if err != nil {
+		logger.Error("Failed to resolve fallback endpoint for peer %d: %v", siteId, err)
+		return
+	}
+
+	if err := pm.UnRelayPeer(siteId, resolved); err != nil {
+		logger.Error("Failed to fall back peer %d from local connection: %v", siteId, err)
+	}
 }
 
 // isBetterConnection returns true if connection quality (a) is better than (b).

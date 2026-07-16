@@ -8,16 +8,21 @@ type PeerAction struct {
 
 // UpdatePeerData represents the data needed to update a peer
 type SiteConfig struct {
-	SiteId        int      `json:"siteId"`
-	Name          string   `json:"name,omitempty"`
-	Endpoint      string   `json:"endpoint,omitempty"`
-	RelayEndpoint string   `json:"relayEndpoint,omitempty"`
-	PublicKey     string   `json:"publicKey,omitempty"`
-	ServerIP      string   `json:"serverIP,omitempty"`
-	ServerPort    uint16   `json:"serverPort,omitempty"`
-	RemoteSubnets []string `json:"remoteSubnets,omitempty"` // optional, array of subnets that this site can access
-	AllowedIps    []string `json:"allowedIps,omitempty"`    // optional, array of allowed IPs for the peer
-	Aliases       []Alias  `json:"aliases,omitempty"`       // optional, array of alias configurations
+	SiteId         int      `json:"siteId"`
+	Name           string   `json:"name,omitempty"`
+	Endpoint       string   `json:"endpoint,omitempty"`
+	LocalEndpoints []string `json:"localEndpoints,omitempty"` // optional, ip:port endpoints on the site host's local network interfaces, ordered best-to-worst
+	RelayEndpoint  string   `json:"relayEndpoint,omitempty"`
+	PublicKey      string   `json:"publicKey,omitempty"`
+	ServerIP       string   `json:"serverIP,omitempty"`
+	ServerPort     uint16   `json:"serverPort,omitempty"`
+	RemoteSubnets  []string `json:"remoteSubnets,omitempty"` // optional, array of subnets that this site can access
+	AllowedIps     []string `json:"allowedIps,omitempty"`    // optional, array of allowed IPs for the peer
+	Aliases        []Alias  `json:"aliases,omitempty"`       // optional, array of alias configurations
+
+	// ActiveLocalEndpoint tracks the local network endpoint currently in use for this
+	// peer, if any. Not part of the wire protocol; set internally by the PeerManager.
+	ActiveLocalEndpoint string `json:"-"`
 }
 
 type Alias struct {
