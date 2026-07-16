@@ -80,9 +80,9 @@ type PeerMonitor struct {
 	localSwitchCallback   func(siteId int, endpoint string) // invoked when a local endpoint becomes active
 	localFallbackCallback func(siteId int)                  // invoked when we fall back from a local endpoint
 
-	// Local connection sender tracking, keyed by siteID (informational messages only)
-	localSendStops map[int]func()
-	localSendMu    sync.Mutex
+	// Local connection sender tracking, keyed by chainId (informational messages only)
+	localSends  map[string]func()
+	localSendMu sync.Mutex
 
 	// Exponential backoff fields for holepunch monitor
 	defaultHolepunchMinInterval time.Duration // Minimum interval (initial)
@@ -139,7 +139,7 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		localActiveEndpoint:  make(map[int]string),
 		localFailures:        make(map[int]int),
 		localTestTimeout:     300 * time.Millisecond, // local network round trips should be fast
-		localSendStops:       make(map[int]func()),
+		localSends:           make(map[string]func()),
 		// Rapid initial test settings: complete within ~1.5 seconds
 		rapidTestInterval:    200 * time.Millisecond, // 200ms between attempts
 		rapidTestTimeout:     400 * time.Millisecond, // 400ms timeout per attempt
@@ -458,13 +458,6 @@ func (pm *PeerMonitor) RemovePeer(siteID int) {
 
 	pm.removePeerUnlocked(siteID)
 	pm.mutex.Unlock()
-
-	pm.localSendMu.Lock()
-	if stop, ok := pm.localSendStops[siteID]; ok {
-		stop()
-		delete(pm.localSendStops, siteID)
-	}
-	pm.localSendMu.Unlock()
 }
 
 func (pm *PeerMonitor) RemoveHolepunchEndpoint(siteID int) {
@@ -578,45 +571,73 @@ func (pm *PeerMonitor) sendUnRelay(siteID int) error {
 	return nil
 }
 
-// sendLocal notifies the server that this peer switched to a local network endpoint.
-// This is informational only (e.g. so the server can relay the information to newt) -
-// olm does not wait for an acknowledgement before using the local connection.
+// sendLocal notifies the server that this peer switched to a local network endpoint, with
+// retry keyed by chainId. This is informational (e.g. so the server can relay the information
+// to newt) - olm does not wait for an acknowledgement before using the local connection, but
+// it does stop retrying once the server acks via CancelLocalSend, same as relay/unrelay.
 func (pm *PeerMonitor) sendLocal(siteID int, endpoint string) {
 	if pm.wsClient == nil {
 		return
 	}
 
-	pm.localSendMu.Lock()
-	if stop, ok := pm.localSendStops[siteID]; ok {
-		stop()
-	}
+	chainId := generateChainId()
 	stopFunc, _ := pm.wsClient.SendMessageInterval("olm/wg/local", map[string]interface{}{
 		"siteId":   siteID,
 		"endpoint": endpoint,
-	}, 2*time.Second, 5)
-	pm.localSendStops[siteID] = stopFunc
+		"chainId":  chainId,
+	}, 2*time.Second, 10)
+
+	pm.localSendMu.Lock()
+	pm.localSends[chainId] = stopFunc
 	pm.localSendMu.Unlock()
 
-	logger.Info("Sent local-connection message for site %d (%s)", siteID, endpoint)
+	logger.Info("Sent local-connection message for site %d (%s, chain %s)", siteID, endpoint, chainId)
 }
 
-// sendUnLocal notifies the server that this peer fell back from its local network endpoint.
+// sendUnLocal notifies the server that this peer fell back from its local network endpoint,
+// with retry keyed by chainId.
 func (pm *PeerMonitor) sendUnLocal(siteID int) {
 	if pm.wsClient == nil {
 		return
 	}
 
-	pm.localSendMu.Lock()
-	if stop, ok := pm.localSendStops[siteID]; ok {
-		stop()
-	}
+	chainId := generateChainId()
 	stopFunc, _ := pm.wsClient.SendMessageInterval("olm/wg/unlocal", map[string]interface{}{
-		"siteId": siteID,
-	}, 2*time.Second, 5)
-	pm.localSendStops[siteID] = stopFunc
+		"siteId":  siteID,
+		"chainId": chainId,
+	}, 2*time.Second, 10)
+
+	pm.localSendMu.Lock()
+	pm.localSends[chainId] = stopFunc
 	pm.localSendMu.Unlock()
 
-	logger.Info("Sent unlocal-connection message for site %d", siteID)
+	logger.Info("Sent unlocal-connection message for site %d (chain %s)", siteID, chainId)
+}
+
+// CancelLocalSend stops the interval sender for the given chainId, if one exists.
+// If chainId is empty, all active local-connection senders are stopped.
+func (pm *PeerMonitor) CancelLocalSend(chainId string) {
+	pm.localSendMu.Lock()
+	defer pm.localSendMu.Unlock()
+
+	if chainId == "" {
+		for id, stop := range pm.localSends {
+			if stop != nil {
+				stop()
+			}
+			delete(pm.localSends, id)
+		}
+		logger.Info("Cancelled all local-connection senders")
+		return
+	}
+
+	if stop, ok := pm.localSends[chainId]; ok {
+		stop()
+		delete(pm.localSends, chainId)
+		logger.Info("Cancelled local-connection sender for chain %s", chainId)
+	} else {
+		logger.Warn("CancelLocalSend: no active sender for chain %s", chainId)
+	}
 }
 
 // CancelRelaySend stops the interval sender for the given chainId, if one exists.
@@ -1042,11 +1063,11 @@ func (pm *PeerMonitor) Close() {
 
 	// Stop all pending local-connection senders
 	pm.localSendMu.Lock()
-	for siteID, stop := range pm.localSendStops {
+	for chainId, stop := range pm.localSends {
 		if stop != nil {
 			stop()
 		}
-		delete(pm.localSendStops, siteID)
+		delete(pm.localSends, chainId)
 	}
 	pm.localSendMu.Unlock()
 

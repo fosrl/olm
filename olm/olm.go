@@ -536,6 +536,8 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	o.websocket.RegisterHandler("olm/wg/peer/update", o.handleWgPeerUpdate)
 	o.websocket.RegisterHandler("olm/wg/peer/relay", o.handleWgPeerRelay)
 	o.websocket.RegisterHandler("olm/wg/peer/unrelay", o.handleWgPeerUnrelay)
+	o.websocket.RegisterHandler("olm/wg/peer/local", o.handleWgPeerLocal)
+	o.websocket.RegisterHandler("olm/wg/peer/unlocal", o.handleWgPeerUnlocal)
 
 	// Handlers for managing remote subnets to a peer
 	o.websocket.RegisterHandler("olm/wg/peer/data/add", o.handleWgPeerAddData)

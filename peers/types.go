@@ -46,6 +46,13 @@ type UnRelayPeerData struct {
 	Endpoint string `json:"endpoint"`
 }
 
+// LocalPeerAckData represents the server's acknowledgement of an "olm/wg/local" or
+// "olm/wg/unlocal" message. olm has already applied the local connection switch by the time
+// it sends the notification, so the ack is only used to stop the retry sender.
+type LocalPeerAckData struct {
+	SiteId int `json:"siteId"`
+}
+
 // PeerAdd represents the data needed to add remote subnets to a peer
 type PeerAdd struct {
 	SiteId        int      `json:"siteId"`
