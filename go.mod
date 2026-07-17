@@ -32,4 +32,4 @@ require (
 )
 
 // To be used ONLY for local development
-// replace github.com/fosrl/newt => ../newt
+replace github.com/fosrl/newt => ../newt

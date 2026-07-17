@@ -259,7 +259,7 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 			}
 		}
 		if !subnetStillInUse {
-			if err := network.RemoveRoutes([]string{subnet}); err != nil {
+			if err := network.RemoveRoutes([]string{subnet}, pm.interfaceName); err != nil {
 				logger.Error("Failed to remove route for remote subnet %s: %v", subnet, err)
 			}
 		}
@@ -465,7 +465,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 			}
 		}
 		if !subnetStillInUse {
-			if err := network.RemoveRoutes([]string{subnet}); err != nil {
+			if err := network.RemoveRoutes([]string{subnet}, pm.interfaceName); err != nil {
 				logger.Error("Failed to remove route for subnet %s: %v", subnet, err)
 			}
 		}
@@ -733,7 +733,7 @@ func (pm *PeerManager) RemoveRemoteSubnet(siteId int, ip string) error {
 
 	// Only remove route if no other peer needs it
 	if !subnetStillInUse {
-		if err := network.RemoveRoutes([]string{ip}); err != nil {
+		if err := network.RemoveRoutes([]string{ip}, pm.interfaceName); err != nil {
 			return err
 		}
 	}
