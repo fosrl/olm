@@ -413,6 +413,83 @@ func (pm *PeerMonitor) RapidTestLocalEndpoints(siteID int, endpoints []string) s
 	return ""
 }
 
+// remainingLocalCandidates returns all of endpoints except exclude, preserving order.
+func remainingLocalCandidates(endpoints []string, exclude string) []string {
+	remaining := make([]string, 0, len(endpoints))
+	for _, ep := range endpoints {
+		if ep != exclude {
+			remaining = append(remaining, ep)
+		}
+	}
+	return remaining
+}
+
+// rapidTestOnLocalFallback runs a fast (~1-2 second) test of the public endpoint, racing it
+// against any remaining untried local candidates, immediately after we fall back from a dead
+// active local endpoint. Without this, the peer would sit on the public endpoint - which may
+// itself be unreachable - relying on the normal checkHolepunchEndpoints loop to notice, which
+// can take tens of seconds if the holepunch backoff interval had climbed while the local
+// endpoint was stable. If neither the public endpoint nor a local candidate is reachable, relay
+// is requested immediately. Mirrors PeerManager.performRapidInitialTest's race, but is triggered
+// by local-endpoint failure rather than initial peer setup.
+func (pm *PeerMonitor) rapidTestOnLocalFallback(siteID int, publicEndpoint string, remainingLocal []string) {
+	if pm.holepunchTester == nil {
+		return
+	}
+
+	var wg sync.WaitGroup
+	var localWinner string
+	var holepunchViable bool
+
+	if len(remainingLocal) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			localWinner = pm.RapidTestLocalEndpoints(siteID, remainingLocal)
+		}()
+	}
+
+	if publicEndpoint != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			holepunchViable = pm.RapidTestPeer(siteID, publicEndpoint)
+		}()
+	}
+
+	wg.Wait()
+
+	pm.mutex.Lock()
+	_, stillTracked := pm.localEndpoints[siteID]
+	noLocalActiveYet := pm.localActiveEndpoint[siteID] == ""
+	switchCb := pm.localSwitchCallback
+	pm.mutex.Unlock()
+
+	if !stillTracked {
+		return // peer was removed while we were testing
+	}
+
+	if localWinner != "" {
+		// RapidTestLocalEndpoints already recorded the new active endpoint and notified the
+		// server, but doesn't move the WireGuard peer itself - do that here, unless a
+		// concurrent checkLocalEndpoints tick already beat us to activating something.
+		if noLocalActiveYet && switchCb != nil {
+			switchCb(siteID, localWinner)
+		}
+		logger.Info("Rapid fallback test: local connection %s viable for site %d", localWinner, siteID)
+		return
+	}
+
+	if !holepunchViable {
+		logger.Warn("Rapid fallback test: site %d unreachable on public endpoint after local fallback, requesting relay", siteID)
+		if pm.wsClient != nil {
+			pm.sendRelay(siteID)
+		}
+	} else {
+		logger.Info("Rapid fallback test: site %d reachable on public endpoint after local fallback", siteID)
+	}
+}
+
 // UpdatePeerEndpoint updates the monitor endpoint for a peer
 func (pm *PeerMonitor) UpdatePeerEndpoint(siteID int, monitorPeer string) {
 	pm.mutex.Lock()
@@ -877,10 +954,23 @@ func (pm *PeerMonitor) checkLocalEndpoints() bool {
 				pm.localActiveEndpoint[siteID] = ""
 				pm.localFailures[siteID] = 0
 				pm.holepunchFailures[siteID] = 0 // don't immediately re-trigger relay on stale failures
+				// The holepunch backoff timer keeps climbing while a local endpoint is
+				// active (checkHolepunchEndpoints skips those sites but backoff still
+				// applies), so reset it here to avoid the resumed public/relay logic
+				// being stuck polling at a stale, heavily-backed-off interval.
+				pm.holepunchCurrentInterval = pm.holepunchMinInterval
+				publicEndpoint := pm.holepunchEndpoints[siteID]
+				remainingLocal := remainingLocalCandidates(pm.localEndpoints[siteID], activeEndpoint)
 				pm.mutex.Unlock()
 
 				anyChanged = true
 				pm.deactivateLocalEndpoint(siteID)
+
+				// Don't wait out the next backed-off checkHolepunchEndpoints tick to find out
+				// whether the public endpoint is reachable - rapidly test it (and any untried
+				// local candidates) now so a total connectivity loss triggers relay within
+				// ~1-2 seconds instead of potentially tens of seconds.
+				go pm.rapidTestOnLocalFallback(siteID, publicEndpoint, remainingLocal)
 			}
 			continue
 		}
