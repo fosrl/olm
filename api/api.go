@@ -51,6 +51,7 @@ type PeerStatus struct {
 	LastSeen           time.Time     `json:"lastSeen"`
 	Endpoint           string        `json:"endpoint,omitempty"`
 	IsRelay            bool          `json:"isRelay"`
+	IsLocal            bool          `json:"isLocal"` // true when connected via a local network endpoint, bypassing both the public endpoint and relay
 	PeerIP             string        `json:"peerAddress,omitempty"`
 	HolepunchConnected bool          `json:"holepunchConnected"`
 }
@@ -229,7 +230,7 @@ func (s *API) Stop() error {
 	return nil
 }
 
-func (s *API) AddPeerStatus(siteID int, siteName string, connected bool, rtt time.Duration, endpoint string, isRelay bool) {
+func (s *API) AddPeerStatus(siteID int, siteName string, connected bool, rtt time.Duration, endpoint string, isRelay bool, isLocal bool) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 
@@ -247,10 +248,11 @@ func (s *API) AddPeerStatus(siteID int, siteName string, connected bool, rtt tim
 	status.LastSeen = time.Now()
 	status.Endpoint = endpoint
 	status.IsRelay = isRelay
+	status.IsLocal = isLocal
 }
 
-// UpdatePeerStatus updates the status of a peer including endpoint and relay info
-func (s *API) UpdatePeerStatus(siteID int, connected bool, rtt time.Duration, endpoint string, isRelay bool) {
+// UpdatePeerStatus updates the status of a peer including endpoint, relay, and local info
+func (s *API) UpdatePeerStatus(siteID int, connected bool, rtt time.Duration, endpoint string, isRelay bool, isLocal bool) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 
@@ -267,6 +269,7 @@ func (s *API) UpdatePeerStatus(siteID int, connected bool, rtt time.Duration, en
 	status.LastSeen = time.Now()
 	status.Endpoint = endpoint
 	status.IsRelay = isRelay
+	status.IsLocal = isLocal
 }
 
 func (s *API) RemovePeerStatus(siteID int) { // remove the peer from the status map
@@ -363,6 +366,31 @@ func (s *API) UpdatePeerRelayStatus(siteID int, endpoint string, isRelay bool) {
 
 	status.Endpoint = endpoint
 	status.IsRelay = isRelay
+	if isRelay {
+		// Relay and local are mutually exclusive; local always wins when viable.
+		status.IsLocal = false
+	}
+}
+
+// UpdatePeerLocalStatus updates only the local-connection status of a peer. A peer using a
+// local connection is never simultaneously relayed.
+func (s *API) UpdatePeerLocalStatus(siteID int, endpoint string, isLocal bool) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+
+	status, exists := s.peerStatuses[siteID]
+	if !exists {
+		status = &PeerStatus{
+			SiteID: siteID,
+		}
+		s.peerStatuses[siteID] = status
+	}
+
+	status.Endpoint = endpoint
+	status.IsLocal = isLocal
+	if isLocal {
+		status.IsRelay = false
+	}
 }
 
 // UpdatePeerHolepunchStatus updates the holepunch connection status of a peer

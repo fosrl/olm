@@ -502,8 +502,17 @@ func (pm *PeerMonitor) handleConnectionStatusChange(siteID int, status Connectio
 		pm.wgConnectionRTT[siteID] = status.RTT
 	}
 	isRelayed := pm.relayedPeers[siteID]
+	localEndpoint := pm.localActiveEndpoint[siteID]
 	endpoint := pm.holepunchEndpoints[siteID]
 	pm.mutex.Unlock()
+
+	isLocal := localEndpoint != ""
+	if isLocal {
+		// Report the active local endpoint rather than the public one; local and relay
+		// are mutually exclusive.
+		endpoint = localEndpoint
+		isRelayed = false
+	}
 
 	// Log status changes
 	if !exists || previousStatus != status.Connected {
@@ -516,7 +525,7 @@ func (pm *PeerMonitor) handleConnectionStatusChange(siteID int, status Connectio
 
 	// Update API with connection status
 	if pm.apiServer != nil {
-		pm.apiServer.UpdatePeerStatus(siteID, status.Connected, status.RTT, endpoint, isRelayed)
+		pm.apiServer.UpdatePeerStatus(siteID, status.Connected, status.RTT, endpoint, isRelayed, isLocal)
 	}
 
 	// Notify route optimizer of status change
@@ -1002,8 +1011,10 @@ func (pm *PeerMonitor) checkHolepunchEndpoints() bool {
 			wgConnected := pm.wgConnectionStatus[siteID]
 			pm.mutex.Unlock()
 
-			// Update API - use holepunch endpoint and relay status
-			pm.apiServer.UpdatePeerStatus(siteID, wgConnected, result.RTT, endpoint, isRelayed)
+			// Update API - use holepunch endpoint and relay status. Sites with an active
+			// local endpoint are filtered out of this loop above, so isLocal is always
+			// false here.
+			pm.apiServer.UpdatePeerStatus(siteID, wgConnected, result.RTT, endpoint, isRelayed, false)
 		}
 
 		// Handle relay logic based on holepunch status

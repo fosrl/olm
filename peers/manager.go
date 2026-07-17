@@ -192,7 +192,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 
 	pm.peers[siteConfig.SiteId] = siteConfig
 
-	pm.APIServer.AddPeerStatus(siteConfig.SiteId, siteConfig.Name, false, 0, siteConfig.Endpoint, false)
+	pm.APIServer.AddPeerStatus(siteConfig.SiteId, siteConfig.Name, false, 0, siteConfig.Endpoint, false, false)
 
 	// Perform rapid initial holepunch test (outside of lock to avoid blocking)
 	// This quickly determines if holepunch is viable and triggers relay if not
@@ -1031,6 +1031,10 @@ endpoint=%s`, util.FixKey(peer.PublicKey), localEndpoint)
 		return
 	}
 
+	if pm.APIServer != nil {
+		pm.APIServer.UpdatePeerLocalStatus(siteId, localEndpoint, true)
+	}
+
 	logger.Info("Switched peer %d to local connection at %s", siteId, localEndpoint)
 }
 
@@ -1060,6 +1064,11 @@ func (pm *PeerManager) UnLocalPeer(siteId int) {
 
 	if err := pm.UnRelayPeer(siteId, resolved); err != nil {
 		logger.Error("Failed to fall back peer %d from local connection: %v", siteId, err)
+		return
+	}
+
+	if pm.APIServer != nil {
+		pm.APIServer.UpdatePeerLocalStatus(siteId, resolved, false)
 	}
 }
 
