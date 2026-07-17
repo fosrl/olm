@@ -32,7 +32,7 @@ type OlmConfig struct {
 	// via UpstreamDNS. Queries for domains that don't match any pattern are sent
 	// directly to the host's own system DNS servers instead. Empty means match
 	// every domain (i.e. the feature is disabled).
-	MatchDomains []string `json:"matchDomains"`
+	MatchDomains []string `json:"matchDomainsDNS"`
 
 	// Logging
 	LogLevel string `json:"logLevel"`
@@ -237,7 +237,7 @@ func loadConfigFromEnv(config *OlmConfig) {
 		config.UpstreamDNS = []string{val}
 		config.sources["upstreamDNS"] = string(SourceEnv)
 	}
-	if val := os.Getenv("MATCH_DOMAINS"); val != "" {
+	if val := os.Getenv("MATCH_DOMAINS_DNS"); val != "" {
 		config.MatchDomains = splitComma(val)
 		config.sources["matchDomains"] = string(SourceEnv)
 	}
@@ -331,7 +331,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	var upstreamDNSFlag string
 	serviceFlags.StringVar(&upstreamDNSFlag, "upstream-dns", "", "Upstream DNS server(s) (comma-separated, default: 8.8.8.8:53)")
 	var matchDomainsFlag string
-	serviceFlags.StringVar(&matchDomainsFlag, "match-domains", "", "FQDN wildcard patterns (comma-separated, e.g. '*.proxy.internal,*.host-0?.autoco.internal') to check against local records/upstream DNS; queries for non-matching domains are sent directly to the system's DNS servers (default: match all domains)")
+	serviceFlags.StringVar(&matchDomainsFlag, "match-domains-dns", "", "FQDN wildcard patterns (comma-separated, e.g. '*.proxy.internal,*.host-0?.autoco.internal') to check against local records/upstream DNS; queries for non-matching domains are sent directly to the system's DNS servers (default: match all domains)")
 	serviceFlags.StringVar(&config.LogLevel, "log-level", config.LogLevel, "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
 	serviceFlags.StringVar(&config.InterfaceName, "interface", config.InterfaceName, "Name of the WireGuard interface")
 	serviceFlags.StringVar(&config.HTTPAddr, "http-addr", config.HTTPAddr, "HTTP server address (e.g., ':9452')")
@@ -625,7 +625,7 @@ func (c *OlmConfig) ShowConfig() {
 	fmt.Printf("  mtu          = %d [%s]\n", c.MTU, getSource("mtu"))
 	fmt.Printf("  dns          = %s [%s]\n", c.DNS, getSource("dns"))
 	fmt.Printf("  upstream-dns = %v [%s]\n", c.UpstreamDNS, getSource("upstreamDNS"))
-	fmt.Printf("  match-domains = %v [%s]\n", c.MatchDomains, getSource("matchDomains"))
+	fmt.Printf("  match-domains-dns = %v [%s]\n", c.MatchDomains, getSource("matchDomains"))
 	fmt.Printf("  interface    = %s [%s]\n", c.InterfaceName, getSource("interface"))
 
 	// Logging
