@@ -109,4 +109,12 @@ type TunnelConfig struct {
 	InitialPostures    map[string]any
 
 	DisableRelay bool
+
+	// PreferLocalRoutes, when enabled, adds tunnel routes with an explicit
+	// high metric/priority so that an overlapping local/connected route to
+	// the same destination always takes precedence over the VPN route,
+	// rather than the two racing based on insertion order. Defaults to
+	// false, preserving the routing behavior from before this option was
+	// introduced.
+	PreferLocalRoutes bool
 }

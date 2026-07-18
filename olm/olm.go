@@ -398,6 +398,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 	o.tunnelRunning = true // Also set it here in case it is called externally
 	o.tunnelConfig = config
+	network.PreferLocalRoutes = config.PreferLocalRoutes
 
 	// Determine whether the system DNS monitor should also manage UpstreamDNS.
 	// If the caller did not provide an explicit UpstreamDNS (it was defaulted to
