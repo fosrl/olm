@@ -27,6 +27,13 @@ type OlmConfig struct {
 	UpstreamDNS   []string `json:"upstreamDNS"`
 	InterfaceName string   `json:"interface"`
 
+	// MatchDomains lists FQDN wildcard patterns (using * and ? wildcards, e.g.
+	// "*.proxy.internal") that olm should check against local records / resolve
+	// via UpstreamDNS. Queries for domains that don't match any pattern are sent
+	// directly to the host's own system DNS servers instead. Empty means match
+	// every domain (i.e. the feature is disabled).
+	MatchDomains []string `json:"matchDomainsDNS"`
+
 	// Logging
 	LogLevel string `json:"logLevel"`
 
@@ -40,11 +47,12 @@ type OlmConfig struct {
 	PingTimeout  string `json:"pingTimeout"`
 
 	// Advanced
-	DisableHolepunch bool   `json:"disableHolepunch"`
-	TlsClientCert    string `json:"tlsClientCert"`
-	OverrideDNS      bool   `json:"overrideDNS"`
-	TunnelDNS        bool   `json:"tunnelDNS"`
-	DisableRelay     bool   `json:"disableRelay"`
+	DisableHolepunch  bool   `json:"disableHolepunch"`
+	TlsClientCert     string `json:"tlsClientCert"`
+	OverrideDNS       bool   `json:"overrideDNS"`
+	TunnelDNS         bool   `json:"tunnelDNS"`
+	DisableRelay      bool   `json:"disableRelay"`
+	PreferLocalRoutes bool   `json:"preferLocalRoutes"`
 	// DoNotCreateNewClient bool   `json:"doNotCreateNewClient"`
 
 	// Parsed values (not in JSON)
@@ -99,6 +107,7 @@ func DefaultConfig() *OlmConfig {
 	config.sources["mtu"] = string(SourceDefault)
 	config.sources["dns"] = string(SourceDefault)
 	config.sources["upstreamDNS"] = string(SourceDefault)
+	config.sources["matchDomains"] = string(SourceDefault)
 	config.sources["logLevel"] = string(SourceDefault)
 	config.sources["interface"] = string(SourceDefault)
 	config.sources["enableApi"] = string(SourceDefault)
@@ -110,6 +119,7 @@ func DefaultConfig() *OlmConfig {
 	config.sources["overrideDNS"] = string(SourceDefault)
 	config.sources["tunnelDNS"] = string(SourceDefault)
 	config.sources["disableRelay"] = string(SourceDefault)
+	config.sources["preferLocalRoutes"] = string(SourceDefault)
 	// config.sources["doNotCreateNewClient"] = string(SourceDefault)
 
 	return config
@@ -229,6 +239,10 @@ func loadConfigFromEnv(config *OlmConfig) {
 		config.UpstreamDNS = []string{val}
 		config.sources["upstreamDNS"] = string(SourceEnv)
 	}
+	if val := os.Getenv("MATCH_DOMAINS_DNS"); val != "" {
+		config.MatchDomains = splitComma(val)
+		config.sources["matchDomains"] = string(SourceEnv)
+	}
 	if val := os.Getenv("LOG_LEVEL"); val != "" {
 		config.LogLevel = val
 		config.sources["logLevel"] = string(SourceEnv)
@@ -269,6 +283,10 @@ func loadConfigFromEnv(config *OlmConfig) {
 		config.DisableRelay = true
 		config.sources["disableRelay"] = string(SourceEnv)
 	}
+	if val := os.Getenv("PREFER_LOCAL_ROUTES"); val == "true" {
+		config.PreferLocalRoutes = true
+		config.sources["preferLocalRoutes"] = string(SourceEnv)
+	}
 	if val := os.Getenv("TUNNEL_DNS"); val == "true" {
 		config.TunnelDNS = true
 		config.sources["tunnelDNS"] = string(SourceEnv)
@@ -285,25 +303,27 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 
 	// Store original values to detect changes
 	origValues := map[string]interface{}{
-		"endpoint":         config.Endpoint,
-		"id":               config.ID,
-		"secret":           config.Secret,
-		"org":              config.OrgID,
-		"userToken":        config.UserToken,
-		"mtu":              config.MTU,
-		"dns":              config.DNS,
-		"upstreamDNS":      fmt.Sprintf("%v", config.UpstreamDNS),
-		"logLevel":         config.LogLevel,
-		"interface":        config.InterfaceName,
-		"httpAddr":         config.HTTPAddr,
-		"socketPath":       config.SocketPath,
-		"pingInterval":     config.PingInterval,
-		"pingTimeout":      config.PingTimeout,
-		"enableApi":        config.EnableAPI,
-		"disableHolepunch": config.DisableHolepunch,
-		"overrideDNS":      config.OverrideDNS,
-		"disableRelay":     config.DisableRelay,
-		"tunnelDNS":        config.TunnelDNS,
+		"endpoint":          config.Endpoint,
+		"id":                config.ID,
+		"secret":            config.Secret,
+		"org":               config.OrgID,
+		"userToken":         config.UserToken,
+		"mtu":               config.MTU,
+		"dns":               config.DNS,
+		"upstreamDNS":       fmt.Sprintf("%v", config.UpstreamDNS),
+		"matchDomains":      fmt.Sprintf("%v", config.MatchDomains),
+		"logLevel":          config.LogLevel,
+		"interface":         config.InterfaceName,
+		"httpAddr":          config.HTTPAddr,
+		"socketPath":        config.SocketPath,
+		"pingInterval":      config.PingInterval,
+		"pingTimeout":       config.PingTimeout,
+		"enableApi":         config.EnableAPI,
+		"disableHolepunch":  config.DisableHolepunch,
+		"overrideDNS":       config.OverrideDNS,
+		"disableRelay":      config.DisableRelay,
+		"preferLocalRoutes": config.PreferLocalRoutes,
+		"tunnelDNS":         config.TunnelDNS,
 		// "doNotCreateNewClient": config.DoNotCreateNewClient,
 	}
 
@@ -317,6 +337,8 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	serviceFlags.StringVar(&config.DNS, "dns", config.DNS, "DNS server to use")
 	var upstreamDNSFlag string
 	serviceFlags.StringVar(&upstreamDNSFlag, "upstream-dns", "", "Upstream DNS server(s) (comma-separated, default: 8.8.8.8:53)")
+	var matchDomainsFlag string
+	serviceFlags.StringVar(&matchDomainsFlag, "match-domains-dns", "", "FQDN wildcard patterns (comma-separated, e.g. '*.proxy.internal,*.host-0?.autoco.internal') to check against local records/upstream DNS; queries for non-matching domains are sent directly to the system's DNS servers (default: match all domains)")
 	serviceFlags.StringVar(&config.LogLevel, "log-level", config.LogLevel, "Log level (DEBUG, INFO, WARN, ERROR, FATAL)")
 	serviceFlags.StringVar(&config.InterfaceName, "interface", config.InterfaceName, "Name of the WireGuard interface")
 	serviceFlags.StringVar(&config.HTTPAddr, "http-addr", config.HTTPAddr, "HTTP server address (e.g., ':9452')")
@@ -327,6 +349,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	serviceFlags.BoolVar(&config.DisableHolepunch, "disable-holepunch", config.DisableHolepunch, "Disable hole punching")
 	serviceFlags.BoolVar(&config.OverrideDNS, "override-dns", config.OverrideDNS, "When enabled, the client uses custom DNS servers to resolve internal resources and aliases. This overrides your system's default DNS settings. Queries that cannot be resolved as a Pangolin resource will be forwarded to your configured Upstream DNS Server. (default false)")
 	serviceFlags.BoolVar(&config.DisableRelay, "disable-relay", config.DisableRelay, "Disable relay connections")
+	serviceFlags.BoolVar(&config.PreferLocalRoutes, "prefer-local-routes", config.PreferLocalRoutes, "Add tunnel routes with a high metric so overlapping local/connected routes take precedence (default false)")
 	serviceFlags.BoolVar(&config.TunnelDNS, "tunnel-dns", config.TunnelDNS, "When enabled, DNS queries are routed through the tunnel for remote resolution. To ensure queries are tunneled correctly, you must define the DNS server as a Pangolin resource and enter its address as an Upstream DNS Server. (default false)")
 	// serviceFlags.BoolVar(&config.DoNotCreateNewClient, "do-not-create-new-client", config.DoNotCreateNewClient, "Do not create new client")
 
@@ -346,6 +369,11 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 				config.UpstreamDNS = append(config.UpstreamDNS, dns)
 			}
 		}
+	}
+
+	// Parse match domains flag if provided
+	if matchDomainsFlag != "" {
+		config.MatchDomains = splitComma(matchDomainsFlag)
 	}
 
 	// Track which values were changed by CLI args
@@ -372,6 +400,9 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	}
 	if fmt.Sprintf("%v", config.UpstreamDNS) != origValues["upstreamDNS"].(string) {
 		config.sources["upstreamDNS"] = string(SourceCLI)
+	}
+	if fmt.Sprintf("%v", config.MatchDomains) != origValues["matchDomains"].(string) {
+		config.sources["matchDomains"] = string(SourceCLI)
 	}
 	if config.LogLevel != origValues["logLevel"].(string) {
 		config.sources["logLevel"] = string(SourceCLI)
@@ -402,6 +433,9 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	}
 	if config.DisableRelay != origValues["disableRelay"].(bool) {
 		config.sources["disableRelay"] = string(SourceCLI)
+	}
+	if config.PreferLocalRoutes != origValues["preferLocalRoutes"].(bool) {
+		config.sources["preferLocalRoutes"] = string(SourceCLI)
 	}
 	if config.TunnelDNS != origValues["tunnelDNS"].(bool) {
 		config.sources["tunnelDNS"] = string(SourceCLI)
@@ -481,6 +515,10 @@ func mergeConfigs(dest, src *OlmConfig) {
 		dest.UpstreamDNS = src.UpstreamDNS
 		dest.sources["upstreamDNS"] = string(SourceFile)
 	}
+	if len(src.MatchDomains) > 0 {
+		dest.MatchDomains = src.MatchDomains
+		dest.sources["matchDomains"] = string(SourceFile)
+	}
 	if src.LogLevel != "" && src.LogLevel != "INFO" {
 		dest.LogLevel = src.LogLevel
 		dest.sources["logLevel"] = string(SourceFile)
@@ -529,6 +567,10 @@ func mergeConfigs(dest, src *OlmConfig) {
 	if src.DisableRelay {
 		dest.DisableRelay = src.DisableRelay
 		dest.sources["disableRelay"] = string(SourceFile)
+	}
+	if src.PreferLocalRoutes {
+		dest.PreferLocalRoutes = src.PreferLocalRoutes
+		dest.sources["preferLocalRoutes"] = string(SourceFile)
 	}
 	// if src.DoNotCreateNewClient {
 	// 	dest.DoNotCreateNewClient = src.DoNotCreateNewClient
@@ -598,6 +640,7 @@ func (c *OlmConfig) ShowConfig() {
 	fmt.Printf("  mtu          = %d [%s]\n", c.MTU, getSource("mtu"))
 	fmt.Printf("  dns          = %s [%s]\n", c.DNS, getSource("dns"))
 	fmt.Printf("  upstream-dns = %v [%s]\n", c.UpstreamDNS, getSource("upstreamDNS"))
+	fmt.Printf("  match-domains-dns = %v [%s]\n", c.MatchDomains, getSource("matchDomains"))
 	fmt.Printf("  interface    = %s [%s]\n", c.InterfaceName, getSource("interface"))
 
 	// Logging
@@ -621,6 +664,7 @@ func (c *OlmConfig) ShowConfig() {
 	fmt.Printf("  override-dns          = %v [%s]\n", c.OverrideDNS, getSource("overrideDNS"))
 	fmt.Printf("  tunnel-dns            = %v [%s]\n", c.TunnelDNS, getSource("tunnelDNS"))
 	fmt.Printf("  disable-relay         = %v [%s]\n", c.DisableRelay, getSource("disableRelay"))
+	fmt.Printf("  prefer-local-routes   = %v [%s]\n", c.PreferLocalRoutes, getSource("preferLocalRoutes"))
 	// fmt.Printf("  do-not-create-new-client = %v [%s]\n", c.DoNotCreateNewClient, getSource("doNotCreateNewClient"))
 	if c.TlsClientCert != "" {
 		fmt.Printf("  tls-cert              = %s [%s]\n", c.TlsClientCert, getSource("tlsClientCert"))

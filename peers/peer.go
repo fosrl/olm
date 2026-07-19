@@ -10,17 +10,26 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-// ConfigurePeer sets up or updates a peer within the WireGuard device
+// ConfigurePeer sets up or updates a peer within the WireGuard device.
+// If siteConfig.ActiveLocalEndpoint is set, it takes priority over both the relay and the
+// public endpoint since it's a directly-reachable address on the site host's local network.
 func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes.Key, relay bool, persistentKeepalive int, publicDNS []string) error {
-	var endpoint string
-	if relay && siteConfig.RelayEndpoint != "" {
-		endpoint = formatEndpoint(siteConfig.RelayEndpoint)
+	var siteHost string
+	if siteConfig.ActiveLocalEndpoint != "" {
+		// Local endpoints are already literal ip:port pairs on the local network, no DNS resolution needed.
+		siteHost = siteConfig.ActiveLocalEndpoint
 	} else {
-		endpoint = formatEndpoint(siteConfig.Endpoint)
-	}
-	siteHost, err := util.ResolveDomainUpstream(endpoint, publicDNS)
-	if err != nil {
-		return fmt.Errorf("failed to resolve endpoint for site %d: %v", siteConfig.SiteId, err)
+		var endpoint string
+		if relay && siteConfig.RelayEndpoint != "" {
+			endpoint = formatEndpoint(siteConfig.RelayEndpoint)
+		} else {
+			endpoint = formatEndpoint(siteConfig.Endpoint)
+		}
+		var err error
+		siteHost, err = util.ResolveDomainUpstream(endpoint, publicDNS)
+		if err != nil {
+			return fmt.Errorf("failed to resolve endpoint for site %d: %v", siteConfig.SiteId, err)
+		}
 	}
 
 	// Split off the CIDR of the server IP which is just a string and add /32 for the allowed IP
@@ -66,8 +75,7 @@ func ConfigurePeer(dev *device.Device, siteConfig SiteConfig, privateKey wgtypes
 	config := configBuilder.String()
 	logger.Debug("Configuring peer with config: %s", config)
 
-	err = dev.IpcSet(config)
-	if err != nil {
+	if err := dev.IpcSet(config); err != nil {
 		return fmt.Errorf("failed to configure WireGuard peer: %v", err)
 	}
 

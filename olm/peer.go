@@ -293,6 +293,71 @@ func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 	pm.UnRelayPeer(relayData.SiteId, primaryRelay)
 }
 
+// handleWgPeerLocal handles the server's acknowledgement of an "olm/wg/local" message.
+// olm already switched the peer to the local endpoint before sending that message (it
+// doesn't wait for permission, unlike relay), so all this needs to do is stop the retry
+// sender for the given chain.
+func (o *Olm) handleWgPeerLocal(msg websocket.WSMessage) {
+	logger.Debug("Received local-peer ack message: %v", msg.Data)
+
+	pm := o.getPeerManager()
+	if pm == nil {
+		logger.Debug("Ignoring local ack message: peerManager is nil (shutdown in progress)")
+		return
+	}
+
+	jsonData, err := json.Marshal(msg.Data)
+	if err != nil {
+		logger.Error("Error marshaling data: %v", err)
+		return
+	}
+
+	var localData struct {
+		peers.LocalPeerAckData
+		ChainId string `json:"chainId"`
+	}
+	if err := json.Unmarshal(jsonData, &localData); err != nil {
+		logger.Error("Error unmarshaling local ack data: %v", err)
+		return
+	}
+
+	if monitor := pm.GetPeerMonitor(); monitor != nil {
+		monitor.CancelLocalSend(localData.ChainId)
+	}
+}
+
+// handleWgPeerUnlocal handles the server's acknowledgement of an "olm/wg/unlocal" message.
+// Same as handleWgPeerLocal, olm has already fallen back from the local endpoint by the time
+// it sends the notification, so this just stops the retry sender.
+func (o *Olm) handleWgPeerUnlocal(msg websocket.WSMessage) {
+	logger.Debug("Received unlocal-peer ack message: %v", msg.Data)
+
+	pm := o.getPeerManager()
+	if pm == nil {
+		logger.Debug("Ignoring unlocal ack message: peerManager is nil (shutdown in progress)")
+		return
+	}
+
+	jsonData, err := json.Marshal(msg.Data)
+	if err != nil {
+		logger.Error("Error marshaling data: %v", err)
+		return
+	}
+
+	var localData struct {
+		peers.LocalPeerAckData
+		ChainId string `json:"chainId"`
+	}
+	if err := json.Unmarshal(jsonData, &localData); err != nil {
+		logger.Error("Error unmarshaling unlocal ack data: %v", err)
+		return
+	}
+
+	if monitor := pm.GetPeerMonitor(); monitor != nil {
+		monitor.CancelLocalSend(localData.ChainId)
+	}
+}
+
 func (o *Olm) handleWgPeerHolepunchAddSite(msg websocket.WSMessage) {
 	logger.Debug("Received peer-handshake message: %v", msg.Data)
 

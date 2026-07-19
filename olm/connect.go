@@ -145,7 +145,7 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	}
 
 	// Create and start DNS proxy
-	o.dnsProxy, err = dns.NewDNSProxy(o.middleDev, o.tunnelConfig.MTU, wgData.UtilitySubnet, o.tunnelConfig.UpstreamDNS, o.tunnelConfig.TunnelDNS, interfaceIP)
+	o.dnsProxy, err = dns.NewDNSProxy(o.middleDev, o.tunnelConfig.MTU, wgData.UtilitySubnet, o.tunnelConfig.UpstreamDNS, o.tunnelConfig.TunnelDNS, interfaceIP, o.tunnelConfig.MatchDomains, o.tunnelConfig.PublicDNS)
 	if err != nil {
 		logger.Error("Failed to create DNS proxy: %v", err)
 	}
@@ -192,7 +192,7 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 				siteEndpoint = site.Endpoint
 			}
 
-			o.apiServer.AddPeerStatus(site.SiteId, site.Name, false, 0, siteEndpoint, false)
+			o.apiServer.AddPeerStatus(site.SiteId, site.Name, false, 0, siteEndpoint, false, false)
 		}
 
 		// we still call this to add the aliases for jit lookup but we just do that then pass inside. need to skip the above so we dont add to the api

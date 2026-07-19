@@ -79,6 +79,13 @@ type TunnelConfig struct {
 	PublicDNS     []string
 	InterfaceName string
 
+	// MatchDomains lists FQDN wildcard patterns (using * and ? wildcards) that
+	// olm should check against local records / resolve via UpstreamDNS. Queries
+	// that don't match any pattern are sent directly to the host's own system
+	// DNS servers (PublicDNS) instead of being handled by the DNS proxy at all.
+	// An empty MatchDomains matches every query, preserving prior behavior.
+	MatchDomains []string
+
 	// Advanced
 	Holepunch     bool
 	TlsClientCert string
@@ -102,4 +109,12 @@ type TunnelConfig struct {
 	InitialPostures    map[string]any
 
 	DisableRelay bool
+
+	// PreferLocalRoutes, when enabled, adds tunnel routes with an explicit
+	// high metric/priority so that an overlapping local/connected route to
+	// the same destination always takes precedence over the VPN route,
+	// rather than the two racing based on insertion order. Defaults to
+	// false, preserving the routing behavior from before this option was
+	// introduced.
+	PreferLocalRoutes bool
 }

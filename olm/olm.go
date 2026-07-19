@@ -231,6 +231,7 @@ func (o *Olm) registerAPICallbacks() {
 				Holepunch:     req.Holepunch,
 				TlsClientCert: req.TlsClientCert,
 				OrgID:         req.OrgID,
+				MatchDomains:  req.MatchDomains,
 			}
 
 			var err error
@@ -397,6 +398,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 	o.tunnelRunning = true // Also set it here in case it is called externally
 	o.tunnelConfig = config
+	network.PreferLocalRoutes = config.PreferLocalRoutes
 
 	// Determine whether the system DNS monitor should also manage UpstreamDNS.
 	// If the caller did not provide an explicit UpstreamDNS (it was defaulted to
@@ -426,6 +428,11 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		}
 		if pm := o.getPeerManager(); pm != nil {
 			pm.SetPublicDNS(servers)
+		}
+		// Keep the DNS proxy's local-DNS fallback (used for MatchDomains
+		// misses) in sync with the host's real system DNS servers.
+		if o.dnsProxy != nil {
+			o.dnsProxy.SetLocalDNS(servers)
 		}
 
 		// UpstreamDNS is updated only when the caller did not supply an
@@ -530,6 +537,8 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	o.websocket.RegisterHandler("olm/wg/peer/update", o.handleWgPeerUpdate)
 	o.websocket.RegisterHandler("olm/wg/peer/relay", o.handleWgPeerRelay)
 	o.websocket.RegisterHandler("olm/wg/peer/unrelay", o.handleWgPeerUnrelay)
+	o.websocket.RegisterHandler("olm/wg/peer/local", o.handleWgPeerLocal)
+	o.websocket.RegisterHandler("olm/wg/peer/unlocal", o.handleWgPeerUnlocal)
 
 	// Handlers for managing remote subnets to a peer
 	o.websocket.RegisterHandler("olm/wg/peer/data/add", o.handleWgPeerAddData)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +39,20 @@ type DNSProxy struct {
 	middleDevice *device.MiddleDevice // Reference to MiddleDevice for packet filtering and TUN writes
 	recordStore  *DNSRecordStore      // Local DNS records
 
+	// matchDomains lists the FQDN wildcard patterns (using * and ? wildcards, see
+	// matchWildcard) that this proxy is responsible for. Queries whose name matches
+	// one of these patterns are checked against local records and, failing that,
+	// forwarded to upstreamDNS. Queries that match none of the patterns are sent
+	// directly to localDNS instead, bypassing local records and upstreamDNS
+	// entirely. An empty matchDomains means "match everything" (i.e. behave as if
+	// this feature were not configured).
+	matchDomains []string
+	// localDNS holds the host's own system DNS servers (as reported by
+	// SystemDNSMonitor / PublicDNS), used to resolve queries that don't match
+	// matchDomains rather than sending them upstream or through the tunnel.
+	localDNS   []string
+	matchMu    sync.RWMutex
+
 	// Tunnel DNS fields - for sending queries over WireGuard
 	tunnelIP          netip.Addr   // WireGuard interface IP (source for tunneled queries)
 	tunnelStack       *stack.Stack // Separate netstack for outbound tunnel queries
@@ -55,8 +70,14 @@ type DNSProxy struct {
 	wg     sync.WaitGroup
 }
 
-// NewDNSProxy creates a new DNS proxy
-func NewDNSProxy(middleDevice *device.MiddleDevice, mtu int, utilitySubnet string, upstreamDns []string, tunnelDns bool, tunnelIP string) (*DNSProxy, error) {
+// NewDNSProxy creates a new DNS proxy.
+//
+// matchDomains, if non-empty, restricts local-record lookup and upstream
+// forwarding to queries whose name matches one of the given wildcard patterns
+// (see matchWildcard). Queries that match none of the patterns are instead
+// forwarded directly to localDNS (the host's own system DNS servers). Pass an
+// empty matchDomains to match every query, preserving prior behavior.
+func NewDNSProxy(middleDevice *device.MiddleDevice, mtu int, utilitySubnet string, upstreamDns []string, tunnelDns bool, tunnelIP string, matchDomains []string, localDNS []string) (*DNSProxy, error) {
 	proxyIP, err := PickIPFromSubnet(utilitySubnet)
 	if err != nil {
 		return nil, fmt.Errorf("failed to pick DNS proxy IP from subnet: %v", err)
@@ -76,6 +97,8 @@ func NewDNSProxy(middleDevice *device.MiddleDevice, mtu int, utilitySubnet strin
 		tunnelDNS:         tunnelDns,
 		recordStore:       NewDNSRecordStore(),
 		tunnelActivePorts: make(map[uint16]bool),
+		matchDomains:      matchDomains,
+		localDNS:          localDNS,
 		ctx:               ctx,
 		cancel:            cancel,
 	}
@@ -383,6 +406,27 @@ func (p *DNSProxy) handleDNSQuery(udpConn *gonet.UDPConn, queryData []byte, clie
 	question := msg.Question[0]
 	logger.Debug("DNS query for %s (type %s)", question.Name, dns.TypeToString[question.Qtype])
 
+	// If matchDomains is configured and this query's name doesn't match any of
+	// the configured patterns, skip local records and upstream entirely and
+	// send it straight to the host's own system DNS servers.
+	if !p.matchesConfiguredDomains(question.Name) {
+		logger.Debug("Query for %s does not match configured domains, forwarding to local DNS %v", question.Name, p.getLocalDNS())
+		response := p.forwardToLocalDNS(msg)
+		if response == nil {
+			logger.Error("Failed to get DNS response for %s from local DNS", question.Name)
+			return
+		}
+		responseData, err := response.Pack()
+		if err != nil {
+			logger.Error("Failed to pack DNS response: %v", err)
+			return
+		}
+		if _, err := udpConn.WriteTo(responseData, clientAddr); err != nil {
+			logger.Error("Failed to send DNS response: %v", err)
+		}
+		return
+	}
+
 	// Check if we have local records for this query
 	var response *dns.Msg
 	if question.Qtype == dns.TypeA || question.Qtype == dns.TypeAAAA || question.Qtype == dns.TypePTR {
@@ -503,6 +547,77 @@ func (p *DNSProxy) checkLocalRecords(query *dns.Msg, question dns.Question) *dns
 	}
 
 	return response
+}
+
+// matchesConfiguredDomains reports whether name matches one of the configured
+// matchDomains wildcard patterns. If matchDomains is empty, every name is
+// considered a match (i.e. the feature is disabled).
+func (p *DNSProxy) matchesConfiguredDomains(name string) bool {
+	p.matchMu.RLock()
+	patterns := p.matchDomains
+	p.matchMu.RUnlock()
+
+	if len(patterns) == 0 {
+		return true
+	}
+
+	name = strings.ToLower(dns.Fqdn(name))
+	for _, pattern := range patterns {
+		pattern = strings.ToLower(dns.Fqdn(pattern))
+		if matchWildcard(pattern, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// getLocalDNS returns the currently configured local (system) DNS servers.
+func (p *DNSProxy) getLocalDNS() []string {
+	p.matchMu.RLock()
+	defer p.matchMu.RUnlock()
+	return p.localDNS
+}
+
+// forwardToLocalDNS forwards a DNS query directly to the host's own system DNS
+// servers (localDNS), always using host networking regardless of tunnelDNS -
+// these queries are for domains the caller has explicitly excluded from
+// Pangolin resolution, so they should never traverse the tunnel.
+func (p *DNSProxy) forwardToLocalDNS(query *dns.Msg) *dns.Msg {
+	servers := p.getLocalDNS()
+	if len(servers) == 0 {
+		logger.Warn("No local DNS servers configured, dropping query for %s", query.Question[0].Name)
+		return nil
+	}
+
+	var lastErr error
+	for _, server := range servers {
+		response, err := p.queryUpstreamDirect(server, query, 2*time.Second)
+		if err == nil {
+			return response
+		}
+		lastErr = err
+	}
+	logger.Error("All local DNS servers failed: %v", lastErr)
+	return nil
+}
+
+// SetMatchDomains replaces the list of wildcard domain patterns (see
+// matchWildcard) that this proxy checks against local records / upstream DNS.
+// Queries not matching any pattern are sent to localDNS instead. Pass an
+// empty slice to match every query (i.e. disable filtering).
+func (p *DNSProxy) SetMatchDomains(patterns []string) {
+	p.matchMu.Lock()
+	defer p.matchMu.Unlock()
+	p.matchDomains = patterns
+}
+
+// SetLocalDNS replaces the list of local (host system) DNS servers used to
+// resolve queries that don't match matchDomains. Servers must be in
+// "host:port" format (e.g. "192.168.1.1:53").
+func (p *DNSProxy) SetLocalDNS(servers []string) {
+	p.matchMu.Lock()
+	defer p.matchMu.Unlock()
+	p.localDNS = servers
 }
 
 // forwardToUpstream forwards a DNS query to upstream DNS servers
