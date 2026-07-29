@@ -58,7 +58,28 @@ type PeerManager struct {
 
 	routeOptimizerStop chan struct{}
 	optimizerTrigger   chan struct{}
+
+	// lastOwnerChange tracks, per allowed-IP CIDR, when ownership was last transferred.
+	// Used to enforce a cooldown so routes don't flap between two similarly-performing sites.
+	lastOwnerChange map[string]time.Time
 }
+
+const (
+	// routeSwitchRTTMargin requires a candidate site's RTT to be at least this much
+	// better (as a fraction) than the current owner's before we consider it worth
+	// switching, so two similarly-performing sites don't flap back and forth.
+	routeSwitchRTTMargin = 0.20 // candidate must be >=20% faster
+
+	// routeSwitchMinAbsMargin is a floor on the RTT improvement required, so the
+	// percentage margin above doesn't become meaningless at very low RTTs (e.g. a
+	// 1ms vs 0.8ms "20% improvement" shouldn't trigger a switch).
+	routeSwitchMinAbsMargin = 5 * time.Millisecond
+
+	// routeSwitchCooldown is the minimum time to wait after transferring ownership
+	// of a route before it can be transferred again, unless the current owner's
+	// connection quality degrades (disconnects or falls back to relay).
+	routeSwitchCooldown = 30 * time.Second
+)
 
 // NewPeerManager creates a new PeerManager with an internal PeerMonitor
 func NewPeerManager(config PeerManagerConfig) *PeerManager {
@@ -72,6 +93,7 @@ func NewPeerManager(config PeerManagerConfig) *PeerManager {
 		allowedIPClaims: make(map[string]map[int]bool),
 		APIServer:       config.APIServer,
 		publicDNS:       config.PublicDNS,
+		lastOwnerChange: make(map[string]time.Time),
 	}
 
 	// Create the peer monitor
@@ -515,6 +537,7 @@ func (pm *PeerManager) releaseAllowedIP(siteId int, cidr string) (newOwner int, 
 		delete(claims, siteId)
 		if len(claims) == 0 {
 			delete(pm.allowedIPClaims, cidr)
+			delete(pm.lastOwnerChange, cidr)
 		}
 	}
 
@@ -1114,6 +1137,49 @@ func (pm *PeerManager) selectBestOwner(claims map[int]bool) int {
 	return bestSiteId
 }
 
+// shouldSwitchOwner decides whether ownership of cidr should move from the current
+// owner to the candidate. It applies hysteresis so two sites with roughly equal
+// performance don't flap back and forth:
+//   - A switch driven by connectivity class (connected vs not, direct vs relayed) is
+//     always allowed immediately - these are correctness issues, not noise.
+//   - A switch driven purely by RTT requires both a minimum improvement margin and
+//     that the cooldown since the last switch of this route has elapsed.
+//
+// Must be called with pm.mu held.
+func (pm *PeerManager) shouldSwitchOwner(cidr string, currentSiteId, candidateSiteId int) bool {
+	curConn, curRelay, curRTT := pm.peerMonitor.GetConnectionQuality(currentSiteId)
+	candConn, candRelay, candRTT := pm.peerMonitor.GetConnectionQuality(candidateSiteId)
+
+	// Connectivity-class differences (up/down, direct/relayed) are not subject to
+	// hysteresis - always act on them so we don't stay stuck on a broken route.
+	if curConn != candConn || curRelay != candRelay {
+		return true
+	}
+	if !curConn {
+		return false // both down, nothing to do
+	}
+
+	// Same connectivity class: only switch on a meaningful, sustained RTT win.
+	if candRTT == 0 || curRTT == 0 {
+		return false
+	}
+	minImprovement := time.Duration(float64(curRTT) * routeSwitchRTTMargin)
+	if minImprovement < routeSwitchMinAbsMargin {
+		minImprovement = routeSwitchMinAbsMargin
+	}
+	if candRTT > curRTT-minImprovement {
+		return false // not enough of an improvement to be worth switching
+	}
+
+	if lastChange, ok := pm.lastOwnerChange[cidr]; ok {
+		if time.Since(lastChange) < routeSwitchCooldown {
+			return false // switched too recently, avoid flapping
+		}
+	}
+
+	return true
+}
+
 // getWireGuardAllowedIPs returns the full set of IPs that should be in WireGuard
 // for a peer: server IP /32 plus all shared IPs it currently owns.
 // Must be called with pm.mu held.
@@ -1181,6 +1247,7 @@ func (pm *PeerManager) optimizeRoutes() {
 		if !hasOwner {
 			// No current owner, just assign
 			pm.allowedIPOwners[cidr] = bestOwner
+			pm.lastOwnerChange[cidr] = time.Now()
 			if toPeer, exists := pm.peers[bestOwner]; exists {
 				if err := AddAllowedIP(pm.device, toPeer.PublicKey, cidr); err != nil {
 					logger.Error("Failed to assign IP %s to site %d: %v", cidr, bestOwner, err)
@@ -1189,10 +1256,16 @@ func (pm *PeerManager) optimizeRoutes() {
 			continue
 		}
 
+		if !pm.shouldSwitchOwner(cidr, currentOwner, bestOwner) {
+			continue // Not a big enough or sustained enough improvement, avoid flapping
+		}
+
 		logger.Info("Route optimizer: moving %s from site %d to site %d", cidr, currentOwner, bestOwner)
 		if err := pm.transferOwnership(cidr, currentOwner, bestOwner); err != nil {
 			logger.Error("Failed to transfer ownership of %s from site %d to site %d: %v",
 				cidr, currentOwner, bestOwner, err)
+		} else {
+			pm.lastOwnerChange[cidr] = time.Now()
 		}
 	}
 }
