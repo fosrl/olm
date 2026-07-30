@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/fosrl/newt/bind"
 	"github.com/fosrl/newt/clients/permissions"
+	"github.com/fosrl/newt/exitnode"
 	"github.com/fosrl/newt/holepunch"
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/network"
@@ -74,6 +76,11 @@ type Olm struct {
 
 	stopRegister   func()
 	updateRegister func(newData any)
+
+	// Exit node ping dance, run before registration so the server can pick
+	// the best exit node (mirrors newt's newt/ping/request flow).
+	stopPingRequest    func()
+	pendingPingChainId string
 
 	stopPeerSends   map[string]func()
 	stopPeerInits   map[string]func()
@@ -550,6 +557,61 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	o.websocket.RegisterHandler("olm/wg/peer/chain/cancel", o.handleCancelChain)
 	o.websocket.RegisterHandler("olm/sync", o.handleSync)
 
+	o.websocket.RegisterHandler("olm/ping/exitNodes", func(msg websocket.WSMessage) {
+		logger.Debug("Received exit node ping request")
+
+		if o.stopPingRequest != nil {
+			o.stopPingRequest()
+			o.stopPingRequest = nil
+		}
+
+		if !o.tunnelRunning {
+			logger.Debug("Tunnel is no longer running, skipping exit node ping")
+			return
+		}
+
+		var exitNodeData exitnode.ExitNodeData
+		jsonData, err := json.Marshal(msg.Data)
+		if err != nil {
+			logger.Error("Error marshaling exit node data: %v", err)
+			return
+		}
+		if err := json.Unmarshal(jsonData, &exitNodeData); err != nil {
+			logger.Error("Error unmarshaling exit node data: %v", err)
+			return
+		}
+
+		if exitNodeData.ChainId != "" {
+			if exitNodeData.ChainId != o.pendingPingChainId {
+				logger.Debug("Discarding duplicate/stale olm/ping/exitNodes (chainId=%s, expected=%s)", exitNodeData.ChainId, o.pendingPingChainId)
+				return
+			}
+			o.pendingPingChainId = ""
+		}
+
+		if len(exitNodeData.ExitNodes) == 0 {
+			logger.Info("No exit nodes provided")
+			return
+		}
+
+		pingResults := exitnode.PingExitNodes(exitNodeData.ExitNodes, "", false)
+
+		publicKey := o.privateKey.PublicKey()
+		logger.Debug("Sending registration message to server with public key: %s, relay: %v, pingResults: %+v", publicKey, !config.Holepunch, pingResults)
+		o.stopRegister, o.updateRegister = o.websocket.SendMessageInterval("olm/wg/register", map[string]any{
+			"publicKey":   publicKey.String(),
+			"relay":       !config.Holepunch,
+			"olmVersion":  o.olmConfig.Version,
+			"olmAgent":    o.olmConfig.Agent,
+			"orgId":       config.OrgID,
+			"userToken":   userToken,
+			"fingerprint": o.fingerprint,
+			"postures":    o.postures,
+			"pingResults": pingResults,
+			"chainId":     generateChainId(), // use a random chainId for registration updates - it won't be used for cancellation since registration is a one-time message but for tracking the session
+		}, 2*time.Second, 20) // after 18 tries on the server side we send the error so dont change this without changing that
+	})
+
 	o.websocket.OnConnect(func() error {
 		logger.Info("Websocket Connected")
 
@@ -568,8 +630,6 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 			return nil
 		}
 
-		publicKey := o.privateKey.PublicKey()
-
 		// delay for 500ms to allow for time for the hp to get processed
 		time.Sleep(500 * time.Millisecond)
 
@@ -579,19 +639,36 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 			return nil
 		}
 
-		if o.stopRegister == nil {
-			logger.Debug("Sending registration message to server with public key: %s and relay: %v", publicKey, !config.Holepunch)
-			o.stopRegister, o.updateRegister = o.websocket.SendMessageInterval("olm/wg/register", map[string]any{
-				"publicKey":   publicKey.String(),
-				"relay":       !config.Holepunch,
-				"olmVersion":  o.olmConfig.Version,
-				"olmAgent":    o.olmConfig.Agent,
-				"orgId":       config.OrgID,
-				"userToken":   userToken,
-				"fingerprint": o.fingerprint,
-				"postures":    o.postures,
-				"chainId":     generateChainId(), // use a random chainId for registration updates - it won't be used for cancellation since registration is a one-time message but for tracking the session
-			}, 2*time.Second, 20) // after 18 tries on the server side we send the error so dont change this without changing that
+		if o.stopRegister == nil && o.stopPingRequest == nil {
+			publicKey := o.privateKey.PublicKey()
+
+			pingChainId := generateChainId()
+			o.pendingPingChainId = pingChainId
+			logger.Debug("Requesting exit nodes from server for ping selection")
+			o.stopPingRequest, _ = o.websocket.SendMessageInterval("olm/ping/request", map[string]any{
+				"chainId": pingChainId,
+			}, 3*time.Second, 10)
+
+			// Backwards-compatible one-shot registration, with no pingResults,
+			// for servers that predate the exit node ping dance. Servers that
+			// support it ignore backwardsCompatible register messages (see
+			// handleOlmRegisterMessage server-side) and wait for the real
+			// registration sent from the olm/ping/exitNodes handler above.
+			bcChainId := generateChainId()
+			if err := o.websocket.SendMessage("olm/wg/register", map[string]any{
+				"publicKey":           publicKey.String(),
+				"relay":               !config.Holepunch,
+				"olmVersion":          o.olmConfig.Version,
+				"olmAgent":            o.olmConfig.Agent,
+				"orgId":               config.OrgID,
+				"userToken":           userToken,
+				"fingerprint":         o.fingerprint,
+				"postures":            o.postures,
+				"backwardsCompatible": true,
+				"chainId":             bcChainId,
+			}); err != nil {
+				logger.Error("Failed to send registration message: %v", err)
+			}
 
 			// Invoke onRegistered callback if configured
 			if o.olmConfig.OnRegistered != nil {
@@ -686,6 +763,12 @@ func (o *Olm) Close() {
 		logger.Debug("Stopping registration interval")
 		o.stopRegister()
 		o.stopRegister = nil
+	}
+
+	if o.stopPingRequest != nil {
+		logger.Debug("Stopping exit node ping request interval")
+		o.stopPingRequest()
+		o.stopPingRequest = nil
 	}
 
 	// Stop all pending peer init and send senders before closing websocket

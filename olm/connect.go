@@ -51,6 +51,11 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		o.updateRegister = nil
 	}
 
+	if o.stopPingRequest != nil {
+		o.stopPingRequest()
+		o.stopPingRequest = nil
+	}
+
 	// if there is an existing tunnel then close it
 	if o.dev != nil {
 		logger.Info("Got new message. Closing existing tunnel!")
