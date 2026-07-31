@@ -91,6 +91,7 @@ type Client struct {
 	isDisconnected    bool // Flag to track if client is intentionally disconnected
 	reconnectMux      sync.RWMutex
 	pingInterval      time.Duration
+	pongWait          time.Duration // read deadline window; if no pong/message arrives within it, the connection is considered dead
 	onConnect         func() error
 	onTokenUpdate     func(token string, exitNodes []ExitNode)
 	onAuthError       func(statusCode int, message string) // Callback for auth errors
@@ -175,6 +176,16 @@ func NewClient(ID, secret, userToken, orgId, endpoint string, pingInterval time.
 		OrgID:     orgId,
 	}
 
+	// Read deadline window: must exceed pingInterval so a healthy connection
+	// (which gets a pong/message at least every pingInterval) is never torn
+	// down, but a dead/half-open one — including one where writes keep
+	// "succeeding" because small pings fit in the kernel send buffer even
+	// under total packet loss — is detected within ~2 ping cycles.
+	pongWait := pingInterval * 2
+	if pongWait < 20*time.Second {
+		pongWait = 20 * time.Second
+	}
+
 	client := &Client{
 		config:            config,
 		baseURL:           endpoint, // default value
@@ -183,6 +194,7 @@ func NewClient(ID, secret, userToken, orgId, endpoint string, pingInterval time.
 		reconnectInterval: 3 * time.Second,
 		isConnected:       false,
 		pingInterval:      pingInterval,
+		pongWait:          pongWait,
 		clientType:        "olm",
 		pingDone:          make(chan struct{}),
 	}
@@ -593,6 +605,18 @@ func (c *Client) establishConnection() error {
 	c.conn = conn
 	c.setConnected(true)
 
+	// Arm a read deadline and refresh it whenever a pong arrives. Combined with
+	// the protocol-level ping sent alongside the app-level one in sendPing,
+	// this detects a dead or half-open connection (e.g. the route disappearing
+	// on sleep/resume, or total packet loss) that a write-side check alone
+	// misses: small periodic pings fit in the kernel send buffer and keep
+	// "succeeding" even when nothing is actually reaching the peer.
+	_ = c.conn.SetReadDeadline(time.Now().Add(c.pongWait))
+	c.conn.SetPongHandler(func(appData string) error {
+		_ = c.conn.SetReadDeadline(time.Now().Add(c.pongWait))
+		return nil
+	})
+
 	// Note: ping monitor is NOT started here - it will be started when
 	// StartPingMonitor() is called after registration completes
 
@@ -712,6 +736,13 @@ func (c *Client) sendPing() {
 	if err == nil {
 		err = c.conn.WriteJSON(pingMsg)
 	}
+	if err == nil {
+		// Protocol-level ping: a standards-compliant server replies with a
+		// PONG, which refreshes the read deadline via SetPongHandler. This is
+		// what actually detects a half-open connection where writes still
+		// "succeed" (buffered by the kernel) but nothing is reaching the peer.
+		_ = c.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeDeadline))
+	}
 	c.writeMux.Unlock()
 	if err != nil {
 		// Check if we're shutting down before logging error and reconnecting
@@ -817,6 +848,13 @@ func (c *Client) readPumpWithDisconnectDetection() {
 			return
 		default:
 			messageType, p, err := c.conn.ReadMessage()
+			if err == nil {
+				// Any inbound traffic means the peer is alive — extend the
+				// read deadline (also covers servers that answer the
+				// app-level "olm/ping" with a message rather than a
+				// protocol pong).
+				_ = c.conn.SetReadDeadline(time.Now().Add(c.pongWait))
+			}
 			if err != nil {
 				// Check if we're shutting down or explicitly disconnected before logging error
 				select {
