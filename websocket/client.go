@@ -22,6 +22,14 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// writeDeadline bounds how long a websocket write may block before it is
+// treated as a failure. Without this, a write to a TCP connection whose
+// underlying network interface has disappeared (e.g. laptop sleep/resume,
+// Wi-Fi roam) can sit buffered in the kernel for minutes without erroring,
+// which prevents the ping monitor from ever detecting the dead connection
+// and reconnecting.
+const writeDeadline = 10 * time.Second
+
 // AuthError represents an authentication/authorization error (401/403)
 type AuthError struct {
 	StatusCode int
@@ -268,6 +276,9 @@ func (c *Client) SendMessage(messageType string, data interface{}) error {
 
 	c.writeMux.Lock()
 	defer c.writeMux.Unlock()
+	if err := c.conn.SetWriteDeadline(time.Now().Add(writeDeadline)); err != nil {
+		return err
+	}
 	return c.conn.WriteJSON(msg)
 }
 
@@ -697,7 +708,10 @@ func (c *Client) sendPing() {
 	logger.Debug("websocket: Sending ping: %+v", pingMsg)
 
 	c.writeMux.Lock()
-	err := c.conn.WriteJSON(pingMsg)
+	err := c.conn.SetWriteDeadline(time.Now().Add(writeDeadline))
+	if err == nil {
+		err = c.conn.WriteJSON(pingMsg)
+	}
 	c.writeMux.Unlock()
 	if err != nil {
 		// Check if we're shutting down before logging error and reconnecting
