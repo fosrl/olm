@@ -30,6 +30,16 @@ type ExitNodeConfig struct {
 	Aliases   []string `json:"aliases,omitempty"`
 }
 
+// ExitNodeUpdateData describes a change to data associated with the currently
+// connected exit node, e.g. when a resource's alias is renamed on the server.
+// Aliases have no per-alias address here since every exit node alias resolves
+// to the exit node's own ServerIP. More fields can be added here in the
+// future as other exit node data becomes updatable.
+type ExitNodeUpdateData struct {
+	OldAliases []string `json:"oldAliases,omitempty"`
+	NewAliases []string `json:"newAliases,omitempty"`
+}
+
 type SyncData struct {
 	Sites     []peers.SiteConfig `json:"sites"`
 	ExitNodes []SyncExitNode     `json:"exitNodes"`

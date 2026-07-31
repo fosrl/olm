@@ -565,6 +565,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	// Handlers for the server to direct connecting/disconnecting an exit node after registration
 	o.websocket.RegisterHandler("olm/wg/exitnode/connect", o.handleExitNodeConnect)
 	o.websocket.RegisterHandler("olm/wg/exitnode/disconnect", o.handleExitNodeDisconnect)
+	o.websocket.RegisterHandler("olm/wg/exitnode/data/update", o.handleExitNodeUpdateData)
 
 	o.websocket.RegisterHandler("olm/ping/exitNodes", func(msg websocket.WSMessage) {
 		logger.Debug("Received exit node ping request")

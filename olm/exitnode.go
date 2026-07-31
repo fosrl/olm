@@ -208,3 +208,80 @@ func (o *Olm) handleExitNodeDisconnect(msg websocket.WSMessage) {
 		logger.Error("Failed to disconnect from exit node: %v", err)
 	}
 }
+
+// handleExitNodeUpdateData handles a server-initiated request to change data
+// associated with the currently connected exit node, such as its aliases (e.g. a
+// resource was renamed). Unlike site aliases, there is no per-alias address to
+// track since every exit node alias resolves to the exit node's own ServerIP.
+func (o *Olm) handleExitNodeUpdateData(msg websocket.WSMessage) {
+	logger.Debug("Received exit node update data message: %v", msg.Data)
+
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring exit node update data message")
+		return
+	}
+
+	jsonData, err := json.Marshal(msg.Data)
+	if err != nil {
+		logger.Error("Error marshaling exit node update data: %v", err)
+		return
+	}
+
+	var update ExitNodeUpdateData
+	if err := json.Unmarshal(jsonData, &update); err != nil {
+		logger.Error("Error unmarshaling exit node update data: %v", err)
+		return
+	}
+
+	o.exitNodeMu.Lock()
+	defer o.exitNodeMu.Unlock()
+
+	if o.exitNode == nil {
+		logger.Debug("Ignoring exit node update data message: no exit node connected")
+		return
+	}
+
+	serverIP := net.ParseIP(o.exitNode.ServerIP)
+
+	// Add new aliases BEFORE removing old ones, same as site aliases, so a rename
+	// that keeps the same underlying address never has a gap in resolution.
+	if o.dnsProxy != nil && serverIP != nil {
+		for _, alias := range update.NewAliases {
+			if err := o.dnsProxy.AddDNSRecord(alias, serverIP, exitNodeAliasSiteId); err != nil {
+				logger.Warn("Failed to add DNS record for exit node alias %s: %v", alias, err)
+			}
+		}
+	}
+
+	if o.dnsProxy != nil && serverIP != nil {
+		for _, alias := range update.OldAliases {
+			o.dnsProxy.RemoveDNSRecordForSite(alias, serverIP, exitNodeAliasSiteId)
+		}
+	}
+
+	o.exitNode.Aliases = applyStringListUpdate(o.exitNode.Aliases, update.OldAliases, update.NewAliases)
+
+	logger.Info("Successfully updated exit node data")
+}
+
+// applyStringListUpdate returns list with every entry in removed dropped and every
+// entry in added appended, preserving the add-before-remove semantics of the caller.
+func applyStringListUpdate(list, removed, added []string) []string {
+	next := make([]string, 0, len(list)+len(added))
+	next = append(next, list...)
+	next = append(next, added...)
+
+	removedSet := make(map[string]struct{}, len(removed))
+	for _, alias := range removed {
+		removedSet[alias] = struct{}{}
+	}
+
+	filtered := next[:0]
+	for _, alias := range next {
+		if _, ok := removedSet[alias]; ok {
+			continue
+		}
+		filtered = append(filtered, alias)
+	}
+	return filtered
+}
