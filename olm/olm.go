@@ -57,6 +57,11 @@ type Olm struct {
 	holePunchManager   *holepunch.Manager
 	peerManager        *peers.PeerManager
 	peerManagerMu      sync.RWMutex
+
+	// exitNode tracks the currently connected exit node peer, if any. It lives on a
+	// secondary address on the same interface/WireGuard device as the site peers.
+	exitNode   *ExitNodeConfig
+	exitNodeMu sync.Mutex
 	// Power mode management
 	currentPowerMode string
 	powerModeMu      sync.Mutex
@@ -557,6 +562,10 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	o.websocket.RegisterHandler("olm/wg/peer/chain/cancel", o.handleCancelChain)
 	o.websocket.RegisterHandler("olm/sync", o.handleSync)
 
+	// Handlers for the server to direct connecting/disconnecting an exit node after registration
+	o.websocket.RegisterHandler("olm/wg/exitnode/connect", o.handleExitNodeConnect)
+	o.websocket.RegisterHandler("olm/wg/exitnode/disconnect", o.handleExitNodeDisconnect)
+
 	o.websocket.RegisterHandler("olm/ping/exitNodes", func(msg websocket.WSMessage) {
 		logger.Debug("Received exit node ping request")
 
@@ -826,6 +835,13 @@ func (o *Olm) Close() {
 		o.peerManager = nil
 	}
 	o.peerManagerMu.Unlock()
+
+	// The WireGuard device and TUN interface are being torn down below, which takes
+	// the exit node peer and its secondary address with them - just clear the
+	// in-memory record so a stale config isn't reused on the next connect.
+	o.exitNodeMu.Lock()
+	o.exitNode = nil
+	o.exitNodeMu.Unlock()
 
 	if o.uapiListener != nil {
 		_ = o.uapiListener.Close()

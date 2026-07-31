@@ -262,6 +262,14 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		network.SetDNSServers([]string{o.dnsProxy.GetProxyIP().String()})
 	}
 
+	if wgData.ExitNode != nil && wgData.ExitNode.Connect {
+		if err := o.connectExitNode(*wgData.ExitNode); err != nil {
+			logger.Error("Failed to connect to exit node: %v", err)
+		}
+	} else {
+		logger.Debug("No exit node to connect to (not provided, or connect flag is false)")
+	}
+
 	o.apiServer.SetRegistered(true)
 
 	o.registered = true

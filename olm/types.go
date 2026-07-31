@@ -10,6 +10,23 @@ type WgData struct {
 	Sites         []peers.SiteConfig `json:"sites"`
 	TunnelIP      string             `json:"tunnelIP"`
 	UtilitySubnet string             `json:"utilitySubnet"` // this is for things like the DNS server, and alias addresses
+	ExitNode      *ExitNodeConfig    `json:"exitNode,omitempty"`
+}
+
+// ExitNodeConfig describes an exit node the olm client can connect to for
+// resources (e.g. inference) hosted on that node, separate from the site
+// peers. It lives in a different address space than the site tunnel - the
+// client is assigned TunnelIP (within the exit node's subnet) to reach the
+// node at ServerIP. It arrives on the initial "olm/wg/connect" message and can
+// also be sent later via "olm/wg/exitnode/connect" / "olm/wg/exitnode/disconnect"
+// so the server can direct a client to connect/disconnect after registration.
+type ExitNodeConfig struct {
+	Connect   bool   `json:"connect"`
+	Endpoint  string `json:"endpoint"`
+	RelayPort uint16 `json:"relayPort"`
+	PublicKey string `json:"publicKey"`
+	ServerIP  string `json:"serverIP"`
+	TunnelIP  string `json:"tunnelIP"`
 }
 
 type SyncData struct {
