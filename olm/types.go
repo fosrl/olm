@@ -21,12 +21,13 @@ type WgData struct {
 // also be sent later via "olm/wg/exitnode/connect" / "olm/wg/exitnode/disconnect"
 // so the server can direct a client to connect/disconnect after registration.
 type ExitNodeConfig struct {
-	Connect   bool   `json:"connect"`
-	Endpoint  string `json:"endpoint"`
-	RelayPort uint16 `json:"relayPort"`
-	PublicKey string `json:"publicKey"`
-	ServerIP  string `json:"serverIP"`
-	TunnelIP  string `json:"tunnelIP"`
+	Connect   bool     `json:"connect"`
+	Endpoint  string   `json:"endpoint"`
+	RelayPort uint16   `json:"relayPort"`
+	PublicKey string   `json:"publicKey"`
+	ServerIP  string   `json:"serverIP"`
+	TunnelIP  string   `json:"tunnelIP"`
+	Aliases   []string `json:"aliases,omitempty"`
 }
 
 type SyncData struct {

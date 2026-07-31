@@ -3,6 +3,7 @@ package olm
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/fosrl/newt/logger"
@@ -11,6 +12,12 @@ import (
 	"github.com/fosrl/olm/peers"
 	"github.com/fosrl/olm/websocket"
 )
+
+// exitNodeAliasSiteId is the sentinel siteId used when registering exit node
+// aliases with the DNS proxy. It is not a real site, and the JIT handler
+// treats siteId 0 as "no JIT lookup", which is correct here since the exit
+// node is connected directly rather than on demand.
+const exitNodeAliasSiteId = 0
 
 // connectExitNode configures a WireGuard peer connection to an exit node, on the
 // same interface and WireGuard device already used for site peers. The exit node
@@ -87,6 +94,18 @@ persistent_keepalive_interval=%d`, util.FixKey(cfg.PublicKey), allowedIP, resolv
 	cfgCopy := cfg
 	o.exitNode = &cfgCopy
 
+	if o.dnsProxy != nil {
+		serverIP := net.ParseIP(cfg.ServerIP)
+		if serverIP != nil {
+			for _, alias := range cfg.Aliases {
+				logger.Debug("Adding alias %s to the edit node", alias)
+				if err := o.dnsProxy.AddDNSRecord(alias, serverIP, exitNodeAliasSiteId); err != nil {
+					logger.Warn("Failed to add DNS record for exit node alias %s: %v", alias, err)
+				}
+			}
+		}
+	}
+
 	logger.Info("Connected to exit node at %s", resolvedEndpoint)
 	return nil
 }
@@ -107,6 +126,15 @@ func (o *Olm) removeExitNodePeerLocked() error {
 	}
 	cfg := o.exitNode
 	o.exitNode = nil
+
+	if o.dnsProxy != nil {
+		serverIP := net.ParseIP(cfg.ServerIP)
+		if serverIP != nil {
+			for _, alias := range cfg.Aliases {
+				o.dnsProxy.RemoveDNSRecordForSite(alias, serverIP, exitNodeAliasSiteId)
+			}
+		}
+	}
 
 	if o.dev != nil {
 		if err := peers.RemovePeer(o.dev, 0, cfg.PublicKey); err != nil {
