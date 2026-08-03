@@ -1,6 +1,7 @@
 package device
 
 import (
+	"bytes"
 	"io"
 	"net/netip"
 	"os"
@@ -25,7 +26,7 @@ type FilterRule struct {
 // closeAwareDevice wraps a tun.Device along with a flag
 // indicating whether its Close method was called.
 type closeAwareDevice struct {
-	isClosed     atomic.Bool
+	isClosed atomic.Bool
 	tun.Device
 	closeEventCh chan struct{}
 	wg           sync.WaitGroup
@@ -579,7 +580,24 @@ func (d *MiddleDevice) Read(bufs [][]byte, sizes []int, offset int) (n int, err 
 // correctly time out instead.
 func isLeakedMagicPacket(packet []byte) bool {
 	payload, ok := extractUDPPayload(packet)
-	return ok && bind.IsMagicPacket(payload)
+	return ok && isMagicPacket(payload)
+}
+
+// IsMagicPacket reports whether payload is one of our connectivity-test magic
+// packets (a MagicTestRequest or MagicTestResponse). These packets are meant to
+// travel directly between physical UDP sockets and must never be encapsulated by
+// WireGuard - e.g. if OS routing mistakenly sends one into a WireGuard TUN
+// interface (because the destination falls inside a routed tunnel subnet), it
+// should be dropped there rather than tunneled, which would otherwise make a
+// LAN-local endpoint test falsely appear to succeed over the tunnel.
+func isMagicPacket(payload []byte) bool {
+	if len(payload) >= bind.MagicTestRequestLen && bytes.HasPrefix(payload, bind.MagicTestRequest) {
+		return true
+	}
+	if len(payload) >= bind.MagicTestResponseLen && bytes.HasPrefix(payload, bind.MagicTestResponse) {
+		return true
+	}
+	return false
 }
 
 // filterDownstreamBufs drops packets going DOWN to the TUN device (from WireGuard)
