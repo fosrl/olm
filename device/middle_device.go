@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fosrl/newt/bind"
 	"github.com/fosrl/newt/logger"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -423,6 +424,33 @@ func extractDestIP(packet []byte) (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
+// extractUDPPayload returns the UDP payload of packet, if packet is a well-formed
+// IPv4 or IPv6 UDP datagram (ignoring IPv6 extension headers).
+func extractUDPPayload(packet []byte) ([]byte, bool) {
+	if len(packet) < 20 {
+		return nil, false
+	}
+
+	const udpProtocol = 17
+
+	switch packet[0] >> 4 {
+	case 4:
+		ihl := int(packet[0]&0x0f) * 4
+		if ihl < 20 || len(packet) < ihl+8 || packet[9] != udpProtocol {
+			return nil, false
+		}
+		return packet[ihl+8:], true
+	case 6:
+		const ipv6HeaderLen = 40
+		if len(packet) < ipv6HeaderLen+8 || packet[6] != udpProtocol {
+			return nil, false
+		}
+		return packet[ipv6HeaderLen+8:], true
+	}
+
+	return nil, false
+}
+
 // Read intercepts packets going UP from the TUN device (towards WireGuard)
 func (d *MiddleDevice) Read(bufs [][]byte, sizes []int, offset int) (n int, err error) {
 	for {
@@ -497,17 +525,19 @@ func (d *MiddleDevice) Read(bufs [][]byte, sizes []int, offset int) (n int, err 
 		rules := d.rules
 		d.rulesMutex.RUnlock()
 
-		if len(rules) == 0 {
-			return n, nil
-		}
-
-		// Process packets and filter out handled ones
+		// Process packets and filter out handled ones. This always runs (even with
+		// no per-IP rules registered) so magic connectivity-test packets can be
+		// dropped before they reach WireGuard - see isLeakedMagicPacket.
 		writeIdx := 0
 		for readIdx := 0; readIdx < n; readIdx++ {
 			packet := bufs[readIdx][offset : offset+sizes[readIdx]]
 
+			if isLeakedMagicPacket(packet) {
+				continue
+			}
+
 			destIP, ok := extractDestIP(packet)
-			if !ok {
+			if !ok || len(rules) == 0 {
 				if writeIdx != readIdx {
 					bufs[writeIdx] = bufs[readIdx]
 					sizes[writeIdx] = sizes[readIdx]
@@ -539,6 +569,57 @@ func (d *MiddleDevice) Read(bufs [][]byte, sizes []int, offset int) (n int, err 
 	}
 }
 
+// isLeakedMagicPacket reports whether packet carries one of our UDP connectivity-test
+// magic payloads (see bind.IsMagicPacket). These packets are sent directly between
+// physical UDP sockets by the local-endpoint holepunch tester and must never be
+// encapsulated by WireGuard: if OS routing sends one into this TUN interface instead
+// of out the real network interface (e.g. because the destination falls inside a
+// routed tunnel subnet), tunneling and echoing it back would make a LAN-local
+// endpoint falsely appear directly reachable. Dropping it here makes the test
+// correctly time out instead.
+func isLeakedMagicPacket(packet []byte) bool {
+	payload, ok := extractUDPPayload(packet)
+	return ok && bind.IsMagicPacket(payload)
+}
+
+// filterDownstreamBufs drops packets going DOWN to the TUN device (from WireGuard)
+// that are handled by a per-IP rule or are a leaked magic connectivity-test packet
+// (see isLeakedMagicPacket) - always checked, even with no rules registered. It
+// returns bufs unchanged (no allocation) unless a packet actually needs to be
+// dropped, at which point it switches to an owned copy of the buffers kept so far.
+func filterDownstreamBufs(bufs [][]byte, rules []FilterRule, offset int) [][]byte {
+	filtered := bufs
+	for i, buf := range bufs {
+		drop := len(buf) <= offset
+		if !drop {
+			packet := buf[offset:]
+			if isLeakedMagicPacket(packet) {
+				drop = true
+			} else if destIP, ok := extractDestIP(packet); ok && len(rules) > 0 {
+				for _, rule := range rules {
+					if rule.DestIP == destIP && rule.Handler(packet) {
+						drop = true
+						break
+					}
+				}
+			}
+		}
+
+		if drop {
+			if len(filtered) == len(bufs) {
+				// First drop: switch to an owned, growable copy of everything kept so far.
+				filtered = append([][]byte(nil), bufs[:i]...)
+			}
+			continue
+		}
+
+		if len(filtered) != len(bufs) {
+			filtered = append(filtered, buf)
+		}
+	}
+	return filtered
+}
+
 // Write intercepts packets going DOWN to the TUN device (from WireGuard)
 func (d *MiddleDevice) Write(bufs [][]byte, offset int) (int, error) {
 	for {
@@ -558,38 +639,7 @@ func (d *MiddleDevice) Write(bufs [][]byte, offset int) (int, error) {
 		rules := d.rules
 		d.rulesMutex.RUnlock()
 
-		var filteredBufs [][]byte
-		if len(rules) == 0 {
-			filteredBufs = bufs
-		} else {
-			filteredBufs = make([][]byte, 0, len(bufs))
-			for _, buf := range bufs {
-				if len(buf) <= offset {
-					continue
-				}
-
-				packet := buf[offset:]
-				destIP, ok := extractDestIP(packet)
-				if !ok {
-					filteredBufs = append(filteredBufs, buf)
-					continue
-				}
-
-				handled := false
-				for _, rule := range rules {
-					if rule.DestIP == destIP {
-						if rule.Handler(packet) {
-							handled = true
-							break
-						}
-					}
-				}
-
-				if !handled {
-					filteredBufs = append(filteredBufs, buf)
-				}
-			}
-		}
+		filteredBufs := filterDownstreamBufs(bufs, rules, offset)
 
 		if len(filteredBufs) == 0 {
 			return len(bufs), nil
