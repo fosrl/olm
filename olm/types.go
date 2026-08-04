@@ -43,6 +43,11 @@ type ExitNodeUpdateData struct {
 type SyncData struct {
 	Sites     []peers.SiteConfig `json:"sites"`
 	ExitNodes []SyncExitNode     `json:"exitNodes"`
+	// ExitNode is the exit node the client itself is assigned to (for site
+	// resources hosted on it, e.g. inference), mirroring the ExitNode field
+	// on WgData sent at registration. It is separate from ExitNodes above,
+	// which is only the set of exit nodes used for hole punching.
+	ExitNode *ExitNodeConfig `json:"exitNode,omitempty"`
 }
 
 type SyncExitNode struct {

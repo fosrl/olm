@@ -41,6 +41,18 @@ func (o *Olm) connectExitNode(cfg ExitNodeConfig) error {
 		return fmt.Errorf("wireguard device not initialized")
 	}
 
+	if o.exitNode != nil && o.exitNode.PublicKey == cfg.PublicKey &&
+		o.exitNode.Endpoint == cfg.Endpoint && o.exitNode.ServerIP == cfg.ServerIP &&
+		o.exitNode.TunnelIP == cfg.TunnelIP {
+		if !slicesEqual(o.exitNode.Aliases, cfg.Aliases) {
+			logger.Info("Already connected to exit node %s, updating aliases", cfg.PublicKey)
+			o.updateExitNodeAliasesLocked(cfg.Aliases)
+		} else {
+			logger.Info("Already connected to exit node %s, ignoring duplicate connect message", cfg.PublicKey)
+		}
+		return nil
+	}
+
 	if o.exitNode != nil && o.exitNode.PublicKey != cfg.PublicKey {
 		logger.Info("Switching exit nodes, removing previous exit node peer")
 		if err := o.removeExitNodePeerLocked(); err != nil {
@@ -157,6 +169,71 @@ func (o *Olm) removeExitNodePeerLocked() error {
 
 	logger.Info("Disconnected from exit node")
 	return nil
+}
+
+// syncExitNodeConnection reconciles the client's own exit node connection (used
+// for site resources hosted on the exit node) with the desired state sent in a
+// sync message - connecting, switching, updating aliases, or disconnecting as
+// needed. This mirrors what the initial "olm/wg/connect" message does, so a
+// client that reconnects with a stale exit node assignment (or none at all)
+// converges without needing to fully re-register.
+func (o *Olm) syncExitNodeConnection(cfg *ExitNodeConfig) {
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring exit node sync")
+		return
+	}
+
+	if cfg == nil || !cfg.Connect {
+		if err := o.disconnectExitNode(); err != nil {
+			logger.Error("Sync: Failed to disconnect from exit node: %v", err)
+		}
+		return
+	}
+
+	if err := o.connectExitNode(*cfg); err != nil {
+		logger.Error("Sync: Failed to connect to exit node: %v", err)
+	}
+}
+
+// updateExitNodeAliasesLocked reconciles the currently connected exit node's
+// aliases with newAliases, adding new ones before removing stale ones so a
+// rename never has a gap in resolution. Must be called with exitNodeMu held.
+func (o *Olm) updateExitNodeAliasesLocked(newAliases []string) {
+	if o.exitNode == nil {
+		return
+	}
+
+	added := stringSliceDiff(newAliases, o.exitNode.Aliases)
+	removed := stringSliceDiff(o.exitNode.Aliases, newAliases)
+
+	serverIP := net.ParseIP(o.exitNode.ServerIP)
+	if o.dnsProxy != nil && serverIP != nil {
+		for _, alias := range added {
+			if err := o.dnsProxy.AddDNSRecord(alias, serverIP, exitNodeAliasSiteId); err != nil {
+				logger.Warn("Failed to add DNS record for exit node alias %s: %v", alias, err)
+			}
+		}
+		for _, alias := range removed {
+			o.dnsProxy.RemoveDNSRecordForSite(alias, serverIP, exitNodeAliasSiteId)
+		}
+	}
+
+	o.exitNode.Aliases = applyStringListUpdate(o.exitNode.Aliases, removed, added)
+}
+
+// stringSliceDiff returns the elements of a that are not present in b.
+func stringSliceDiff(a, b []string) []string {
+	inB := make(map[string]struct{}, len(b))
+	for _, s := range b {
+		inB[s] = struct{}{}
+	}
+	diff := make([]string, 0, len(a))
+	for _, s := range a {
+		if _, ok := inB[s]; !ok {
+			diff = append(diff, s)
+		}
+	}
+	return diff
 }
 
 // handleExitNodeConnect handles a server-initiated request to connect to (or switch to)
