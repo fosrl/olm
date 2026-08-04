@@ -11,6 +11,7 @@ import (
 
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/network"
+	"github.com/fosrl/newt/util"
 	olmDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/dns"
 	dnsOverride "github.com/fosrl/olm/dns/override"
@@ -141,6 +142,14 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 
 	if err = o.dev.Up(); err != nil {
 		logger.Error("Failed to bring up WireGuard device: %v", err)
+	}
+
+	// Set the private key unconditionally, since it's otherwise only ever set as a
+	// side effect of configuring a site peer (see peers.ConfigurePeer) - if there are
+	// no sites (e.g. an exit-node-only connection), the interface would otherwise be
+	// brought up with no private key configured at all.
+	if err := o.dev.IpcSet(fmt.Sprintf("private_key=%s\n", util.FixKey(o.privateKey.String()))); err != nil {
+		logger.Error("Failed to set private key on WireGuard device: %v", err)
 	}
 
 	// Extract interface IP (strip CIDR notation if present)
