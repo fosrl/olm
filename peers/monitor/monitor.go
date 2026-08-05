@@ -25,6 +25,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/icmp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 )
 
@@ -105,6 +106,14 @@ type PeerMonitor struct {
 	wgConnectionStatus   map[int]bool          // siteID -> WG connected status
 	wgConnectionRTT      map[int]time.Duration // siteID -> last known RTT
 	statusChangeCallback func(siteId int)      // called when any peer's connection status changes
+
+	// Exit node ICMP monitoring fields. The exit node is a single peer (not a
+	// site), pinged over the same gvisor netstack used for the peer UDP tests
+	// above, so the probe never touches the host's real network stack - it's
+	// injected directly into the WireGuard device via MiddleDevice.
+	exitNodeMu       sync.Mutex
+	exitNodeServerIP string
+	exitNodeCancel   context.CancelFunc
 }
 
 // NewPeerMonitor creates a new peer monitor with the given callback
@@ -1152,6 +1161,14 @@ func (pm *PeerMonitor) Close() {
 	// Stop holepunch monitor first (outside of mutex to avoid deadlock)
 	pm.stopHolepunchMonitor()
 
+	// Stop exit node ICMP monitor, if running
+	pm.exitNodeMu.Lock()
+	if pm.exitNodeCancel != nil {
+		pm.exitNodeCancel()
+		pm.exitNodeCancel = nil
+	}
+	pm.exitNodeMu.Unlock()
+
 	// Stop all pending relay senders
 	pm.relaySendMu.Lock()
 	for chainId, stop := range pm.relaySends {
@@ -1288,7 +1305,7 @@ func (pm *PeerMonitor) initNetstack() error {
 	// Create gvisor netstack
 	stackOpts := stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
-		TransportProtocols: []stack.TransportProtocolFactory{udp.NewProtocol},
+		TransportProtocols: []stack.TransportProtocolFactory{udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
 		HandleLocal:        true,
 	}
 
@@ -1331,24 +1348,30 @@ func (pm *PeerMonitor) initNetstack() error {
 
 // handlePacket is called by MiddleDevice when a packet arrives for our IP
 func (pm *PeerMonitor) handlePacket(packet []byte) bool {
-	// Check if it's UDP
 	proto, ok := util.GetProtocol(packet)
-	if !ok || proto != 17 { // UDP
-		return false
-	}
-
-	// Check destination port
-	port, ok := util.GetDestPort(packet)
 	if !ok {
 		return false
 	}
 
-	// Check if we are listening on this port
-	pm.portsLock.RLock()
-	active := pm.activePorts[uint16(port)]
-	pm.portsLock.RUnlock()
+	switch proto {
+	case 1, 58: // ICMPv4, ICMPv6 - always ours, used only by the exit node ping probe
+		// no per-port filtering needed
+	case 17: // UDP
+		// Check destination port
+		port, ok := util.GetDestPort(packet)
+		if !ok {
+			return false
+		}
 
-	if !active {
+		// Check if we are listening on this port
+		pm.portsLock.RLock()
+		active := pm.activePorts[uint16(port)]
+		pm.portsLock.RUnlock()
+
+		if !active {
+			return false
+		}
+	default:
 		return false
 	}
 

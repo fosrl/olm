@@ -127,6 +127,24 @@ func (pm *PeerManager) GetPeerMonitor() *monitor.PeerMonitor {
 	return pm.peerMonitor
 }
 
+// SetExitNode starts (or updates) ICMP connectivity monitoring of the given exit node
+func (pm *PeerManager) SetExitNode(serverIP string) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.SetExitNode(serverIP)
+	}
+}
+
+// ClearExitNode stops ICMP connectivity monitoring of the exit node
+func (pm *PeerManager) ClearExitNode() {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.ClearExitNode()
+	}
+}
+
 // SetPublicDNS replaces the DNS servers used to resolve WireGuard peer
 // endpoints and hole-punch targets.  The servers must be in "host:port" format
 // (e.g. "8.8.8.8:53").  The change takes effect for all future peer

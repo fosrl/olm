@@ -118,6 +118,10 @@ persistent_keepalive_interval=%d`, util.FixKey(cfg.PublicKey), allowedIP, resolv
 		}
 	}
 
+	if pm := o.getPeerManager(); pm != nil {
+		pm.SetExitNode(strings.Split(cfg.ServerIP, "/")[0])
+	}
+
 	logger.Info("Connected to exit node at %s", resolvedEndpoint)
 	return nil
 }
@@ -138,6 +142,10 @@ func (o *Olm) removeExitNodePeerLocked() error {
 	}
 	cfg := o.exitNode
 	o.exitNode = nil
+
+	if pm := o.getPeerManager(); pm != nil {
+		pm.ClearExitNode()
+	}
 
 	if o.dnsProxy != nil {
 		serverIP := net.ParseIP(cfg.ServerIP)
