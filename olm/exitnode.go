@@ -119,7 +119,7 @@ persistent_keepalive_interval=%d`, util.FixKey(cfg.PublicKey), allowedIP, resolv
 	}
 
 	if pm := o.getPeerManager(); pm != nil {
-		pm.SetExitNode(strings.Split(cfg.ServerIP, "/")[0])
+		pm.SetExitNode(strings.Split(cfg.ServerIP, "/")[0], strings.Split(cfg.TunnelIP, "/")[0])
 	}
 
 	logger.Info("Connected to exit node at %s", resolvedEndpoint)

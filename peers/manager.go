@@ -127,12 +127,15 @@ func (pm *PeerManager) GetPeerMonitor() *monitor.PeerMonitor {
 	return pm.peerMonitor
 }
 
-// SetExitNode starts (or updates) ICMP connectivity monitoring of the given exit node
-func (pm *PeerManager) SetExitNode(serverIP string) {
+// SetExitNode starts (or updates) ICMP connectivity monitoring of the given exit node.
+// tunnelIP is the secondary address assigned to us for this exit node, which the ping
+// probe must be sourced from since the exit node's WireGuard peer entry only accepts
+// traffic from that address.
+func (pm *PeerManager) SetExitNode(serverIP, tunnelIP string) {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 	if pm.peerMonitor != nil {
-		pm.peerMonitor.SetExitNode(serverIP)
+		pm.peerMonitor.SetExitNode(serverIP, tunnelIP)
 	}
 }
 

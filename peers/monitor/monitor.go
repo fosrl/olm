@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -113,7 +114,13 @@ type PeerMonitor struct {
 	// injected directly into the WireGuard device via MiddleDevice.
 	exitNodeMu       sync.Mutex
 	exitNodeServerIP string
+	exitNodeTunnelIP string
 	exitNodeCancel   context.CancelFunc
+
+	// activeICMPIdents tracks the ICMP identifiers of our own in-flight exit-node
+	// ping probes (guarded by portsLock, alongside activePorts), so handlePacket
+	// only intercepts Echo Replies that are actually ours.
+	activeICMPIdents map[uint16]bool
 }
 
 // NewPeerMonitor creates a new peer monitor with the given callback
@@ -134,6 +141,7 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		localIP:              localIP,
 		publicDNS:            publicDNS,
 		activePorts:          make(map[uint16]bool),
+		activeICMPIdents:     make(map[uint16]bool),
 		nsCtx:                ctx,
 		nsCancel:             cancel,
 		sharedBind:           sharedBind,
@@ -1346,6 +1354,24 @@ func (pm *PeerMonitor) initNetstack() error {
 	return nil
 }
 
+// icmpv4EchoReplyIdent returns the ICMP identifier of packet if it is an IPv4
+// ICMP Echo Reply (type 0), so it can be matched against our own in-flight
+// exit-node ping probes before being pulled off the host's real traffic path.
+func icmpv4EchoReplyIdent(packet []byte) (uint16, bool) {
+	if len(packet) < 20 || packet[0]>>4 != 4 {
+		return 0, false
+	}
+	ihl := int(packet[0]&0x0f) * 4
+	if ihl < 20 || len(packet) < ihl+8 {
+		return 0, false
+	}
+	const icmpEchoReply = 0
+	if packet[ihl] != icmpEchoReply {
+		return 0, false
+	}
+	return binary.BigEndian.Uint16(packet[ihl+4 : ihl+6]), true
+}
+
 // handlePacket is called by MiddleDevice when a packet arrives for our IP
 func (pm *PeerMonitor) handlePacket(packet []byte) bool {
 	proto, ok := util.GetProtocol(packet)
@@ -1354,8 +1380,22 @@ func (pm *PeerMonitor) handlePacket(packet []byte) bool {
 	}
 
 	switch proto {
-	case 1, 58: // ICMPv4, ICMPv6 - always ours, used only by the exit node ping probe
-		// no per-port filtering needed
+	case 1: // ICMPv4 - only intercept Echo Replies matching one of our own active
+		// exit-node ping probes, identified by the ICMP identifier field. Anything
+		// else (including real ICMP traffic to/from the host, e.g. `ping`) must be
+		// left alone so it reaches the host TUN normally.
+		ident, ok := icmpv4EchoReplyIdent(packet)
+		if !ok {
+			return false
+		}
+
+		pm.portsLock.RLock()
+		active := pm.activeICMPIdents[ident]
+		pm.portsLock.RUnlock()
+
+		if !active {
+			return false
+		}
 	case 17: // UDP
 		// Check destination port
 		port, ok := util.GetDestPort(packet)
