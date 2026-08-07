@@ -106,7 +106,12 @@ persistent_keepalive_interval=%d`, util.FixKey(cfg.PublicKey), allowedIP, resolv
 	// its corresponding NetworkSettings entry, which is what surfaces it via the
 	// API) is silently never added.
 	serverIPForRoute := strings.Split(cfg.ServerIP, "/")[0] + "/32"
-	if err := network.AddRouteForServerIP(serverIPForRoute, interfaceName); err != nil {
+	// The route must also be pinned to our exit node tunnel address as its source
+	// (darwin route(8) -ifa): the interface carries a second address for the site
+	// tunnel too, and without an explicit source darwin picks that one instead,
+	// which the exit node's WireGuard AllowedIPs filtering then silently drops.
+	tunnelIPForRoute := strings.Split(cfg.TunnelIP, "/")[0]
+	if err := network.AddRouteForServerIPWithSource(serverIPForRoute, interfaceName, tunnelIPForRoute); err != nil {
 		logger.Warn("Failed to add route for exit node server IP: %v", err)
 	}
 

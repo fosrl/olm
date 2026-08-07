@@ -176,7 +176,7 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		logger.Error("Failed to o.tunnelConfigure interface: %v", err)
 	}
 
-	if err := network.AddRoutes([]string{wgData.UtilitySubnet}, o.tunnelConfig.InterfaceName); err != nil { // also route the utility subnet
+	if err := network.AddRoutesWithSource([]string{wgData.UtilitySubnet}, o.tunnelConfig.InterfaceName, interfaceIP); err != nil { // also route the utility subnet
 		logger.Error("Failed to add route for utility subnet: %v", err)
 	}
 
