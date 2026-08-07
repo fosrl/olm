@@ -285,7 +285,7 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 		return err
 	}
 
-	if err := network.RemoveRouteForServerIP(peer.ServerIP, pm.interfaceName); err != nil {
+	if err := network.RemoveRouteForServerIPWithSource(peer.ServerIP, pm.interfaceName, pm.localIP); err != nil {
 		logger.Error("Failed to remove route for server IP: %v", err)
 	}
 

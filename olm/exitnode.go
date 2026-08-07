@@ -176,7 +176,8 @@ func (o *Olm) removeExitNodePeerLocked() error {
 
 	interfaceName := o.tunnelConfig.InterfaceName
 	serverIPForRoute := strings.Split(cfg.ServerIP, "/")[0] + "/32"
-	if err := network.RemoveRouteForServerIP(serverIPForRoute, interfaceName); err != nil {
+	tunnelIPForRoute := strings.Split(cfg.TunnelIP, "/")[0]
+	if err := network.RemoveRouteForServerIPWithSource(serverIPForRoute, interfaceName, tunnelIPForRoute); err != nil {
 		logger.Warn("Failed to remove route for exit node server IP: %v", err)
 	}
 
