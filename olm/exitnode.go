@@ -99,7 +99,14 @@ persistent_keepalive_interval=%d`, util.FixKey(cfg.PublicKey), allowedIP, resolv
 		logger.Warn("Failed to add secondary address %s for exit node: %v", tunnelIP, err)
 	}
 
-	if err := network.AddRouteForServerIP(cfg.ServerIP, interfaceName); err != nil {
+	// ServerIP arrives as a bare IP with no CIDR suffix, but AddRouteForServerIP
+	// parses it as a CIDR on darwin (to explicitly route the subnet up the tunnel,
+	// since unlike Linux, adding the address to the interface does not implicitly
+	// create a route for it) - without a mask that parse fails and the route (and
+	// its corresponding NetworkSettings entry, which is what surfaces it via the
+	// API) is silently never added.
+	serverIPForRoute := strings.Split(cfg.ServerIP, "/")[0] + "/32"
+	if err := network.AddRouteForServerIP(serverIPForRoute, interfaceName); err != nil {
 		logger.Warn("Failed to add route for exit node server IP: %v", err)
 	}
 
@@ -163,7 +170,8 @@ func (o *Olm) removeExitNodePeerLocked() error {
 	}
 
 	interfaceName := o.tunnelConfig.InterfaceName
-	if err := network.RemoveRouteForServerIP(cfg.ServerIP, interfaceName); err != nil {
+	serverIPForRoute := strings.Split(cfg.ServerIP, "/")[0] + "/32"
+	if err := network.RemoveRouteForServerIP(serverIPForRoute, interfaceName); err != nil {
 		logger.Warn("Failed to remove route for exit node server IP: %v", err)
 	}
 
