@@ -74,6 +74,17 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		return
 	}
 
+	// When handed an already-open FD (mobile/NetworkExtension platforms), the
+	// TUN device's addresses and routes are owned and reconciled by the host
+	// platform from NetworkSettings (e.g. Apple's NEPacketTunnelProvider via
+	// setTunnelNetworkSettings) - our own ifconfig/route subprocess calls must
+	// not also run against the same interface, or the two end up installing
+	// competing routes to the same destination. On macOS specifically this
+	// package's darwin code paths would otherwise run for real here (the NE
+	// build shares GOOS=darwin with the CLI), unlike iOS where they're already
+	// no-ops via a GOOS check.
+	network.NativeConfigDisabled = o.tunnelConfig.FileDescriptorTun != 0
+
 	o.tdev, err = func() (tun.Device, error) {
 		if o.tunnelConfig.FileDescriptorTun != 0 {
 			return olmDevice.CreateTUNFromFD(o.tunnelConfig.FileDescriptorTun, o.tunnelConfig.MTU)
