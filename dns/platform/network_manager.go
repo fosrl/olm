@@ -59,9 +59,12 @@ func NewNetworkManagerDNSConfigurator(ifaceName string) (*NetworkManagerDNSConfi
 		return nil, fmt.Errorf("interface name is required")
 	}
 
-	// Check that NetworkManager conf.d directory exists
-	if _, err := os.Stat(networkManagerConfDir); os.IsNotExist(err) {
-		return nil, fmt.Errorf("NetworkManager conf.d directory not found: %s", networkManagerConfDir)
+	// NetworkManager scans conf.d for drop-in config files even if the
+	// directory wasn't pre-created by the package (seen on minimal/container
+	// installs). Create it rather than failing, since NM already picks up
+	// files placed there without any further configuration.
+	if err := os.MkdirAll(networkManagerConfDir, 0755); err != nil {
+		return nil, fmt.Errorf("create NetworkManager conf.d directory: %w", err)
 	}
 
 	configurator := &NetworkManagerDNSConfigurator{
