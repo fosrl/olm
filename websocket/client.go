@@ -225,6 +225,10 @@ func (c *Client) Connect() error {
 
 // Close closes the WebSocket connection gracefully
 func (c *Client) Close() error {
+	if c == nil {
+		return nil
+	}
+
 	// Signal shutdown to all goroutines first
 	select {
 	case <-c.done:
@@ -253,6 +257,10 @@ func (c *Client) Close() error {
 
 // Disconnect cleanly closes the websocket connection and suspends message intervals, but allows reconnecting later.
 func (c *Client) Disconnect() error {
+	if c == nil {
+		return nil
+	}
+
 	c.isDisconnected = true
 	c.setConnected(false)
 
@@ -275,6 +283,9 @@ func (c *Client) Disconnect() error {
 
 // SendMessage sends a message through the WebSocket connection
 func (c *Client) SendMessage(messageType string, data interface{}) error {
+	if c == nil {
+		return fmt.Errorf("client is nil")
+	}
 	if c.isDisconnected || c.conn == nil {
 		return fmt.Errorf("not connected")
 	}
@@ -295,6 +306,10 @@ func (c *Client) SendMessage(messageType string, data interface{}) error {
 }
 
 func (c *Client) SendMessageInterval(messageType string, data interface{}, interval time.Duration, maxAttempts int) (stop func(), update func(newData interface{})) {
+	if c == nil {
+		return func() {}, func(interface{}) {}
+	}
+
 	stopChan := make(chan struct{})
 	updateChan := make(chan interface{})
 	var dataMux sync.Mutex
@@ -779,6 +794,10 @@ func (c *Client) pingMonitor() {
 // This should be called after the client is registered and connected.
 // It is safe to call multiple times - only the first call will start the monitor.
 func (c *Client) StartPingMonitor() {
+	if c == nil {
+		return
+	}
+
 	c.pingStartedMux.Lock()
 	defer c.pingStartedMux.Unlock()
 	

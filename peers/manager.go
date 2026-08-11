@@ -810,11 +810,14 @@ func (pm *PeerManager) RemoveAlias(siteId int, aliasName string) error {
 		newAliases = append(newAliases, a)
 	}
 
-	if aliasToRemove != nil {
-		address := net.ParseIP(aliasToRemove.AliasAddress)
-		if address != nil {
-			pm.dnsProxy.RemoveDNSRecordForSite(aliasName, address, siteId)
-		}
+	if aliasToRemove == nil {
+		// Alias already gone (e.g. duplicate/stale remove message) - nothing to do
+		return nil
+	}
+
+	address := net.ParseIP(aliasToRemove.AliasAddress)
+	if address != nil {
+		pm.dnsProxy.RemoveDNSRecordForSite(aliasName, address, siteId)
 	}
 
 	peer.Aliases = newAliases
@@ -899,7 +902,14 @@ endpoint=%s:%d`, util.FixKey(peer.PublicKey), formattedEndpoint, relayPort)
 // at the public endpoint (set synchronously in AddPeer), so this just settles the peer onto
 // its steady-state connection within ~1-2 seconds.
 func (pm *PeerManager) performRapidInitialTest(siteId int, endpoint string, localEndpoints []string) {
-	if pm.peerMonitor == nil {
+	// Snapshot the monitor once under lock and use only the local copy from here on -
+	// pm.peerMonitor can be concurrently nil'd out by Close()/Stop() (e.g. the tunnel
+	// tears down right after a peer was added), and re-reading the field later in this
+	// goroutine would race with that.
+	pm.mu.RLock()
+	peerMonitor := pm.peerMonitor
+	pm.mu.RUnlock()
+	if peerMonitor == nil {
 		return
 	}
 
@@ -911,14 +921,14 @@ func (pm *PeerManager) performRapidInitialTest(siteId int, endpoint string, loca
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			localWinner = pm.peerMonitor.RapidTestLocalEndpoints(siteId, localEndpoints)
+			localWinner = peerMonitor.RapidTestLocalEndpoints(siteId, localEndpoints)
 		}()
 	}
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		holepunchViable = pm.peerMonitor.RapidTestPeer(siteId, endpoint)
+		holepunchViable = peerMonitor.RapidTestPeer(siteId, endpoint)
 	}()
 
 	wg.Wait()
@@ -932,7 +942,7 @@ func (pm *PeerManager) performRapidInitialTest(siteId int, endpoint string, loca
 	if !holepunchViable {
 		// Holepunch failed rapid test, request relay immediately
 		logger.Info("Rapid test failed for site %d, requesting relay", siteId)
-		if err := pm.peerMonitor.RequestRelay(siteId); err != nil {
+		if err := peerMonitor.RequestRelay(siteId); err != nil {
 			logger.Error("Failed to request relay for site %d: %v", siteId, err)
 		}
 	} else {
@@ -959,9 +969,14 @@ func (pm *PeerManager) Stop() {
 // Close stops the peer monitor and cleans up resources
 func (pm *PeerManager) Close() {
 	pm.stopRouteOptimizer()
-	if pm.peerMonitor != nil {
-		pm.peerMonitor.Close()
-		pm.peerMonitor = nil
+
+	pm.mu.Lock()
+	peerMonitor := pm.peerMonitor
+	pm.peerMonitor = nil
+	pm.mu.Unlock()
+
+	if peerMonitor != nil {
+		peerMonitor.Close()
 	}
 }
 
