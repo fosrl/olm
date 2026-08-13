@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
+	"runtime"
 	"strings"
 
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/network"
 	"github.com/fosrl/newt/util"
+	olmDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/peers"
 	"github.com/fosrl/olm/websocket"
 )
@@ -74,6 +77,22 @@ func (o *Olm) connectExitNode(cfg ExitNodeConfig) error {
 		return fmt.Errorf("failed to resolve exit node endpoint: %w", err)
 	}
 
+	interfaceName := o.tunnelConfig.InterfaceName
+	tunnelIP := cfg.TunnelIP
+	if !strings.Contains(tunnelIP, "/") {
+		tunnelIP += "/32"
+	}
+	// Add the secondary address before configuring the peer or route below, and
+	// fail closed if it doesn't succeed: AddSecondaryAddress (via AddIPv4Address)
+	// refuses to add when no primary address is configured yet, which would
+	// otherwise silently make the exit node's address the interface's primary
+	// one on mobile platforms (array order is what determines primary there).
+	// Bailing out here before touching the WireGuard device at all means there's
+	// never a half-configured peer left behind to roll back.
+	if err := network.AddSecondaryAddress(interfaceName, tunnelIP); err != nil {
+		return fmt.Errorf("failed to add secondary address %s for exit node: %w", tunnelIP, err)
+	}
+
 	persistentKeepalive := 0
 	if pm := o.getPeerManager(); pm != nil {
 		persistentKeepalive = pm.PersistentKeepalive
@@ -90,15 +109,6 @@ persistent_keepalive_interval=%d`, util.FixKey(cfg.PublicKey), allowedIP, resolv
 		return fmt.Errorf("failed to configure exit node peer: %w", err)
 	}
 
-	interfaceName := o.tunnelConfig.InterfaceName
-	tunnelIP := cfg.TunnelIP
-	if !strings.Contains(tunnelIP, "/") {
-		tunnelIP += "/32"
-	}
-	if err := network.AddSecondaryAddress(interfaceName, tunnelIP); err != nil {
-		logger.Warn("Failed to add secondary address %s for exit node: %v", tunnelIP, err)
-	}
-
 	// ServerIP arrives as a bare IP with no CIDR suffix, but AddRouteForServerIP
 	// parses it as a CIDR on darwin (to explicitly route the subnet up the tunnel,
 	// since unlike Linux, adding the address to the interface does not implicitly
@@ -113,6 +123,28 @@ persistent_keepalive_interval=%d`, util.FixKey(cfg.PublicKey), allowedIP, resolv
 	tunnelIPForRoute := strings.Split(cfg.TunnelIP, "/")[0]
 	if err := network.AddRouteForServerIPWithSource(serverIPForRoute, interfaceName, tunnelIPForRoute); err != nil {
 		logger.Warn("Failed to add route for exit node server IP: %v", err)
+	}
+
+	// On macOS/iOS NetworkExtension, the OS can't reliably pin an outbound socket's
+	// source address to this interface's secondary address the way BSD route(8)
+	// -ifa does for the CLI path above - unbound sockets still get the primary
+	// (site tunnel) address stamped as source even for traffic destined to the
+	// exit node, which the exit node's WireGuard AllowedIPs filtering then
+	// silently drops. Fix it in-tunnel: intercept outbound packets addressed to
+	// the exit node and rewrite their source back to tunnelIP before WireGuard
+	// encrypts them. The fast path (source already correct) is cheap enough to
+	// also leave this on for a macOS CLI run, where the route above already
+	// gets it right.
+	if o.middleDev != nil && (runtime.GOOS == "darwin" || runtime.GOOS == "ios") {
+		if serverAddr, err := netip.ParseAddr(strings.Split(cfg.ServerIP, "/")[0]); err == nil {
+			if correctSrc, err := netip.ParseAddr(tunnelIPForRoute); err == nil && correctSrc.Is4() {
+				src := correctSrc.As4()
+				o.middleDev.AddRule(serverAddr, func(packet []byte) bool {
+					olmDevice.FixIPv4Source(packet, src)
+					return false
+				})
+			}
+		}
 	}
 
 	cfgCopy := cfg
@@ -175,6 +207,13 @@ func (o *Olm) removeExitNodePeerLocked() error {
 	}
 
 	interfaceName := o.tunnelConfig.InterfaceName
+
+	if o.middleDev != nil && (runtime.GOOS == "darwin" || runtime.GOOS == "ios") {
+		if serverAddr, err := netip.ParseAddr(strings.Split(cfg.ServerIP, "/")[0]); err == nil {
+			o.middleDev.RemoveRule(serverAddr)
+		}
+	}
+
 	serverIPForRoute := strings.Split(cfg.ServerIP, "/")[0] + "/32"
 	tunnelIPForRoute := strings.Split(cfg.TunnelIP, "/")[0]
 	if err := network.RemoveRouteForServerIPWithSource(serverIPForRoute, interfaceName, tunnelIPForRoute); err != nil {
@@ -265,6 +304,16 @@ func (o *Olm) handleExitNodeConnect(msg websocket.WSMessage) {
 
 	if !o.tunnelRunning {
 		logger.Debug("Tunnel stopped, ignoring exit node connect message")
+		return
+	}
+
+	// The primary tunnel interface must already be configured before an exit
+	// node's secondary address can safely be added (see the ordering
+	// enforcement in connectExitNode) - o.registered is only set true after
+	// that happens in handleConnect. This guards against a stray/early
+	// message reaching connectExitNode before then.
+	if !o.registered {
+		logger.Debug("Not yet registered, ignoring exit node connect message")
 		return
 	}
 
