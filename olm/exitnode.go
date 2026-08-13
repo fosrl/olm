@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"runtime"
 	"strings"
 
 	"github.com/fosrl/newt/logger"
@@ -148,9 +147,19 @@ persistent_keepalive_interval=%d`, util.FixKey(cfg.PublicKey), allowedIP, resolv
 	// actually corrected outbound (tracked by ExitNodeNAT) - a socket that
 	// happened to already be bound to the correct address must be left alone.
 	//
-	// The fast path (address already correct) is cheap enough to also leave
-	// this on for a macOS CLI run, where the route above already gets it right.
-	if o.middleDev != nil && (runtime.GOOS == "darwin" || runtime.GOOS == "ios") {
+	// The fast path (address already correct) is cheap enough - a 4-byte
+	// comparison and nothing else when no rewrite is needed - to just leave
+	// this on unconditionally rather than gate it per-GOOS. Every platform's
+	// route-based source pinning (AddRouteForServerIPWithSource and friends)
+	// is a best-effort hint to the OS, not a guarantee: Android's
+	// VpnService.Builder only supports plain destination/prefix routes with
+	// no source/gateway at all, and even where the OS route can carry a
+	// source, an unbound socket's address selection is the OS's call, not
+	// ours. Keeping this rule active everywhere means any platform that gets
+	// the source wrong for any reason - not just the ones we've already hit
+	// this bug on - self-corrects instead of silently blackholing exit node
+	// traffic.
+	if o.middleDev != nil {
 		serverAddr, errS := netip.ParseAddr(strings.Split(cfg.ServerIP, "/")[0])
 		correctAddr, errC := netip.ParseAddr(tunnelIPForRoute)
 		switch {
@@ -245,7 +254,7 @@ func (o *Olm) removeExitNodePeerLocked() error {
 
 	interfaceName := o.tunnelConfig.InterfaceName
 
-	if o.middleDev != nil && (runtime.GOOS == "darwin" || runtime.GOOS == "ios") {
+	if o.middleDev != nil {
 		if serverAddr, err := netip.ParseAddr(strings.Split(cfg.ServerIP, "/")[0]); err == nil {
 			o.middleDev.RemoveRule(serverAddr)
 		}
