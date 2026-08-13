@@ -134,6 +134,14 @@ func IPv4SourceEquals(packet []byte, addr [4]byte) bool {
 // else, so this errs on the long side.
 var natEntryTTL = 5 * time.Minute
 
+// natRefreshInterval bounds how often a busy flow's entry timestamp actually
+// gets rewritten. A saturating connection (e.g. iperf) calls FixOutboundSource
+// or FixInboundDest on every single packet - refreshing on every one of them
+// would mean a map write (and, for new entries, a full-table prune) at line
+// rate instead of at most once per interval. natEntryTTL is minutes, so
+// resolution at this granularity costs nothing.
+const natRefreshInterval = time.Second
+
 type natKey struct {
 	proto uint8
 	port  uint16
@@ -182,11 +190,24 @@ func (n *ExitNodeNAT) FixOutboundSource(packet []byte, correctSrc [4]byte) {
 	}
 
 	key := natKey{proto, srcPort}
+	now := time.Now()
 
 	n.mu.Lock()
-	_, existed := n.seen[key]
-	n.seen[key] = time.Now()
-	n.prune()
+	t, existed := n.seen[key]
+	if existed && now.Sub(t) < natRefreshInterval {
+		// Already recorded recently enough - skip the write entirely. This is
+		// the common case for a busy flow: every packet gets here, but only
+		// one per interval needs to touch the map.
+		n.mu.Unlock()
+		return
+	}
+	n.seen[key] = now
+	if !existed {
+		// Only prune when the table is actually growing (a new connection),
+		// not on every packet - this is an O(map size) scan and the map only
+		// ever gains entries here.
+		n.prune()
+	}
 	n.mu.Unlock()
 
 	if !existed {
@@ -206,16 +227,17 @@ func (n *ExitNodeNAT) FixInboundDest(packet []byte, wrongDst [4]byte) {
 	}
 
 	key := natKey{proto, dstPort}
+	now := time.Now()
 
 	n.mu.Lock()
 	t, tracked := n.seen[key]
-	expired := tracked && time.Since(t) > natEntryTTL
+	expired := tracked && now.Sub(t) > natEntryTTL
 	if tracked {
 		if expired {
 			delete(n.seen, key)
 			tracked = false
-		} else {
-			n.seen[key] = time.Now()
+		} else if now.Sub(t) >= natRefreshInterval {
+			n.seen[key] = now
 		}
 	}
 	n.mu.Unlock()

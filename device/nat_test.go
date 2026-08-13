@@ -335,3 +335,49 @@ func TestExitNodeNATEntryExpires(t *testing.T) {
 		t.Errorf("expired entry was still translated: got %x, want unchanged %x", reply, original)
 	}
 }
+
+// BenchmarkExitNodeNATSteadyStateOutbound simulates a single busy flow (e.g.
+// an iperf upload) hammering FixOutboundSource, as happens for real since the
+// OS keeps stamping every packet of an affected socket with the wrong source
+// for the connection's whole lifetime, not just its first packet. Before the
+// refresh-throttling/prune-on-insert-only fix, every call here paid for a
+// map write plus a full-table prune; steady state should now be a single
+// lock/lookup/compare with no write and no allocation.
+func BenchmarkExitNodeNATSteadyStateOutbound(b *testing.B) {
+	wrongSrc := [4]byte{100, 89, 128, 9}
+	correctSrc := [4]byte{100, 89, 128, 4}
+	serverIP := [4]byte{100, 89, 128, 1}
+
+	nat := NewExitNodeNAT()
+	packet := exitNodeNATTestPacket(wrongSrc, serverIP, 52746, 80)
+	nat.FixOutboundSource(packet, correctSrc) // prime the entry
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// FixOutboundSource rewrites in place, so re-derive a wrong-source
+		// packet each iteration rather than measuring the already-correct
+		// (no-op) fast path.
+		packet := exitNodeNATTestPacket(wrongSrc, serverIP, 52746, 80)
+		nat.FixOutboundSource(packet, correctSrc)
+	}
+}
+
+// BenchmarkExitNodeNATSteadyStateInbound is BenchmarkExitNodeNATSteadyStateOutbound's
+// counterpart for the download direction / ACK stream.
+func BenchmarkExitNodeNATSteadyStateInbound(b *testing.B) {
+	wrongSrc := [4]byte{100, 89, 128, 9}
+	correctSrc := [4]byte{100, 89, 128, 4}
+	serverIP := [4]byte{100, 89, 128, 1}
+
+	nat := NewExitNodeNAT()
+	outbound := exitNodeNATTestPacket(wrongSrc, serverIP, 52746, 80)
+	nat.FixOutboundSource(outbound, correctSrc) // establish the tracked port
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		reply := exitNodeNATTestPacket(serverIP, correctSrc, 80, 52746)
+		nat.FixInboundDest(reply, wrongSrc)
+	}
+}
