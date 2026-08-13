@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	_ "net/http/pprof"
 	"os"
 	"os/exec"
@@ -62,6 +63,15 @@ type Olm struct {
 	// secondary address on the same interface/WireGuard device as the site peers.
 	exitNode   *ExitNodeConfig
 	exitNodeMu sync.Mutex
+
+	// primaryTunnelIP is the site tunnel's own address (wgData.TunnelIP), set once
+	// per connect in handleConnect. It's the interface's first/primary address -
+	// on macOS/iOS NetworkExtension, an unbound outbound socket's source gets
+	// stamped with this address by default even when the traffic should use an
+	// exit node's secondary address instead (see connectExitNode's NAT setup),
+	// and inbound replies need to be translated back to it for the OS to match
+	// them to the socket that's waiting.
+	primaryTunnelIP netip.Addr
 	// Power mode management
 	currentPowerMode string
 	powerModeMu      sync.Mutex

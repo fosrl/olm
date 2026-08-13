@@ -132,18 +132,55 @@ persistent_keepalive_interval=%d`, util.FixKey(cfg.PublicKey), allowedIP, resolv
 	// exit node, which the exit node's WireGuard AllowedIPs filtering then
 	// silently drops. Fix it in-tunnel: intercept outbound packets addressed to
 	// the exit node and rewrite their source back to tunnelIP before WireGuard
-	// encrypts them. The fast path (source already correct) is cheap enough to
-	// also leave this on for a macOS CLI run, where the route above already
-	// gets it right.
+	// encrypts them.
+	//
+	// That alone isn't enough for anything that expects a reply (TCP, or any
+	// request/response over UDP): rewriting the outbound packet only changes
+	// what goes out on the wire - it doesn't change the OS's own connection
+	// state, which already recorded the *wrong* (primary) address as this
+	// socket's local address at connect()/send() time, before the packet ever
+	// reached this interception point. When the exit node's reply comes back
+	// correctly addressed to tunnelIP, the OS can't match it to a socket whose
+	// local address it thinks is the primary tunnel IP, and silently drops it -
+	// the connection hangs even though the corrected request reached the server
+	// fine. So also intercept inbound replies from the exit node and translate
+	// their destination back to the primary address, but only for flows we
+	// actually corrected outbound (tracked by ExitNodeNAT) - a socket that
+	// happened to already be bound to the correct address must be left alone.
+	//
+	// The fast path (address already correct) is cheap enough to also leave
+	// this on for a macOS CLI run, where the route above already gets it right.
 	if o.middleDev != nil && (runtime.GOOS == "darwin" || runtime.GOOS == "ios") {
-		if serverAddr, err := netip.ParseAddr(strings.Split(cfg.ServerIP, "/")[0]); err == nil {
-			if correctSrc, err := netip.ParseAddr(tunnelIPForRoute); err == nil && correctSrc.Is4() {
-				src := correctSrc.As4()
-				o.middleDev.AddRule(serverAddr, func(packet []byte) bool {
-					olmDevice.FixIPv4Source(packet, src)
-					return false
-				})
-			}
+		serverAddr, errS := netip.ParseAddr(strings.Split(cfg.ServerIP, "/")[0])
+		correctAddr, errC := netip.ParseAddr(tunnelIPForRoute)
+		switch {
+		case errS != nil || errC != nil || !correctAddr.Is4():
+			logger.Warn("Exit node NAT: skipping source-NAT setup, invalid address (server=%v tunnel=%v)", errS, errC)
+		case !o.primaryTunnelIP.IsValid() || !o.primaryTunnelIP.Is4():
+			logger.Warn("Exit node NAT: skipping source-NAT setup, no primary tunnel IP recorded")
+		default:
+			correctSrc := correctAddr.As4()
+			wrongSrc := o.primaryTunnelIP.As4()
+			serverSrc := serverAddr.As4()
+			nat := olmDevice.NewExitNodeNAT()
+
+			o.middleDev.AddRule(serverAddr, func(packet []byte) bool {
+				nat.FixOutboundSource(packet, correctSrc)
+				return false
+			})
+			o.middleDev.AddRule(correctAddr, func(packet []byte) bool {
+				// Only packets that actually came from the exit node's own
+				// peer should ever be translated - this rule's key (tunnelIP)
+				// is also used by the ICMP connectivity monitor's own address,
+				// so a defensive source check keeps this from ever touching
+				// unrelated traffic that happens to be addressed to tunnelIP.
+				if olmDevice.IPv4SourceEquals(packet, serverSrc) {
+					nat.FixInboundDest(packet, wrongSrc)
+				}
+				return false
+			})
+
+			logger.Debug("Exit node NAT: intercepting traffic to %s, translating source/dest between %s (primary) and %s (exit node secondary)", serverAddr, o.primaryTunnelIP, correctAddr)
 		}
 	}
 
@@ -211,6 +248,15 @@ func (o *Olm) removeExitNodePeerLocked() error {
 	if o.middleDev != nil && (runtime.GOOS == "darwin" || runtime.GOOS == "ios") {
 		if serverAddr, err := netip.ParseAddr(strings.Split(cfg.ServerIP, "/")[0]); err == nil {
 			o.middleDev.RemoveRule(serverAddr)
+		}
+		// Also removes the ICMP connectivity monitor's own rule under this same
+		// key (pm.ClearExitNode, called just above, already does this too - see
+		// RemoveRule's doc comment on it clearing every rule for a key rather
+		// than being handler-specific), so this call is normally a harmless
+		// no-op by the time it runs; kept for defensiveness/independence from
+		// that other subsystem's cleanup ordering.
+		if tunnelAddr, err := netip.ParseAddr(strings.Split(cfg.TunnelIP, "/")[0]); err == nil {
+			o.middleDev.RemoveRule(tunnelAddr)
 		}
 	}
 

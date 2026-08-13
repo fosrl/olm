@@ -3,6 +3,7 @@ package olm
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"runtime"
 	"strconv"
@@ -167,6 +168,11 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	interfaceIP := wgData.TunnelIP
 	if strings.Contains(interfaceIP, "/") {
 		interfaceIP = strings.Split(interfaceIP, "/")[0]
+	}
+	if addr, err := netip.ParseAddr(interfaceIP); err == nil {
+		o.primaryTunnelIP = addr
+	} else {
+		logger.Warn("Failed to parse tunnel IP %q: %v", interfaceIP, err)
 	}
 
 	// Create and start DNS proxy

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"testing"
+	"time"
 )
 
 // onesComplementSum computes an RFC 1071 ones-complement checksum from
@@ -217,4 +218,120 @@ func TestFixIPv4SourceMalformedPacketNoPanic(t *testing.T) {
 	FixIPv4Source([]byte{}, correctSrc)
 	FixIPv4Source([]byte{0x45, 0x00, 0x00}, correctSrc)
 	FixIPv4Source([]byte{0x60, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, correctSrc) // IPv6 version nibble
+}
+
+func TestFixIPv4DestUDP(t *testing.T) {
+	src := [4]byte{192, 168, 1, 1}
+	wrongDst := [4]byte{10, 0, 0, 1}
+	correctDst := [4]byte{10, 0, 0, 2}
+	payload := []byte("reply")
+
+	udp := buildUDPSegment(src, wrongDst, payload)
+	ip := buildIPv4Header(src, wrongDst, 17, len(udp))
+	packet := append(ip, udp...)
+
+	if !FixIPv4Dest(packet, correctDst) {
+		t.Fatal("expected FixIPv4Dest to report a rewrite")
+	}
+	if got := [4]byte{packet[16], packet[17], packet[18], packet[19]}; got != correctDst {
+		t.Fatalf("dest = %v, want %v", got, correctDst)
+	}
+	verifyIPv4HeaderChecksum(t, packet)
+	verifyUDPChecksum(t, packet, src, correctDst)
+}
+
+// exitNodeNATTestPacket builds a minimal IPv4/UDP packet with the given
+// addresses and ports, for exercising ExitNodeNAT's port-based tracking.
+func exitNodeNATTestPacket(src, dst [4]byte, srcPort, dstPort uint16) []byte {
+	seg := make([]byte, 8)
+	binary.BigEndian.PutUint16(seg[0:2], srcPort)
+	binary.BigEndian.PutUint16(seg[2:4], dstPort)
+	binary.BigEndian.PutUint16(seg[4:6], uint16(len(seg)))
+
+	pseudo := make([]byte, 12+len(seg))
+	copy(pseudo[0:4], src[:])
+	copy(pseudo[4:8], dst[:])
+	pseudo[9] = 17
+	binary.BigEndian.PutUint16(pseudo[10:12], uint16(len(seg)))
+	copy(pseudo[12:], seg)
+	csum := onesComplementSum(pseudo)
+	if csum == 0 {
+		csum = 0xffff
+	}
+	binary.BigEndian.PutUint16(seg[6:8], csum)
+
+	ip := buildIPv4Header(src, dst, 17, len(seg))
+	return append(ip, seg...)
+}
+
+func TestExitNodeNATRoundTrip(t *testing.T) {
+	wrongSrc := [4]byte{100, 89, 128, 9}  // primary/site tunnel IP (the bug's default pick)
+	correctSrc := [4]byte{100, 89, 128, 4} // exit node's secondary tunnel IP
+	serverIP := [4]byte{100, 89, 128, 1}
+	const localPort = 52746
+
+	nat := NewExitNodeNAT()
+
+	// Outbound: kernel picked the wrong source; our fix rewrites it and should
+	// remember the local port so the reply gets translated.
+	outbound := exitNodeNATTestPacket(wrongSrc, serverIP, localPort, 80)
+	nat.FixOutboundSource(outbound, correctSrc)
+	if got := [4]byte{outbound[12], outbound[13], outbound[14], outbound[15]}; got != correctSrc {
+		t.Fatalf("outbound source = %v, want %v", got, correctSrc)
+	}
+
+	// Inbound reply: correctly addressed to correctSrc (the exit node saw the
+	// fixed source), but the OS's own connection state still expects wrongSrc.
+	reply := exitNodeNATTestPacket(serverIP, correctSrc, 80, localPort)
+	nat.FixInboundDest(reply, wrongSrc)
+	if got := [4]byte{reply[16], reply[17], reply[18], reply[19]}; got != wrongSrc {
+		t.Fatalf("reply dest = %v, want %v (translated back for the OS to match the socket)", got, wrongSrc)
+	}
+	verifyIPv4HeaderChecksum(t, reply)
+}
+
+func TestExitNodeNATUntrackedPortPassesThrough(t *testing.T) {
+	wrongSrc := [4]byte{100, 89, 128, 9}
+	correctSrc := [4]byte{100, 89, 128, 4}
+	serverIP := [4]byte{100, 89, 128, 1}
+	const localPort = 55555 // never seen by FixOutboundSource
+
+	nat := NewExitNodeNAT()
+
+	// A socket that was already, legitimately bound to correctSrc: its reply
+	// must not be touched, since translating it would misroute it away from
+	// the socket that's actually expecting it.
+	reply := exitNodeNATTestPacket(serverIP, correctSrc, 80, localPort)
+	original := append([]byte(nil), reply...)
+	nat.FixInboundDest(reply, wrongSrc)
+
+	if !bytes.Equal(reply, original) {
+		t.Errorf("untracked port was translated: got %x, want unchanged %x", reply, original)
+	}
+}
+
+func TestExitNodeNATEntryExpires(t *testing.T) {
+	origTTL := natEntryTTL
+	natEntryTTL = 10 * time.Millisecond
+	defer func() { natEntryTTL = origTTL }()
+
+	wrongSrc := [4]byte{100, 89, 128, 9}
+	correctSrc := [4]byte{100, 89, 128, 4}
+	serverIP := [4]byte{100, 89, 128, 1}
+	const localPort = 52746
+
+	nat := NewExitNodeNAT()
+
+	outbound := exitNodeNATTestPacket(wrongSrc, serverIP, localPort, 80)
+	nat.FixOutboundSource(outbound, correctSrc)
+
+	time.Sleep(50 * time.Millisecond)
+
+	reply := exitNodeNATTestPacket(serverIP, correctSrc, 80, localPort)
+	original := append([]byte(nil), reply...)
+	nat.FixInboundDest(reply, wrongSrc)
+
+	if !bytes.Equal(reply, original) {
+		t.Errorf("expired entry was still translated: got %x, want unchanged %x", reply, original)
+	}
 }
