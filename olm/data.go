@@ -202,6 +202,10 @@ func (o *Olm) handleSync(msg websocket.WSMessage) {
 	// Sync exit nodes for hole punching
 	o.syncExitNodes(syncData.ExitNodes)
 
+	// Reconcile the client's own exit node connection (connect/switch/update
+	// aliases/disconnect), same as what the initial olm/wg/connect message does
+	o.syncExitNodeConnection(syncData.ExitNode)
+
 	// Build a map of expected peers from the incoming data
 	expectedPeers := make(map[int]peers.SiteConfig)
 	for _, site := range syncData.Sites {

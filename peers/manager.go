@@ -44,7 +44,11 @@ type PeerManager struct {
 	peerMonitor   *monitor.PeerMonitor
 	dnsProxy      *dns.DNSProxy
 	interfaceName string
-	privateKey    wgtypes.Key
+	// localIP is our own address on the site tunnel (as opposed to any exit
+	// node's secondary address that may also be present on the interface).
+	// Routes for site peers are pinned to it on darwin - see AddRoutesWithSource.
+	localIP    string
+	privateKey wgtypes.Key
 	// allowedIPOwners tracks which peer currently "owns" each allowed IP in WireGuard
 	// key is the CIDR string, value is the siteId that has it configured in WG
 	allowedIPOwners map[string]int
@@ -88,6 +92,7 @@ func NewPeerManager(config PeerManagerConfig) *PeerManager {
 		peers:           make(map[int]SiteConfig),
 		dnsProxy:        config.DNSProxy,
 		interfaceName:   config.InterfaceName,
+		localIP:         config.LocalIP,
 		privateKey:      config.PrivateKey,
 		allowedIPOwners: make(map[string]int),
 		allowedIPClaims: make(map[string]map[int]bool),
@@ -125,6 +130,27 @@ func (pm *PeerManager) GetPeerMonitor() *monitor.PeerMonitor {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 	return pm.peerMonitor
+}
+
+// SetExitNode starts (or updates) ICMP connectivity monitoring of the given exit node.
+// tunnelIP is the secondary address assigned to us for this exit node, which the ping
+// probe must be sourced from since the exit node's WireGuard peer entry only accepts
+// traffic from that address.
+func (pm *PeerManager) SetExitNode(serverIP, tunnelIP string) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.SetExitNode(serverIP, tunnelIP)
+	}
+}
+
+// ClearExitNode stops ICMP connectivity monitoring of the exit node
+func (pm *PeerManager) ClearExitNode() {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.ClearExitNode()
+	}
 }
 
 // SetPublicDNS replaces the DNS servers used to resolve WireGuard peer
@@ -195,10 +221,10 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 		return err
 	}
 
-	if err := network.AddRouteForServerIP(siteConfig.ServerIP, pm.interfaceName); err != nil {
+	if err := network.AddRouteForServerIPWithSource(siteConfig.ServerIP, pm.interfaceName, pm.localIP); err != nil {
 		logger.Error("Failed to add route for server IP: %v", err)
 	}
-	if err := network.AddRoutes(siteConfig.RemoteSubnets, pm.interfaceName); err != nil {
+	if err := network.AddRoutesWithSource(siteConfig.RemoteSubnets, pm.interfaceName, pm.localIP); err != nil {
 		logger.Error("Failed to add routes for remote subnets: %v", err)
 	}
 
@@ -259,7 +285,7 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 		return err
 	}
 
-	if err := network.RemoveRouteForServerIP(peer.ServerIP, pm.interfaceName); err != nil {
+	if err := network.RemoveRouteForServerIPWithSource(peer.ServerIP, pm.interfaceName, pm.localIP); err != nil {
 		logger.Error("Failed to remove route for server IP: %v", err)
 	}
 
@@ -495,7 +521,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 
 	// Add routes for added subnets
 	if len(addedSubnets) > 0 {
-		if err := network.AddRoutes(addedSubnets, pm.interfaceName); err != nil {
+		if err := network.AddRoutesWithSource(addedSubnets, pm.interfaceName, pm.localIP); err != nil {
 			logger.Error("Failed to add routes: %v", err)
 		}
 	}
@@ -696,7 +722,7 @@ func (pm *PeerManager) AddRemoteSubnet(siteId int, cidr string) error {
 	}
 
 	// Add route
-	if err := network.AddRoutes([]string{cidr}, pm.interfaceName); err != nil {
+	if err := network.AddRoutesWithSource([]string{cidr}, pm.interfaceName, pm.localIP); err != nil {
 		return err
 	}
 
@@ -810,11 +836,14 @@ func (pm *PeerManager) RemoveAlias(siteId int, aliasName string) error {
 		newAliases = append(newAliases, a)
 	}
 
-	if aliasToRemove != nil {
-		address := net.ParseIP(aliasToRemove.AliasAddress)
-		if address != nil {
-			pm.dnsProxy.RemoveDNSRecordForSite(aliasName, address, siteId)
-		}
+	if aliasToRemove == nil {
+		// Alias already gone (e.g. duplicate/stale remove message) - nothing to do
+		return nil
+	}
+
+	address := net.ParseIP(aliasToRemove.AliasAddress)
+	if address != nil {
+		pm.dnsProxy.RemoveDNSRecordForSite(aliasName, address, siteId)
 	}
 
 	peer.Aliases = newAliases
@@ -899,7 +928,14 @@ endpoint=%s:%d`, util.FixKey(peer.PublicKey), formattedEndpoint, relayPort)
 // at the public endpoint (set synchronously in AddPeer), so this just settles the peer onto
 // its steady-state connection within ~1-2 seconds.
 func (pm *PeerManager) performRapidInitialTest(siteId int, endpoint string, localEndpoints []string) {
-	if pm.peerMonitor == nil {
+	// Snapshot the monitor once under lock and use only the local copy from here on -
+	// pm.peerMonitor can be concurrently nil'd out by Close()/Stop() (e.g. the tunnel
+	// tears down right after a peer was added), and re-reading the field later in this
+	// goroutine would race with that.
+	pm.mu.RLock()
+	peerMonitor := pm.peerMonitor
+	pm.mu.RUnlock()
+	if peerMonitor == nil {
 		return
 	}
 
@@ -911,14 +947,14 @@ func (pm *PeerManager) performRapidInitialTest(siteId int, endpoint string, loca
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			localWinner = pm.peerMonitor.RapidTestLocalEndpoints(siteId, localEndpoints)
+			localWinner = peerMonitor.RapidTestLocalEndpoints(siteId, localEndpoints)
 		}()
 	}
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		holepunchViable = pm.peerMonitor.RapidTestPeer(siteId, endpoint)
+		holepunchViable = peerMonitor.RapidTestPeer(siteId, endpoint)
 	}()
 
 	wg.Wait()
@@ -932,7 +968,7 @@ func (pm *PeerManager) performRapidInitialTest(siteId int, endpoint string, loca
 	if !holepunchViable {
 		// Holepunch failed rapid test, request relay immediately
 		logger.Info("Rapid test failed for site %d, requesting relay", siteId)
-		if err := pm.peerMonitor.RequestRelay(siteId); err != nil {
+		if err := peerMonitor.RequestRelay(siteId); err != nil {
 			logger.Error("Failed to request relay for site %d: %v", siteId, err)
 		}
 	} else {
@@ -959,9 +995,14 @@ func (pm *PeerManager) Stop() {
 // Close stops the peer monitor and cleans up resources
 func (pm *PeerManager) Close() {
 	pm.stopRouteOptimizer()
-	if pm.peerMonitor != nil {
-		pm.peerMonitor.Close()
-		pm.peerMonitor = nil
+
+	pm.mu.Lock()
+	peerMonitor := pm.peerMonitor
+	pm.peerMonitor = nil
+	pm.mu.Unlock()
+
+	if peerMonitor != nil {
+		peerMonitor.Close()
 	}
 }
 

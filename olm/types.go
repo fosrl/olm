@@ -10,11 +10,44 @@ type WgData struct {
 	Sites         []peers.SiteConfig `json:"sites"`
 	TunnelIP      string             `json:"tunnelIP"`
 	UtilitySubnet string             `json:"utilitySubnet"` // this is for things like the DNS server, and alias addresses
+	ExitNode      *ExitNodeConfig    `json:"exitNode,omitempty"`
+}
+
+// ExitNodeConfig describes an exit node the olm client can connect to for
+// resources (e.g. inference) hosted on that node, separate from the site
+// peers. It lives in a different address space than the site tunnel - the
+// client is assigned TunnelIP (within the exit node's subnet) to reach the
+// node at ServerIP. It arrives on the initial "olm/wg/connect" message and can
+// also be sent later via "olm/wg/exitnode/connect" / "olm/wg/exitnode/disconnect"
+// so the server can direct a client to connect/disconnect after registration.
+type ExitNodeConfig struct {
+	Connect   bool     `json:"connect"`
+	Endpoint  string   `json:"endpoint"`
+	RelayPort uint16   `json:"relayPort"`
+	PublicKey string   `json:"publicKey"`
+	ServerIP  string   `json:"serverIP"`
+	TunnelIP  string   `json:"tunnelIP"`
+	Aliases   []string `json:"aliases,omitempty"`
+}
+
+// ExitNodeUpdateData describes a change to data associated with the currently
+// connected exit node, e.g. when a resource's alias is renamed on the server.
+// Aliases have no per-alias address here since every exit node alias resolves
+// to the exit node's own ServerIP. More fields can be added here in the
+// future as other exit node data becomes updatable.
+type ExitNodeUpdateData struct {
+	OldAliases []string `json:"oldAliases,omitempty"`
+	NewAliases []string `json:"newAliases,omitempty"`
 }
 
 type SyncData struct {
 	Sites     []peers.SiteConfig `json:"sites"`
 	ExitNodes []SyncExitNode     `json:"exitNodes"`
+	// ExitNode is the exit node the client itself is assigned to (for site
+	// resources hosted on it, e.g. inference), mirroring the ExitNode field
+	// on WgData sent at registration. It is separate from ExitNodes above,
+	// which is only the set of exit nodes used for hole punching.
+	ExitNode *ExitNodeConfig `json:"exitNode,omitempty"`
 }
 
 type SyncExitNode struct {
