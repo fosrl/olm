@@ -62,6 +62,15 @@ type OlmError struct {
 	Message string `json:"message"`
 }
 
+// ExitNodeStatus represents the connectivity status of the client's own exit
+// node connection (used for site resources hosted on the exit node).
+type ExitNodeStatus struct {
+	Connected bool          `json:"connected"`
+	RTT       time.Duration `json:"rtt"`
+	LastSeen  time.Time     `json:"lastSeen"`
+	Endpoint  string        `json:"endpoint,omitempty"`
+}
+
 // StatusResponse is returned by the status endpoint
 type StatusResponse struct {
 	Connected       bool                    `json:"connected"`
@@ -73,6 +82,7 @@ type StatusResponse struct {
 	OrgID           string                  `json:"orgId,omitempty"`
 	PeerStatuses    map[int]*PeerStatus     `json:"peers,omitempty"`
 	NetworkSettings network.NetworkSettings `json:"networkSettings,omitempty"`
+	ExitNodeStatus  *ExitNodeStatus         `json:"exitNode,omitempty"`
 }
 
 type MetadataChangeRequest struct {
@@ -103,13 +113,14 @@ type API struct {
 	onPowerMode      func(PowerModeRequest) error
 	onJITConnect     func(JITConnectionRequest) error
 
-	statusMu     sync.RWMutex
-	peerStatuses map[int]*PeerStatus
-	connectedAt  time.Time
-	isConnected  bool
-	isRegistered bool
-	isTerminated bool
-	olmError     *OlmError
+	statusMu       sync.RWMutex
+	peerStatuses   map[int]*PeerStatus
+	exitNodeStatus *ExitNodeStatus
+	connectedAt    time.Time
+	isConnected    bool
+	isRegistered   bool
+	isTerminated   bool
+	olmError       *OlmError
 
 	version string
 	agent   string
@@ -409,6 +420,25 @@ func (s *API) UpdatePeerHolepunchStatus(siteID int, holepunchConnected bool) {
 	status.HolepunchConnected = holepunchConnected
 }
 
+// SetExitNodeStatus sets the connectivity status of the client's own exit node connection
+func (s *API) SetExitNodeStatus(connected bool, rtt time.Duration, endpoint string) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.exitNodeStatus = &ExitNodeStatus{
+		Connected: connected,
+		RTT:       rtt,
+		LastSeen:  time.Now(),
+		Endpoint:  endpoint,
+	}
+}
+
+// ClearExitNodeStatus removes the exit node status, e.g. when disconnecting from it
+func (s *API) ClearExitNodeStatus() {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.exitNodeStatus = nil
+}
+
 // handleConnect handles the /connect endpoint
 func (s *API) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -473,6 +503,7 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		OrgID:           s.orgID,
 		PeerStatuses:    s.peerStatuses,
 		NetworkSettings: network.GetSettings(),
+		ExitNodeStatus:  s.exitNodeStatus,
 	}
 
 	s.statusMu.RUnlock()
@@ -640,6 +671,7 @@ func (s *API) GetStatus() StatusResponse {
 		OrgID:           s.orgID,
 		PeerStatuses:    s.peerStatuses,
 		NetworkSettings: network.GetSettings(),
+		ExitNodeStatus:  s.exitNodeStatus,
 	}
 }
 

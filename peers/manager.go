@@ -44,7 +44,11 @@ type PeerManager struct {
 	peerMonitor   *monitor.PeerMonitor
 	dnsProxy      *dns.DNSProxy
 	interfaceName string
-	privateKey    wgtypes.Key
+	// localIP is our own address on the site tunnel (as opposed to any exit
+	// node's secondary address that may also be present on the interface).
+	// Routes for site peers are pinned to it on darwin - see AddRoutesWithSource.
+	localIP    string
+	privateKey wgtypes.Key
 	// allowedIPOwners tracks which peer currently "owns" each allowed IP in WireGuard
 	// key is the CIDR string, value is the siteId that has it configured in WG
 	allowedIPOwners map[string]int
@@ -88,6 +92,7 @@ func NewPeerManager(config PeerManagerConfig) *PeerManager {
 		peers:           make(map[int]SiteConfig),
 		dnsProxy:        config.DNSProxy,
 		interfaceName:   config.InterfaceName,
+		localIP:         config.LocalIP,
 		privateKey:      config.PrivateKey,
 		allowedIPOwners: make(map[string]int),
 		allowedIPClaims: make(map[string]map[int]bool),
@@ -125,6 +130,27 @@ func (pm *PeerManager) GetPeerMonitor() *monitor.PeerMonitor {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 	return pm.peerMonitor
+}
+
+// SetExitNode starts (or updates) ICMP connectivity monitoring of the given exit node.
+// tunnelIP is the secondary address assigned to us for this exit node, which the ping
+// probe must be sourced from since the exit node's WireGuard peer entry only accepts
+// traffic from that address.
+func (pm *PeerManager) SetExitNode(serverIP, tunnelIP string) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.SetExitNode(serverIP, tunnelIP)
+	}
+}
+
+// ClearExitNode stops ICMP connectivity monitoring of the exit node
+func (pm *PeerManager) ClearExitNode() {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if pm.peerMonitor != nil {
+		pm.peerMonitor.ClearExitNode()
+	}
 }
 
 // SetPublicDNS replaces the DNS servers used to resolve WireGuard peer
@@ -195,10 +221,10 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 		return err
 	}
 
-	if err := network.AddRouteForServerIP(siteConfig.ServerIP, pm.interfaceName); err != nil {
+	if err := network.AddRouteForServerIPWithSource(siteConfig.ServerIP, pm.interfaceName, pm.localIP); err != nil {
 		logger.Error("Failed to add route for server IP: %v", err)
 	}
-	if err := network.AddRoutes(siteConfig.RemoteSubnets, pm.interfaceName); err != nil {
+	if err := network.AddRoutesWithSource(siteConfig.RemoteSubnets, pm.interfaceName, pm.localIP); err != nil {
 		logger.Error("Failed to add routes for remote subnets: %v", err)
 	}
 
@@ -259,7 +285,7 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 		return err
 	}
 
-	if err := network.RemoveRouteForServerIP(peer.ServerIP, pm.interfaceName); err != nil {
+	if err := network.RemoveRouteForServerIPWithSource(peer.ServerIP, pm.interfaceName, pm.localIP); err != nil {
 		logger.Error("Failed to remove route for server IP: %v", err)
 	}
 
@@ -495,7 +521,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 
 	// Add routes for added subnets
 	if len(addedSubnets) > 0 {
-		if err := network.AddRoutes(addedSubnets, pm.interfaceName); err != nil {
+		if err := network.AddRoutesWithSource(addedSubnets, pm.interfaceName, pm.localIP); err != nil {
 			logger.Error("Failed to add routes: %v", err)
 		}
 	}
@@ -696,7 +722,7 @@ func (pm *PeerManager) AddRemoteSubnet(siteId int, cidr string) error {
 	}
 
 	// Add route
-	if err := network.AddRoutes([]string{cidr}, pm.interfaceName); err != nil {
+	if err := network.AddRoutesWithSource([]string{cidr}, pm.interfaceName, pm.localIP); err != nil {
 		return err
 	}
 

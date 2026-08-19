@@ -3,6 +3,7 @@ package olm
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"runtime"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/network"
+	"github.com/fosrl/newt/util"
 	olmDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/dns"
 	dnsOverride "github.com/fosrl/olm/dns/override"
@@ -51,6 +53,11 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		o.updateRegister = nil
 	}
 
+	if o.stopPingRequest != nil {
+		o.stopPingRequest()
+		o.stopPingRequest = nil
+	}
+
 	// if there is an existing tunnel then close it
 	if o.dev != nil {
 		logger.Info("Got new message. Closing existing tunnel!")
@@ -67,6 +74,17 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		logger.Info("Error unmarshaling target data: %v", err)
 		return
 	}
+
+	// When handed an already-open FD (mobile/NetworkExtension platforms), the
+	// TUN device's addresses and routes are owned and reconciled by the host
+	// platform from NetworkSettings (e.g. Apple's NEPacketTunnelProvider via
+	// setTunnelNetworkSettings) - our own ifconfig/route subprocess calls must
+	// not also run against the same interface, or the two end up installing
+	// competing routes to the same destination. On macOS specifically this
+	// package's darwin code paths would otherwise run for real here (the NE
+	// build shares GOOS=darwin with the CLI), unlike iOS where they're already
+	// no-ops via a GOOS check.
+	network.NativeConfigDisabled = o.tunnelConfig.FileDescriptorTun != 0
 
 	o.tdev, err = func() (tun.Device, error) {
 		if o.tunnelConfig.FileDescriptorTun != 0 {
@@ -138,10 +156,23 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		logger.Error("Failed to bring up WireGuard device: %v", err)
 	}
 
+	// Set the private key unconditionally, since it's otherwise only ever set as a
+	// side effect of configuring a site peer (see peers.ConfigurePeer) - if there are
+	// no sites (e.g. an exit-node-only connection), the interface would otherwise be
+	// brought up with no private key configured at all.
+	if err := o.dev.IpcSet(fmt.Sprintf("private_key=%s\n", util.FixKey(o.privateKey.String()))); err != nil {
+		logger.Error("Failed to set private key on WireGuard device: %v", err)
+	}
+
 	// Extract interface IP (strip CIDR notation if present)
 	interfaceIP := wgData.TunnelIP
 	if strings.Contains(interfaceIP, "/") {
 		interfaceIP = strings.Split(interfaceIP, "/")[0]
+	}
+	if addr, err := netip.ParseAddr(interfaceIP); err == nil {
+		o.primaryTunnelIP = addr
+	} else {
+		logger.Warn("Failed to parse tunnel IP %q: %v", interfaceIP, err)
 	}
 
 	// Create and start DNS proxy
@@ -162,7 +193,7 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		logger.Error("Failed to o.tunnelConfigure interface: %v", err)
 	}
 
-	if network.AddRoutes([]string{wgData.UtilitySubnet}, o.tunnelConfig.InterfaceName); err != nil { // also route the utility subnet
+	if err := network.AddRoutesWithSource([]string{wgData.UtilitySubnet}, o.tunnelConfig.InterfaceName, interfaceIP); err != nil { // also route the utility subnet
 		logger.Error("Failed to add route for utility subnet: %v", err)
 	}
 
@@ -255,6 +286,14 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		o.startDNSWatchdog(o.tunnelConfig.InterfaceName)
 
 		network.SetDNSServers([]string{o.dnsProxy.GetProxyIP().String()})
+	}
+
+	if wgData.ExitNode != nil && wgData.ExitNode.Connect {
+		if err := o.connectExitNode(*wgData.ExitNode); err != nil {
+			logger.Error("Failed to connect to exit node: %v", err)
+		}
+	} else {
+		logger.Debug("No exit node to connect to (not provided, or connect flag is false)")
 	}
 
 	o.apiServer.SetRegistered(true)
