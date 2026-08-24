@@ -85,6 +85,25 @@ const (
 	routeSwitchCooldown = 30 * time.Second
 )
 
+// normalizeServerRouteDestination converts the bare IPv4 address returned by
+// Pangolin's site configuration into the host CIDR expected by Newt's route
+// helpers. Pangolin 1.21 returns values such as "100.90.128.4", while the
+// Darwin route and NetworkSettings implementations require "100.90.128.4/32".
+// Preserve already-CIDR values and invalid values so the downstream helper can
+// report its normal validation error.
+func normalizeServerRouteDestination(serverIP string) string {
+	if strings.Contains(serverIP, "/") {
+		return serverIP
+	}
+
+	ip := net.ParseIP(serverIP)
+	if ip == nil || ip.To4() == nil {
+		return serverIP
+	}
+
+	return ip.To4().String() + "/32"
+}
+
 // NewPeerManager creates a new PeerManager with an internal PeerMonitor
 func NewPeerManager(config PeerManagerConfig) *PeerManager {
 	pm := &PeerManager{
@@ -221,7 +240,8 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 		return err
 	}
 
-	if err := network.AddRouteForServerIPWithSource(siteConfig.ServerIP, pm.interfaceName, pm.localIP); err != nil {
+	serverRouteDestination := normalizeServerRouteDestination(siteConfig.ServerIP)
+	if err := network.AddRouteForServerIPWithSource(serverRouteDestination, pm.interfaceName, pm.localIP); err != nil {
 		logger.Error("Failed to add route for server IP: %v", err)
 	}
 	if err := network.AddRoutesWithSource(siteConfig.RemoteSubnets, pm.interfaceName, pm.localIP); err != nil {
@@ -285,7 +305,8 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 		return err
 	}
 
-	if err := network.RemoveRouteForServerIPWithSource(peer.ServerIP, pm.interfaceName, pm.localIP); err != nil {
+	serverRouteDestination := normalizeServerRouteDestination(peer.ServerIP)
+	if err := network.RemoveRouteForServerIPWithSource(serverRouteDestination, pm.interfaceName, pm.localIP); err != nil {
 		logger.Error("Failed to remove route for server IP: %v", err)
 	}
 
