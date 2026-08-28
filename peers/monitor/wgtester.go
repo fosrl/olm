@@ -182,66 +182,69 @@ func (c *Client) TestPeerConnection(ctx context.Context) (bool, time.Duration) {
 	// Reusable response buffer
 	responseBuffer := make([]byte, packetSize)
 
-	// Send multiple attempts as specified
+	const retryPause = 100 * time.Millisecond
+	waitForNextAttempt := func(delay time.Duration) bool {
+		if delay <= 0 {
+			return true
+		}
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return true
+		}
+	}
+
 	for attempt := 0; attempt < c.maxAttempts; attempt++ {
 		select {
 		case <-ctx.Done():
 			return false, 0
 		default:
-			// Add current timestamp to packet
-			timestamp := time.Now().UnixNano()
-			binary.BigEndian.PutUint64(packet[5:13], uint64(timestamp))
-
-			// Lock the connection for the entire send/receive operation
-			c.connLock.Lock()
-
-			// Check if connection is still valid after acquiring lock
-			if c.conn == nil {
-				c.connLock.Unlock()
-				return false, 0
-			}
-
-			_, err := c.conn.Write(packet)
-			if err != nil {
-				c.connLock.Unlock()
-				logger.Info("Error sending packet: %v", err)
-				continue
-			}
-
-			// Set read deadline
-			c.conn.SetReadDeadline(time.Now().Add(c.timeout))
-
-			// Wait for response
-			n, err := c.conn.Read(responseBuffer)
-			c.connLock.Unlock()
-
-			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					// Timeout, try next attempt
-					time.Sleep(100 * time.Millisecond) // Brief pause between attempts
-					continue
-				}
-				logger.Error("Error reading response: %v", err)
-				continue
-			}
-
-			if n != packetSize {
-				continue // Malformed packet
-			}
-
-			// Verify response
-			magic := binary.BigEndian.Uint32(responseBuffer[0:4])
-			packetType := responseBuffer[4]
-			if magic != magicHeader || packetType != packetTypeResponse {
-				continue // Not our response
-			}
-
-			// Extract the original timestamp and calculate RTT
-			sentTimestamp := int64(binary.BigEndian.Uint64(responseBuffer[5:13]))
-			rtt := time.Duration(time.Now().UnixNano() - sentTimestamp)
-
-			return true, rtt
 		}
+
+		timestamp := time.Now().UnixNano()
+		binary.BigEndian.PutUint64(packet[5:13], uint64(timestamp))
+
+		c.connLock.Lock()
+		if c.conn == nil {
+			c.connLock.Unlock()
+			return false, 0
+		}
+
+		_, err := c.conn.Write(packet)
+		if err != nil {
+			c.connLock.Unlock()
+			logger.Info("Error sending packet: %v", err)
+			continue
+		}
+		c.conn.SetReadDeadline(time.Now().Add(c.timeout))
+		n, err := c.conn.Read(responseBuffer)
+		c.connLock.Unlock()
+
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				if !waitForNextAttempt(retryPause) {
+					return false, 0
+				}
+			} else {
+				logger.Error("Error reading response: %v", err)
+			}
+			continue
+		}
+
+		if n != packetSize {
+			continue
+		}
+		magic := binary.BigEndian.Uint32(responseBuffer[0:4])
+		packetType := responseBuffer[4]
+		if magic != magicHeader || packetType != packetTypeResponse {
+			continue
+		}
+		sentTimestamp := int64(binary.BigEndian.Uint64(responseBuffer[5:13]))
+		rtt := time.Duration(time.Now().UnixNano() - sentTimestamp)
+		return true, rtt
 	}
 
 	return false, 0
@@ -294,10 +297,10 @@ func (c *Client) StartMonitor(callback MonitorCallback) error {
 				c.monitorLock.Lock()
 				currentInterval = c.minInterval
 				c.monitorLock.Unlock()
-				
+
 				// Reset backoff state
 				stableCount = 0
-				
+
 				timer.Reset(currentInterval)
 				logger.Debug("Packet interval updated, reset to %v", currentInterval)
 			case <-timer.C:
