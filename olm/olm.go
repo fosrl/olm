@@ -816,16 +816,20 @@ func (o *Olm) Close() {
 		o.websocket = nil
 	}
 
-	// Restore original DNS configuration
+	// Restore original DNS configuration (skipped when the host platform
+	// manages DNS natively - see NativeDNSManaged - since olm never installed
+	// its own override in that case)
 	// we do this first to avoid any DNS issues if something else gets stuck
-	if err := dnsOverride.RestoreDNSOverride(); err != nil {
-		logger.Error("Failed to restore DNS: %v", err)
-	}
+	if !o.tunnelConfig.NativeDNSManaged {
+		if err := dnsOverride.RestoreDNSOverride(); err != nil {
+			logger.Error("Failed to restore DNS: %v", err)
+		}
 
-	// Stop the watchdog *after* a successful DNS restore so that if we
-	// somehow crash mid-restore the watchdog still has a chance to clean
-	// up. The watchdog itself is a no-op if it was never spawned.
-	o.stopDNSWatchdog()
+		// Stop the watchdog *after* a successful DNS restore so that if we
+		// somehow crash mid-restore the watchdog still has a chance to clean
+		// up. The watchdog itself is a no-op if it was never spawned.
+		o.stopDNSWatchdog()
+	}
 
 	if o.holePunchManager != nil {
 		o.holePunchManager.Stop()
