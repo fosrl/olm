@@ -138,6 +138,14 @@ type TunnelConfig struct {
 	OverrideDNS bool
 	TunnelDNS   bool
 
+	// NativeDNSManaged indicates the DNS override is already applied natively by
+	// the host platform (e.g. NEDNSSettings on macOS/iOS), scoped to the tunnel
+	// session and auto-cleaned by the OS regardless of how the session ends. When
+	// true, olm skips installing its own raw scutil-based override (and the
+	// subprocess watchdog that guards it) since there is nothing for it to add
+	// and nothing that can leak.
+	NativeDNSManaged bool
+
 	InitialFingerprint map[string]any
 	InitialPostures    map[string]any
 

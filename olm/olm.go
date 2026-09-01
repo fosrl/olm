@@ -816,16 +816,20 @@ func (o *Olm) Close() {
 		o.websocket = nil
 	}
 
-	// Restore original DNS configuration
+	// Restore original DNS configuration (skipped when the host platform
+	// manages DNS natively - see NativeDNSManaged - since olm never installed
+	// its own override in that case)
 	// we do this first to avoid any DNS issues if something else gets stuck
-	if err := dnsOverride.RestoreDNSOverride(); err != nil {
-		logger.Error("Failed to restore DNS: %v", err)
-	}
+	if !o.tunnelConfig.NativeDNSManaged {
+		if err := dnsOverride.RestoreDNSOverride(); err != nil {
+			logger.Error("Failed to restore DNS: %v", err)
+		}
 
-	// Stop the watchdog *after* a successful DNS restore so that if we
-	// somehow crash mid-restore the watchdog still has a chance to clean
-	// up. The watchdog itself is a no-op if it was never spawned.
-	o.stopDNSWatchdog()
+		// Stop the watchdog *after* a successful DNS restore so that if we
+		// somehow crash mid-restore the watchdog still has a chance to clean
+		// up. The watchdog itself is a no-op if it was never spawned.
+		o.stopDNSWatchdog()
+	}
 
 	if o.holePunchManager != nil {
 		o.holePunchManager.Stop()
@@ -1168,6 +1172,20 @@ func (o *Olm) SetPowerMode(mode string) error {
 	}
 
 	return nil
+}
+
+// PokeConnection sends an immediate ping over the control websocket rather
+// than waiting for the next scheduled ping interval or read-deadline expiry,
+// so a live connection confirms itself in one round trip and a dead one -
+// undetectable while the underlying host was asleep, since nothing runs
+// during real system sleep to notice - starts reconnecting right away. This
+// is meant to be driven by an actual "device woke up" hook, not a timer, so
+// recovery stays tied to a real signal rather than a guess about how long
+// reconnecting might take. No-op if the tunnel isn't running.
+func (o *Olm) PokeConnection() {
+	if o.websocket != nil {
+		o.websocket.PingNow()
+	}
 }
 
 // RebindSocket recreates the UDP socket when network connectivity changes.

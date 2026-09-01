@@ -273,17 +273,24 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	})
 
 	if o.tunnelConfig.OverrideDNS {
-		// Set up DNS override to use our DNS proxy
-		if err := dnsOverride.SetupDNSOverride(o.tunnelConfig.InterfaceName, o.dnsProxy.GetProxyIP()); err != nil {
-			logger.Error("Failed to setup DNS override: %v", err)
-			return
-		}
+		// When the host platform already applies DNS natively (NEDNSSettings on
+		// macOS/iOS, scoped to the tunnel session and auto-cleaned by the OS no
+		// matter how the session ends), skip olm's own raw scutil-based override -
+		// there is nothing for it to add and, unlike NEDNSSettings, it has no way
+		// to guarantee cleanup if this process dies uncleanly. See NativeDNSManaged.
+		if !o.tunnelConfig.NativeDNSManaged {
+			// Set up DNS override to use our DNS proxy
+			if err := dnsOverride.SetupDNSOverride(o.tunnelConfig.InterfaceName, o.dnsProxy.GetProxyIP()); err != nil {
+				logger.Error("Failed to setup DNS override: %v", err)
+				return
+			}
 
-		// Start the external watchdog (if configured). The watchdog will
-		// reset DNS if this process dies before it can call
-		// RestoreDNSOverride. This is a no-op when no watchdog
-		// subcommand has been configured on the OlmConfig.
-		o.startDNSWatchdog(o.tunnelConfig.InterfaceName)
+			// Start the external watchdog (if configured). The watchdog will
+			// reset DNS if this process dies before it can call
+			// RestoreDNSOverride. This is a no-op when no watchdog
+			// subcommand has been configured on the OlmConfig.
+			o.startDNSWatchdog(o.tunnelConfig.InterfaceName)
+		}
 
 		network.SetDNSServers([]string{o.dnsProxy.GetProxyIP().String()})
 	}

@@ -82,6 +82,7 @@ type Config struct {
 type Client struct {
 	config            *Config
 	conn              *websocket.Conn
+	connMux           sync.Mutex // protects conn: reads, writes, and the reconnect compare-and-clear
 	baseURL           string
 	handlers          map[string]MessageHandler
 	done              chan struct{}
@@ -101,17 +102,17 @@ type Client struct {
 	configNeedsSave   bool // Flag to track if config needs to be saved
 	configVersion     int  // Latest config version received from server
 	configVersionMux  sync.RWMutex
-	token             string       // Cached authentication token
-	exitNodes         []ExitNode   // Cached exit nodes from token response
-	tokenMux          sync.RWMutex // Protects token and exitNodes
-	forceNewToken     bool         // Flag to force fetching a new token on next connection
-	processingMessage bool                   // Flag to track if a message is currently being processed
-	processingMux     sync.RWMutex           // Protects processingMessage
-	processingWg      sync.WaitGroup         // WaitGroup to wait for message processing to complete
-	getPingData       func() map[string]any  // Callback to get additional ping data
-	pingStarted       bool                   // Flag to track if ping monitor has been started
-	pingStartedMux    sync.Mutex             // Protects pingStarted
-	pingDone          chan struct{}          // Channel to stop the ping monitor independently
+	token             string                // Cached authentication token
+	exitNodes         []ExitNode            // Cached exit nodes from token response
+	tokenMux          sync.RWMutex          // Protects token and exitNodes
+	forceNewToken     bool                  // Flag to force fetching a new token on next connection
+	processingMessage bool                  // Flag to track if a message is currently being processed
+	processingMux     sync.RWMutex          // Protects processingMessage
+	processingWg      sync.WaitGroup        // WaitGroup to wait for message processing to complete
+	getPingData       func() map[string]any // Callback to get additional ping data
+	pingStarted       bool                  // Flag to track if ping monitor has been started
+	pingStartedMux    sync.Mutex            // Protects pingStarted
+	pingDone          chan struct{}         // Channel to stop the ping monitor independently
 }
 
 type ClientOption func(*Client)
@@ -214,6 +215,34 @@ func (c *Client) GetConfig() *Config {
 	return c.config
 }
 
+// getConn returns the current connection, or nil if not connected.
+func (c *Client) getConn() *websocket.Conn {
+	c.connMux.Lock()
+	defer c.connMux.Unlock()
+	return c.conn
+}
+
+// setConn replaces the current connection.
+func (c *Client) setConn(conn *websocket.Conn) {
+	c.connMux.Lock()
+	c.conn = conn
+	c.connMux.Unlock()
+}
+
+// clearConnIfCurrent nils out c.conn only if it is still set to old, and
+// reports whether it did so. Reconnects are triggered independently by the
+// read pump (on a read error) and by sendPing (on a write error), and both
+// can fire for the same dead connection at once.
+func (c *Client) clearConnIfCurrent(old *websocket.Conn) bool {
+	c.connMux.Lock()
+	defer c.connMux.Unlock()
+	if c.conn != old {
+		return false
+	}
+	c.conn = nil
+	return true
+}
+
 // Connect establishes the WebSocket connection
 func (c *Client) Connect() error {
 	if c.isDisconnected {
@@ -242,14 +271,14 @@ func (c *Client) Close() error {
 	c.setConnected(false)
 
 	// Close the WebSocket connection gracefully
-	if c.conn != nil {
+	if conn := c.getConn(); conn != nil {
 		// Send close message
 		c.writeMux.Lock()
-		c.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		c.writeMux.Unlock()
 
 		// Close the connection
-		return c.conn.Close()
+		return conn.Close()
 	}
 
 	return nil
@@ -270,12 +299,12 @@ func (c *Client) Disconnect() error {
 	// Wait for any message currently being processed to complete
 	c.processingWg.Wait()
 
-	if c.conn != nil {
+	if conn := c.getConn(); conn != nil {
 		c.writeMux.Lock()
-		c.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		c.writeMux.Unlock()
-		err := c.conn.Close()
-		c.conn = nil
+		err := conn.Close()
+		c.clearConnIfCurrent(conn)
 		return err
 	}
 	return nil
@@ -286,7 +315,8 @@ func (c *Client) SendMessage(messageType string, data interface{}) error {
 	if c == nil {
 		return fmt.Errorf("client is nil")
 	}
-	if c.isDisconnected || c.conn == nil {
+	conn := c.getConn()
+	if c.isDisconnected || conn == nil {
 		return fmt.Errorf("not connected")
 	}
 
@@ -299,10 +329,10 @@ func (c *Client) SendMessage(messageType string, data interface{}) error {
 
 	c.writeMux.Lock()
 	defer c.writeMux.Unlock()
-	if err := c.conn.SetWriteDeadline(time.Now().Add(writeDeadline)); err != nil {
+	if err := conn.SetWriteDeadline(time.Now().Add(writeDeadline)); err != nil {
 		return err
 	}
-	return c.conn.WriteJSON(msg)
+	return conn.WriteJSON(msg)
 }
 
 func (c *Client) SendMessageInterval(messageType string, data interface{}, interval time.Duration, maxAttempts int) (stop func(), update func(newData interface{})) {
@@ -319,7 +349,7 @@ func (c *Client) SendMessageInterval(messageType string, data interface{}, inter
 		count := 0
 
 		send := func() {
-			if c.isDisconnected || c.conn == nil {
+			if c.isDisconnected || c.getConn() == nil {
 				return
 			}
 			err := c.SendMessage(messageType, currentData)
@@ -423,10 +453,10 @@ func (c *Client) getToken() (string, []ExitNode, error) {
 	}
 
 	tokenData := map[string]interface{}{
-		"olmId":  c.config.ID,
-		"secret": c.config.Secret,
+		"olmId":     c.config.ID,
+		"secret":    c.config.Secret,
 		"userToken": c.config.UserToken,
-		"orgId":  c.config.OrgID,
+		"orgId":     c.config.OrgID,
 	}
 	jsonData, err := json.Marshal(tokenData)
 
@@ -617,7 +647,7 @@ func (c *Client) establishConnection() error {
 		return fmt.Errorf("failed to connect to WebSocket: %w", err)
 	}
 
-	c.conn = conn
+	c.setConn(conn)
 	c.setConnected(true)
 
 	// Arm a read deadline and refresh it whenever a pong arrives. Combined with
@@ -626,17 +656,19 @@ func (c *Client) establishConnection() error {
 	// on sleep/resume, or total packet loss) that a write-side check alone
 	// misses: small periodic pings fit in the kernel send buffer and keep
 	// "succeeding" even when nothing is actually reaching the peer.
-	_ = c.conn.SetReadDeadline(time.Now().Add(c.pongWait))
-	c.conn.SetPongHandler(func(appData string) error {
-		_ = c.conn.SetReadDeadline(time.Now().Add(c.pongWait))
+	_ = conn.SetReadDeadline(time.Now().Add(c.pongWait))
+	conn.SetPongHandler(func(appData string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(c.pongWait))
 		return nil
 	})
 
 	// Note: ping monitor is NOT started here - it will be started when
 	// StartPingMonitor() is called after registration completes
 
-	// Start the read pump with disconnect detection
-	go c.readPumpWithDisconnectDetection()
+	// Start the read pump with disconnect detection, bound to this specific
+	// connection instance (not the mutable c.conn field) so it can never be
+	// made to read a connection other than the one it was spawned for.
+	go c.readPumpWithDisconnectDetection(conn)
 
 	if c.onConnect != nil {
 		if err := c.onConnect(); err != nil {
@@ -712,7 +744,8 @@ func (c *Client) setupPKCS12TLS() (*tls.Config, error) {
 
 // sendPing sends a single ping message
 func (c *Client) sendPing() {
-	if c.isDisconnected || c.conn == nil {
+	conn := c.getConn()
+	if c.isDisconnected || conn == nil {
 		return
 	}
 	// Skip ping if a message is currently being processed
@@ -747,16 +780,16 @@ func (c *Client) sendPing() {
 	logger.Debug("websocket: Sending ping: %+v", pingMsg)
 
 	c.writeMux.Lock()
-	err := c.conn.SetWriteDeadline(time.Now().Add(writeDeadline))
+	err := conn.SetWriteDeadline(time.Now().Add(writeDeadline))
 	if err == nil {
-		err = c.conn.WriteJSON(pingMsg)
+		err = conn.WriteJSON(pingMsg)
 	}
 	if err == nil {
 		// Protocol-level ping: a standards-compliant server replies with a
 		// PONG, which refreshes the read deadline via SetPongHandler. This is
 		// what actually detects a half-open connection where writes still
 		// "succeed" (buffered by the kernel) but nothing is reaching the peer.
-		_ = c.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeDeadline))
+		_ = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeDeadline))
 	}
 	c.writeMux.Unlock()
 	if err != nil {
@@ -767,10 +800,25 @@ func (c *Client) sendPing() {
 			return
 		default:
 			logger.Error("websocket: Ping failed: %v", err)
-			c.reconnect()
+			c.reconnect(conn)
 			return
 		}
 	}
+}
+
+// PingNow sends a single ping immediately instead of waiting for the next
+// scheduled tick of pingMonitor - useful as a fast liveness probe (e.g. right
+// after a host wake from sleep) so a live connection confirms itself in one
+// round trip and a dead one starts reconnecting immediately, rather than
+// waiting for the earlier of the next scheduled ping or the read deadline to
+// expire. Safe to call at any time, including before the ping monitor has
+// started or while disconnected (sendPing is a no-op in that case). Runs
+// asynchronously since sendPing can block up to writeDeadline.
+func (c *Client) PingNow() {
+	if c == nil {
+		return
+	}
+	go c.sendPing()
 }
 
 // pingMonitor sends pings at a short interval and triggers reconnect on failure
@@ -800,15 +848,15 @@ func (c *Client) StartPingMonitor() {
 
 	c.pingStartedMux.Lock()
 	defer c.pingStartedMux.Unlock()
-	
+
 	if c.pingStarted {
 		return
 	}
 	c.pingStarted = true
-	
+
 	// Create a new pingDone channel for this ping monitor instance
 	c.pingDone = make(chan struct{})
-	
+
 	// Send an initial ping immediately
 	go func() {
 		c.sendPing()
@@ -820,11 +868,11 @@ func (c *Client) StartPingMonitor() {
 func (c *Client) stopPingMonitor() {
 	c.pingStartedMux.Lock()
 	defer c.pingStartedMux.Unlock()
-	
+
 	if !c.pingStarted {
 		return
 	}
-	
+
 	// Close the pingDone channel to stop the monitor
 	close(c.pingDone)
 	c.pingStarted = false
@@ -845,19 +893,21 @@ func (c *Client) setConfigVersion(version int) {
 	c.configVersion = version
 }
 
-// readPumpWithDisconnectDetection reads messages and triggers reconnect on error
-func (c *Client) readPumpWithDisconnectDetection() {
+// readPumpWithDisconnectDetection reads messages and triggers reconnect on
+// error. conn is the specific connection instance this pump was spawned for
+// (captured at spawn time, not re-read from c.conn) so that a concurrent
+// reconnect swapping or clearing c.conn can never cause this loop to read
+// through a nil or unrelated connection.
+func (c *Client) readPumpWithDisconnectDetection(conn *websocket.Conn) {
 	defer func() {
-		if c.conn != nil {
-			c.conn.Close()
-		}
+		conn.Close()
 		// Only attempt reconnect if we're not shutting down
 		select {
 		case <-c.done:
 			// Shutting down, don't reconnect
 			return
 		default:
-			c.reconnect()
+			c.reconnect(conn)
 		}
 	}()
 
@@ -866,13 +916,13 @@ func (c *Client) readPumpWithDisconnectDetection() {
 		case <-c.done:
 			return
 		default:
-			messageType, p, err := c.conn.ReadMessage()
+			messageType, p, err := conn.ReadMessage()
 			if err == nil {
 				// Any inbound traffic means the peer is alive — extend the
 				// read deadline (also covers servers that answer the
 				// app-level "olm/ping" with a message rather than a
 				// protocol pong).
-				_ = c.conn.SetReadDeadline(time.Now().Add(c.pongWait))
+				_ = conn.SetReadDeadline(time.Now().Add(c.pongWait))
 			}
 			if err != nil {
 				// Check if we're shutting down or explicitly disconnected before logging error
@@ -946,11 +996,15 @@ func (c *Client) readPumpWithDisconnectDetection() {
 	}
 }
 
-func (c *Client) reconnect() {
+// reconnect tears down old and starts a fresh connectWithRetry loop
+func (c *Client) reconnect(old *websocket.Conn) {
+	if !c.clearConnIfCurrent(old) {
+		return
+	}
+
 	c.setConnected(false)
-	if c.conn != nil {
-		c.conn.Close()
-		c.conn = nil
+	if old != nil {
+		old.Close()
 	}
 
 	// Don't reconnect if explicitly disconnected
