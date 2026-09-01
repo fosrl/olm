@@ -1174,6 +1174,20 @@ func (o *Olm) SetPowerMode(mode string) error {
 	return nil
 }
 
+// PokeConnection sends an immediate ping over the control websocket rather
+// than waiting for the next scheduled ping interval or read-deadline expiry,
+// so a live connection confirms itself in one round trip and a dead one -
+// undetectable while the underlying host was asleep, since nothing runs
+// during real system sleep to notice - starts reconnecting right away. This
+// is meant to be driven by an actual "device woke up" hook, not a timer, so
+// recovery stays tied to a real signal rather than a guess about how long
+// reconnecting might take. No-op if the tunnel isn't running.
+func (o *Olm) PokeConnection() {
+	if o.websocket != nil {
+		o.websocket.PingNow()
+	}
+}
+
 // RebindSocket recreates the UDP socket when network connectivity changes.
 // This is necessary on macOS/iOS when transitioning between WiFi and cellular,
 // as the old socket becomes stale and can no longer route packets.

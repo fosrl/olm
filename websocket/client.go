@@ -773,6 +773,21 @@ func (c *Client) sendPing() {
 	}
 }
 
+// PingNow sends a single ping immediately instead of waiting for the next
+// scheduled tick of pingMonitor - useful as a fast liveness probe (e.g. right
+// after a host wake from sleep) so a live connection confirms itself in one
+// round trip and a dead one starts reconnecting immediately, rather than
+// waiting for the earlier of the next scheduled ping or the read deadline to
+// expire. Safe to call at any time, including before the ping monitor has
+// started or while disconnected (sendPing is a no-op in that case). Runs
+// asynchronously since sendPing can block up to writeDeadline.
+func (c *Client) PingNow() {
+	if c == nil {
+		return
+	}
+	go c.sendPing()
+}
+
 // pingMonitor sends pings at a short interval and triggers reconnect on failure
 func (c *Client) pingMonitor() {
 	ticker := time.NewTicker(c.pingInterval)
