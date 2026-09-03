@@ -1,7 +1,8 @@
 # Olm
-Olm is being phased out in favor of the [Pangolin CLI](https://github.com/fosrl/cli) and is only meant for advanced use cases.
 
-Olm is a [WireGuard](https://www.wireguard.com/) tunnel client designed to securely connect your computer to Newt sites running on remote networks.
+Olm is the cross-platform internal networking library built into every Pangolin client. It does the heavy-lifting of connecting the client to Pangolin sites.
+
+Don't use Olm as a standalone machine client. Instead, use the [Pangolin CLI](https://github.com/fosrl/cli).
 
 ### Installation and Documentation
 
@@ -21,7 +22,7 @@ When Olm receives WireGuard control messages, it will use the information encode
 
 ## Hole Punching
 
-In the default mode, olm uses both relaying through Gerbil and NAT hole punching to connect to Newt. Hole punching attempts to orchestrate a NAT traversal between the two sites so that traffic flows directly, which can save data costs and improve speed. If hole punching fails, traffic will fall back to relaying through Gerbil.
+In the default mode, Olm uses both relaying through Gerbil and NAT hole punching to connect to Newt. Hole punching attempts to orchestrate a NAT traversal between the two sites so that traffic flows directly, which can save data costs and improve speed. If hole punching fails, traffic will fall back to relaying through Gerbil.
 
 ## Build
 
