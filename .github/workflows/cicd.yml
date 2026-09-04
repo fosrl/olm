@@ -759,7 +759,7 @@ jobs:
           cosign public-key --key env://COSIGN_PRIVATE_KEY >/dev/null
 
       - name: Generate SBOM (SPDX JSON) from GHCR digest
-        uses: aquasecurity/trivy-action@97e0b3872f55f89b95b2f65b3dbab56962816478 # v0.34.2
+        uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297 # v0.34.2
         with:
           image-ref: ${{ env.GHCR_REF }}
           format: spdx-json
