@@ -27,6 +27,7 @@ import (
 	"github.com/fosrl/olm/dns"
 	dnsOverride "github.com/fosrl/olm/dns/override"
 	"github.com/fosrl/olm/peers"
+	"github.com/fosrl/olm/subnetrouter"
 	"github.com/fosrl/olm/websocket"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -254,6 +255,7 @@ func (o *Olm) registerAPICallbacks() {
 				TlsClientCert: req.TlsClientCert,
 				OrgID:         req.OrgID,
 				MatchDomains:  req.MatchDomains,
+				SubnetRouter:  req.SubnetRouter,
 			}
 
 			var err error
@@ -577,6 +579,11 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	o.websocket.RegisterHandler("olm/wg/exitnode/disconnect", o.handleExitNodeDisconnect)
 	o.websocket.RegisterHandler("olm/wg/exitnode/data/update", o.handleExitNodeUpdateData)
 
+	// Handler for the server to push a live DNS config override (upstream DNS,
+	// tunnel DNS, override DNS, match domains) after registration, mirroring the
+	// DNSConfig field sent on the initial "olm/wg/connect" message.
+	o.websocket.RegisterHandler("olm/wg/dns/update", o.handleDNSConfigUpdate)
+
 	o.websocket.RegisterHandler("olm/ping/exitNodes", func(msg websocket.WSMessage) {
 		logger.Debug("Received exit node ping request")
 
@@ -829,6 +836,12 @@ func (o *Olm) Close() {
 		// somehow crash mid-restore the watchdog still has a chance to clean
 		// up. The watchdog itself is a no-op if it was never spawned.
 		o.stopDNSWatchdog()
+	}
+
+	if o.tunnelConfig.SubnetRouter {
+		if err := subnetrouter.Disable(o.tunnelConfig.InterfaceName); err != nil {
+			logger.Error("Failed to disable subnet router: %v", err)
+		}
 	}
 
 	if o.holePunchManager != nil {
