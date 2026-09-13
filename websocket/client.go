@@ -530,32 +530,29 @@ func (c *Client) getToken() (string, []ExitNode, error) {
 }
 
 func (c *Client) connectWithRetry() {
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
 		select {
 		case <-c.done:
 			return
-		default:
-			err := c.establishConnection()
-			if err != nil {
-				// Check if this is an auth error (401/403)
-				var authErr *AuthError
-				if errors.As(err, &authErr) {
-					logger.Error("Authentication failed: %v. Terminating tunnel and retrying...", authErr)
-					// Trigger auth error callback if set (this should terminate the tunnel)
-					if c.onAuthError != nil {
-						c.onAuthError(authErr.StatusCode, authErr.Message)
-					}
-					// Continue retrying after auth error
-					time.Sleep(c.reconnectInterval)
-					continue
-				}
-				// For other errors (5xx, network issues), continue retrying
-				logger.Error("websocket: Failed to connect: %v. Retrying in %v...", err, c.reconnectInterval)
-				time.Sleep(c.reconnectInterval)
-				continue
-			}
+		case <-timer.C:
+			// Timer fired (immediate first time, then after reconnectInterval)
+		}
+		err := c.establishConnection()
+		if err == nil {
 			return
 		}
+		var authErr *AuthError
+		if !errors.As(err, &authErr) {
+			logger.Error("websocket: Failed to connect: %v. Retrying in %v...", err, c.reconnectInterval)
+		} else {
+			logger.Error("Authentication failed: %v. Terminating tunnel and retrying...", authErr)
+			if c.onAuthError != nil {
+				c.onAuthError(authErr.StatusCode, authErr.Message)
+			}
+		}
+		timer.Reset(c.reconnectInterval)
 	}
 }
 
