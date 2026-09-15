@@ -11,6 +11,22 @@ type WgData struct {
 	TunnelIP      string             `json:"tunnelIP"`
 	UtilitySubnet string             `json:"utilitySubnet"` // this is for things like the DNS server, and alias addresses
 	ExitNode      *ExitNodeConfig    `json:"exitNode,omitempty"`
+	DNSConfig     *DNSConfigUpdate   `json:"dnsConfig,omitempty"`
+}
+
+// DNSConfigUpdate describes a server-driven override of the olm client's DNS
+// configuration - the same settings that can otherwise only be set locally
+// (see TunnelConfig's UpstreamDNS/OverrideDNS/TunnelDNS/MatchDomains). It
+// arrives on the initial "olm/wg/connect" message and can also be sent later
+// via "olm/wg/dns/update" to change the running config without reconnecting.
+// Every field is optional/nil-able: an omitted field leaves the client's
+// current value (local config, or whatever a previous update set) unchanged,
+// while a present field always overrides it.
+type DNSConfigUpdate struct {
+	UpstreamDNS  []string `json:"upstreamDns,omitempty"`
+	OverrideDNS  *bool    `json:"overrideDns,omitempty"`
+	TunnelDNS    *bool    `json:"tunnelDns,omitempty"`
+	MatchDomains []string `json:"matchDomains,omitempty"`
 }
 
 // ExitNodeConfig describes an exit node the olm client can connect to for
@@ -158,4 +174,11 @@ type TunnelConfig struct {
 	// false, preserving the routing behavior from before this option was
 	// introduced.
 	PreferLocalRoutes bool
+
+	// SubnetRouter, when enabled, lets this client forward traffic from its
+	// local network out over the tunnel: forwarded packets are NATed to the
+	// client's own tunnel IP before being encrypted, since the server side
+	// authorizes traffic by the client's tunnel identity, not by whatever
+	// LAN address it originally arrived with. Linux only. Defaults to false.
+	SubnetRouter bool
 }

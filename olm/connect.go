@@ -15,8 +15,8 @@ import (
 	"github.com/fosrl/newt/util"
 	olmDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/dns"
-	dnsOverride "github.com/fosrl/olm/dns/override"
 	"github.com/fosrl/olm/peers"
+	"github.com/fosrl/olm/subnetrouter"
 	"github.com/fosrl/olm/websocket"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -73,6 +73,12 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	if err := json.Unmarshal(jsonData, &wgData); err != nil {
 		logger.Info("Error unmarshaling target data: %v", err)
 		return
+	}
+
+	// A server-provided DNS config always overrides the client's own local
+	// config (from CLI flags / API connect request) - see applyDNSConfigUpdate.
+	if wgData.DNSConfig != nil {
+		o.applyDNSConfigUpdate(*wgData.DNSConfig)
 	}
 
 	// When handed an already-open FD (mobile/NetworkExtension platforms), the
@@ -193,6 +199,14 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		logger.Error("Failed to o.tunnelConfigure interface: %v", err)
 	}
 
+	if o.tunnelConfig.SubnetRouter {
+		if err := subnetrouter.Enable(o.tunnelConfig.InterfaceName, o.primaryTunnelIP); err != nil {
+			logger.Error("Failed to enable subnet router: %v", err)
+		} else {
+			logger.Info("Subnet router enabled on %s (SNAT to %s)", o.tunnelConfig.InterfaceName, o.primaryTunnelIP)
+		}
+	}
+
 	if err := network.AddRoutesWithSource([]string{wgData.UtilitySubnet}, o.tunnelConfig.InterfaceName, interfaceIP); err != nil { // also route the utility subnet
 		logger.Error("Failed to add route for utility subnet: %v", err)
 	}
@@ -273,26 +287,10 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	})
 
 	if o.tunnelConfig.OverrideDNS {
-		// When the host platform already applies DNS natively (NEDNSSettings on
-		// macOS/iOS, scoped to the tunnel session and auto-cleaned by the OS no
-		// matter how the session ends), skip olm's own raw scutil-based override -
-		// there is nothing for it to add and, unlike NEDNSSettings, it has no way
-		// to guarantee cleanup if this process dies uncleanly. See NativeDNSManaged.
-		if !o.tunnelConfig.NativeDNSManaged {
-			// Set up DNS override to use our DNS proxy
-			if err := dnsOverride.SetupDNSOverride(o.tunnelConfig.InterfaceName, o.dnsProxy.GetProxyIP()); err != nil {
-				logger.Error("Failed to setup DNS override: %v", err)
-				return
-			}
-
-			// Start the external watchdog (if configured). The watchdog will
-			// reset DNS if this process dies before it can call
-			// RestoreDNSOverride. This is a no-op when no watchdog
-			// subcommand has been configured on the OlmConfig.
-			o.startDNSWatchdog(o.tunnelConfig.InterfaceName)
+		if err := o.applyDNSOverride(true); err != nil {
+			logger.Error("%v", err)
+			return
 		}
-
-		network.SetDNSServers([]string{o.dnsProxy.GetProxyIP().String()})
 	}
 
 	if wgData.ExitNode != nil && wgData.ExitNode.Connect {

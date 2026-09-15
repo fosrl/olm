@@ -6,6 +6,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/fosrl/newt v1.16.0
 	github.com/godbus/dbus/v5 v5.2.2
+	github.com/google/nftables v0.3.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/miekg/dns v1.1.70
 	golang.org/x/net v0.56.0
@@ -19,6 +20,8 @@ require (
 require (
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect
+	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/vishvananda/netlink v1.3.1 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
