@@ -181,4 +181,10 @@ type TunnelConfig struct {
 	// authorizes traffic by the client's tunnel identity, not by whatever
 	// LAN address it originally arrived with. Linux only. Defaults to false.
 	SubnetRouter bool
+
+	// GatewaySiteIds, when non-empty, designates these site IDs as gateway
+	// (full-tunnel/default-route) candidates from the moment the tunnel
+	// starts, for callers that want a gateway already established rather
+	// than issuing a separate SelectGateway API call after connecting.
+	GatewaySiteIds []int
 }

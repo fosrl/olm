@@ -15,27 +15,35 @@ import (
 
 // ConnectionRequest defines the structure for an incoming connection request
 type ConnectionRequest struct {
-	ID            string   `json:"id"`
-	Secret        string   `json:"secret"`
-	Endpoint      string   `json:"endpoint"`
-	UserToken     string   `json:"userToken,omitempty"`
-	MTU           int      `json:"mtu,omitempty"`
-	DNS           string   `json:"dns,omitempty"`
-	DNSProxyIP    string   `json:"dnsProxyIP,omitempty"`
-	UpstreamDNS   []string `json:"upstreamDNS,omitempty"`
-	InterfaceName string   `json:"interfaceName,omitempty"`
-	Holepunch     bool     `json:"holepunch,omitempty"`
-	TlsClientCert string   `json:"tlsClientCert,omitempty"`
-	PingInterval  string   `json:"pingInterval,omitempty"`
-	PingTimeout   string   `json:"pingTimeout,omitempty"`
-	OrgID         string   `json:"orgId,omitempty"`
-	MatchDomains  []string `json:"matchDomains,omitempty"`
-	SubnetRouter  bool     `json:"subnetRouter,omitempty"`
+	ID             string   `json:"id"`
+	Secret         string   `json:"secret"`
+	Endpoint       string   `json:"endpoint"`
+	UserToken      string   `json:"userToken,omitempty"`
+	MTU            int      `json:"mtu,omitempty"`
+	DNS            string   `json:"dns,omitempty"`
+	DNSProxyIP     string   `json:"dnsProxyIP,omitempty"`
+	UpstreamDNS    []string `json:"upstreamDNS,omitempty"`
+	InterfaceName  string   `json:"interfaceName,omitempty"`
+	Holepunch      bool     `json:"holepunch,omitempty"`
+	TlsClientCert  string   `json:"tlsClientCert,omitempty"`
+	PingInterval   string   `json:"pingInterval,omitempty"`
+	PingTimeout    string   `json:"pingTimeout,omitempty"`
+	OrgID          string   `json:"orgId,omitempty"`
+	MatchDomains   []string `json:"matchDomains,omitempty"`
+	SubnetRouter   bool     `json:"subnetRouter,omitempty"`
+	GatewaySiteIds []int    `json:"gatewaySiteIds,omitempty"`
 }
 
 // SwitchOrgRequest defines the structure for switching organizations
 type SwitchOrgRequest struct {
 	OrgID string `json:"org_id"`
+}
+
+// GatewayRequest defines the structure for a "select gateway" request: the
+// set of site IDs that should act as the gateway (full-tunnel/default-route)
+// for all tunnel traffic. Every ID must already be a tracked/connected peer.
+type GatewayRequest struct {
+	SiteIds []int `json:"siteIds"`
 }
 
 // PowerModeRequest represents a request to change power mode
@@ -84,6 +92,8 @@ type StatusResponse struct {
 	PeerStatuses    map[int]*PeerStatus     `json:"peers,omitempty"`
 	NetworkSettings network.NetworkSettings `json:"networkSettings,omitempty"`
 	ExitNodeStatus  *ExitNodeStatus         `json:"exitNode,omitempty"`
+	GatewayActive   bool                    `json:"gatewayActive,omitempty"`
+	GatewaySiteIds  []int                   `json:"gatewaySiteIds,omitempty"`
 }
 
 type MetadataChangeRequest struct {
@@ -113,6 +123,8 @@ type API struct {
 	onRebind         func() error
 	onPowerMode      func(PowerModeRequest) error
 	onJITConnect     func(JITConnectionRequest) error
+	onSelectGateway  func(GatewayRequest) error
+	onDisableGateway func() error
 
 	statusMu       sync.RWMutex
 	peerStatuses   map[int]*PeerStatus
@@ -122,6 +134,8 @@ type API struct {
 	isRegistered   bool
 	isTerminated   bool
 	olmError       *OlmError
+	gatewayActive  bool
+	gatewaySiteIds []int
 
 	version string
 	agent   string
@@ -166,6 +180,8 @@ func (s *API) SetHandlers(
 	onRebind func() error,
 	onPowerMode func(PowerModeRequest) error,
 	onJITConnect func(JITConnectionRequest) error,
+	onSelectGateway func(GatewayRequest) error,
+	onDisableGateway func() error,
 ) {
 	s.onConnect = onConnect
 	s.onSwitchOrg = onSwitchOrg
@@ -175,6 +191,8 @@ func (s *API) SetHandlers(
 	s.onRebind = onRebind
 	s.onPowerMode = onPowerMode
 	s.onJITConnect = onJITConnect
+	s.onSelectGateway = onSelectGateway
+	s.onDisableGateway = onDisableGateway
 }
 
 // Start starts the HTTP server
@@ -194,6 +212,8 @@ func (s *API) Start() error {
 	mux.HandleFunc("/rebind", s.handleRebind)
 	mux.HandleFunc("/power-mode", s.handlePowerMode)
 	mux.HandleFunc("/jit-connect", s.handleJITConnect)
+	mux.HandleFunc("/gateway/select", s.handleSelectGateway)
+	mux.HandleFunc("/gateway/disable", s.handleDisableGateway)
 
 	s.server = &http.Server{
 		Handler: mux,
@@ -440,6 +460,15 @@ func (s *API) ClearExitNodeStatus() {
 	s.exitNodeStatus = nil
 }
 
+// SetGatewayStatus records the current gateway (full-tunnel/default-route)
+// state for exposure via the status endpoint.
+func (s *API) SetGatewayStatus(active bool, siteIds []int) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.gatewayActive = active
+	s.gatewaySiteIds = siteIds
+}
+
 // handleConnect handles the /connect endpoint
 func (s *API) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -505,6 +534,8 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PeerStatuses:    s.peerStatuses,
 		NetworkSettings: network.GetSettings(),
 		ExitNodeStatus:  s.exitNodeStatus,
+		GatewayActive:   s.gatewayActive,
+		GatewaySiteIds:  s.gatewaySiteIds,
 	}
 
 	s.statusMu.RUnlock()
@@ -673,6 +704,8 @@ func (s *API) GetStatus() StatusResponse {
 		PeerStatuses:    s.peerStatuses,
 		NetworkSettings: network.GetSettings(),
 		ExitNodeStatus:  s.exitNodeStatus,
+		GatewayActive:   s.gatewayActive,
+		GatewaySiteIds:  s.gatewaySiteIds,
 	}
 }
 
@@ -751,6 +784,73 @@ func (s *API) handleJITConnect(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "JIT connection request accepted",
+	})
+}
+
+// handleSelectGateway handles the /gateway/select endpoint. It designates
+// the given site IDs as the gateway (full-tunnel/default-route) candidate
+// set - the onSelectGateway handler is responsible for rejecting the call if
+// the tunnel isn't registered/connected or any site ID isn't a tracked peer.
+func (s *API) handleSelectGateway(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req GatewayRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if len(req.SiteIds) == 0 {
+		http.Error(w, "Missing required field: siteIds must be provided", http.StatusBadRequest)
+		return
+	}
+
+	logger.Info("Received select-gateway request via API: siteIds=%v", req.SiteIds)
+
+	if s.onSelectGateway != nil {
+		if err := s.onSelectGateway(req); err != nil {
+			http.Error(w, fmt.Sprintf("Select gateway failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		http.Error(w, "Select gateway handler not configured", http.StatusNotImplemented)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status": "gateway selection accepted",
+	})
+}
+
+// handleDisableGateway handles the /gateway/disable endpoint. It fully clears
+// gateway state; no request body is needed.
+func (s *API) handleDisableGateway(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	logger.Info("Received disable-gateway request via API")
+
+	if s.onDisableGateway != nil {
+		if err := s.onDisableGateway(); err != nil {
+			http.Error(w, fmt.Sprintf("Disable gateway failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		http.Error(w, "Disable gateway handler not configured", http.StatusNotImplemented)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status": "gateway disabled",
 	})
 }
 

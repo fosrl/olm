@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	_ "net/http/pprof"
+	"net/netip"
 	"os"
 	"os/exec"
 	"sync"
@@ -243,19 +243,20 @@ func (o *Olm) registerAPICallbacks() {
 			logger.Info("Received connection request via HTTP: id=%s, endpoint=%s", req.ID, req.Endpoint)
 
 			tunnelConfig := TunnelConfig{
-				Endpoint:      req.Endpoint,
-				ID:            req.ID,
-				Secret:        req.Secret,
-				UserToken:     req.UserToken,
-				MTU:           req.MTU,
-				DNS:           req.DNS,
-				UpstreamDNS:   req.UpstreamDNS,
-				InterfaceName: req.InterfaceName,
-				Holepunch:     req.Holepunch,
-				TlsClientCert: req.TlsClientCert,
-				OrgID:         req.OrgID,
-				MatchDomains:  req.MatchDomains,
-				SubnetRouter:  req.SubnetRouter,
+				Endpoint:       req.Endpoint,
+				ID:             req.ID,
+				Secret:         req.Secret,
+				UserToken:      req.UserToken,
+				MTU:            req.MTU,
+				DNS:            req.DNS,
+				UpstreamDNS:    req.UpstreamDNS,
+				InterfaceName:  req.InterfaceName,
+				Holepunch:      req.Holepunch,
+				TlsClientCert:  req.TlsClientCert,
+				OrgID:          req.OrgID,
+				MatchDomains:   req.MatchDomains,
+				SubnetRouter:   req.SubnetRouter,
+				GatewaySiteIds: req.GatewaySiteIds,
 			}
 
 			var err error
@@ -359,6 +360,16 @@ func (o *Olm) registerAPICallbacks() {
 			o.peerSendMu.Unlock()
 
 			return nil
+		},
+		// onSelectGateway
+		func(req api.GatewayRequest) error {
+			logger.Info("Received select-gateway request via API: siteIds=%v", req.SiteIds)
+			return o.SelectGateway(req.SiteIds)
+		},
+		// onDisableGateway
+		func() error {
+			logger.Info("Received disable-gateway request via API")
+			return o.DisableGateway()
 		},
 	)
 }
@@ -755,6 +766,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		o.apiServer.SetRegistered(false)
 		o.apiServer.ClearOlmError()
 		o.apiServer.ClearPeerStatuses()
+		o.apiServer.SetGatewayStatus(false, nil)
 		network.ClearNetworkSettings()
 
 		o.Close()
@@ -964,6 +976,7 @@ func (o *Olm) StopTunnel() error {
 	o.apiServer.SetConnectionStatus(false)
 	o.apiServer.SetRegistered(false)
 	o.apiServer.ClearOlmError()
+	o.apiServer.SetGatewayStatus(false, nil)
 
 	network.ClearNetworkSettings()
 	o.apiServer.ClearPeerStatuses()

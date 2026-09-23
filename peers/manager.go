@@ -66,7 +66,30 @@ type PeerManager struct {
 	// lastOwnerChange tracks, per allowed-IP CIDR, when ownership was last transferred.
 	// Used to enforce a cooldown so routes don't flap between two similarly-performing sites.
 	lastOwnerChange map[string]time.Time
+
+	// Gateway (full-tunnel/default-route) state. gatewaySiteIds is business
+	// intent - the current candidate set - not WireGuard ownership, which is
+	// tracked the same way as any other shared CIDR via allowedIPOwners/
+	// allowedIPClaims (see gatewayCIDR). gatewayExcludedIPs is a refcount so a
+	// destination referenced by more than one thing (or re-added while
+	// already excluded) is only actually un-excluded once nothing references
+	// it any more. gatewayControlIP is the control-plane (Pangolin server)
+	// endpoint, resolved once at activation and excluded for the lifetime of
+	// the gateway so the management connection doesn't depend on the current
+	// gateway-owner site's own uplink.
+	gatewayActive      bool
+	gatewaySiteIds     map[int]bool
+	gatewayExcludedIPs map[string]int
+	gatewayControlIP   string
 }
+
+// gatewayCIDR is the WireGuard AllowedIPs claim key for "this site is the
+// gateway (full-tunnel/default-route)". It is never added to
+// SiteConfig.RemoteSubnets/AllowedIps and never sent over the wire - it only
+// ever lives in allowedIPOwners/allowedIPClaims, exactly like a shared remote
+// subnet, so it is never clobbered by AddPeer/UpdatePeer recomputing
+// SiteConfig.AllowedIps from scratch.
+const gatewayCIDR = "0.0.0.0/0"
 
 const (
 	// routeSwitchRTTMargin requires a candidate site's RTT to be at least this much
@@ -107,17 +130,19 @@ func normalizeServerRouteDestination(serverIP string) string {
 // NewPeerManager creates a new PeerManager with an internal PeerMonitor
 func NewPeerManager(config PeerManagerConfig) *PeerManager {
 	pm := &PeerManager{
-		device:          config.Device,
-		peers:           make(map[int]SiteConfig),
-		dnsProxy:        config.DNSProxy,
-		interfaceName:   config.InterfaceName,
-		localIP:         config.LocalIP,
-		privateKey:      config.PrivateKey,
-		allowedIPOwners: make(map[string]int),
-		allowedIPClaims: make(map[string]map[int]bool),
-		APIServer:       config.APIServer,
-		publicDNS:       config.PublicDNS,
-		lastOwnerChange: make(map[string]time.Time),
+		device:             config.Device,
+		peers:              make(map[int]SiteConfig),
+		dnsProxy:           config.DNSProxy,
+		interfaceName:      config.InterfaceName,
+		localIP:            config.LocalIP,
+		privateKey:         config.PrivateKey,
+		allowedIPOwners:    make(map[string]int),
+		allowedIPClaims:    make(map[string]map[int]bool),
+		APIServer:          config.APIServer,
+		publicDNS:          config.PublicDNS,
+		lastOwnerChange:    make(map[string]time.Time),
+		gatewaySiteIds:     make(map[int]bool),
+		gatewayExcludedIPs: make(map[string]int),
 	}
 
 	// Create the peer monitor
@@ -187,6 +212,248 @@ func (pm *PeerManager) SetPublicDNS(servers []string) {
 	}
 }
 
+// resolveEndpointIPLocked resolves a raw "host[:port]" endpoint string (as
+// stored on SiteConfig.Endpoint/RelayEndpoint, or passed directly to
+// RelayPeer/UnRelayPeer) to its bare IP address, for gateway bypass-route
+// purposes. Must be called with pm.mu held (uses pm.publicDNS).
+func (pm *PeerManager) resolveEndpointIPLocked(endpoint string) (string, bool) {
+	if endpoint == "" {
+		return "", false
+	}
+	resolved, err := util.ResolveDomainUpstream(formatEndpoint(endpoint), pm.publicDNS)
+	if err != nil {
+		logger.Warn("Gateway: failed to resolve endpoint %q for bypass route: %v", endpoint, err)
+		return "", false
+	}
+	host, _, err := net.SplitHostPort(resolved)
+	if err != nil {
+		host = resolved
+	}
+	return host, true
+}
+
+// resolveActiveEndpointIPLocked resolves the endpoint peer is currently using
+// (per its own Endpoint/RelayEndpoint fields and the peer monitor's relayed
+// flag) to a bare IP, for gateway bypass-route purposes. Returns ("", false)
+// for an active local endpoint - on-link traffic never traverses the OS
+// default route, so it needs no bypass route. Must be called with pm.mu held.
+func (pm *PeerManager) resolveActiveEndpointIPLocked(peer SiteConfig) (string, bool) {
+	if peer.ActiveLocalEndpoint != "" {
+		return "", false
+	}
+	endpoint := peer.Endpoint
+	if pm.peerMonitor != nil && pm.peerMonitor.IsPeerRelayed(peer.SiteId) && peer.RelayEndpoint != "" {
+		endpoint = peer.RelayEndpoint
+	}
+	return pm.resolveEndpointIPLocked(endpoint)
+}
+
+// excludeEndpointLocked adds a bypass route for ip if this is its first
+// reference, or just bumps the refcount if something is already excluding
+// it (gatewayExcludedIPs). No-op for an empty ip (the "no endpoint yet" /
+// "active local endpoint" case from the resolve helpers above). Must be
+// called with pm.mu held.
+func (pm *PeerManager) excludeEndpointLocked(ip string) {
+	if ip == "" {
+		return
+	}
+	if pm.gatewayExcludedIPs[ip] == 0 {
+		if err := network.AddBypassRouteForDestination(ip); err != nil {
+			logger.Error("Gateway: failed to add bypass route for %s: %v", ip, err)
+		}
+	}
+	pm.gatewayExcludedIPs[ip]++
+}
+
+// unexcludeEndpointLocked reverses excludeEndpointLocked: decrements the
+// refcount and only actually removes the bypass route once nothing
+// references ip any more. Must be called with pm.mu held.
+func (pm *PeerManager) unexcludeEndpointLocked(ip string) {
+	if ip == "" {
+		return
+	}
+	if pm.gatewayExcludedIPs[ip] <= 1 {
+		delete(pm.gatewayExcludedIPs, ip)
+		if err := network.RemoveBypassRouteForDestination(ip); err != nil {
+			logger.Error("Gateway: failed to remove bypass route for %s: %v", ip, err)
+		}
+		return
+	}
+	pm.gatewayExcludedIPs[ip]--
+}
+
+// activateGatewayLocked performs the one-time setup for gateway mode:
+// resolving and excluding the control-plane endpoint and every
+// currently-tracked peer's active endpoint (so none of them can be captured
+// by the default-route-equivalent installed at the end), then installing
+// that route. Must be called with pm.mu held, and only once (guarded by
+// pm.gatewayActive in the caller).
+func (pm *PeerManager) activateGatewayLocked(controlEndpointHost string) error {
+	if ip, ok := pm.resolveEndpointIPLocked(controlEndpointHost); ok {
+		pm.gatewayControlIP = ip
+		pm.excludeEndpointLocked(ip)
+	} else if controlEndpointHost != "" {
+		logger.Warn("Gateway: failed to resolve control endpoint %q for bypass route", controlEndpointHost)
+	}
+
+	for _, peer := range pm.peers {
+		if ip, ok := pm.resolveActiveEndpointIPLocked(peer); ok {
+			pm.excludeEndpointLocked(ip)
+		}
+	}
+
+	if err := network.AddGatewayDefaultRoute(pm.interfaceName, pm.localIP); err != nil {
+		return fmt.Errorf("failed to install gateway route: %v", err)
+	}
+
+	return nil
+}
+
+// deactivateGatewayLocked reverses activateGatewayLocked: removes the
+// default-route-equivalent, then every remaining bypass route (including the
+// control endpoint), and resets gateway exclusion state. Must be called with
+// pm.mu held.
+func (pm *PeerManager) deactivateGatewayLocked() {
+	if err := network.RemoveGatewayDefaultRoute(pm.interfaceName); err != nil {
+		logger.Error("Gateway: failed to remove gateway route: %v", err)
+	}
+
+	for ip := range pm.gatewayExcludedIPs {
+		if err := network.RemoveBypassRouteForDestination(ip); err != nil {
+			logger.Error("Gateway: failed to remove bypass route for %s: %v", ip, err)
+		}
+	}
+	pm.gatewayExcludedIPs = make(map[string]int)
+	pm.gatewayControlIP = ""
+}
+
+// claimGatewayClaimLocked registers siteId's claim to the gateway CIDR via
+// the same generic ownership machinery used for shared remote subnets
+// (claimAllowedIP), then pushes an incremental WireGuard AllowedIPs update if
+// this claim made siteId the owner. Deliberately bypasses
+// addAllowedIp/SiteConfig.AllowedIps - see gatewayCIDR's doc comment. Must be
+// called with pm.mu held.
+func (pm *PeerManager) claimGatewayClaimLocked(siteId int) {
+	pm.claimAllowedIP(siteId, gatewayCIDR)
+	if pm.allowedIPOwners[gatewayCIDR] != siteId {
+		return
+	}
+	peer, exists := pm.peers[siteId]
+	if !exists {
+		return
+	}
+	if err := AddAllowedIP(pm.device, peer.PublicKey, gatewayCIDR); err != nil {
+		logger.Error("Gateway: failed to claim %s for site %d: %v", gatewayCIDR, siteId, err)
+	}
+}
+
+// releaseGatewayClaimLocked reverses claimGatewayClaimLocked. If siteId was
+// the owner, promotes another candidate the same way releaseAllowedIP/
+// transferOwnership already do for shared remote subnets. Must be called
+// with pm.mu held.
+func (pm *PeerManager) releaseGatewayClaimLocked(siteId int) {
+	wasOwner := pm.allowedIPOwners[gatewayCIDR] == siteId
+	newOwner, promoted := pm.releaseAllowedIP(siteId, gatewayCIDR)
+
+	if wasOwner {
+		if peer, exists := pm.peers[siteId]; exists {
+			remaining := pm.getWireGuardAllowedIPs(siteId)
+			if err := RemoveAllowedIP(pm.device, peer.PublicKey, remaining); err != nil {
+				logger.Error("Gateway: failed to release %s from site %d: %v", gatewayCIDR, siteId, err)
+			}
+		}
+	}
+
+	if promoted && newOwner >= 0 {
+		if peer, exists := pm.peers[newOwner]; exists {
+			if err := AddAllowedIP(pm.device, peer.PublicKey, gatewayCIDR); err != nil {
+				logger.Error("Gateway: failed to promote site %d to owner of %s: %v", newOwner, gatewayCIDR, err)
+			}
+		}
+	}
+}
+
+// SetGateway designates siteIds as the gateway (full-tunnel/default-route)
+// candidate set. Every siteId must already be a tracked peer, or the call is
+// rejected outright (no partial application). On first activation this
+// installs the OS-level gateway route plus every bypass route needed so the
+// tunnel's own traffic (control-plane endpoint, every tracked peer's active
+// endpoint) isn't captured by it; subsequent calls only change which sites
+// may own the "0.0.0.0/0" WireGuard AllowedIP, via the existing generic
+// claim/optimizer machinery - exactly like remote subnets. controlEndpointHost
+// is the Pangolin server host olm is registered against (bare host, port
+// optional); always excluded regardless of which sites are selected.
+func (pm *PeerManager) SetGateway(siteIds []int, controlEndpointHost string) error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	if len(siteIds) == 0 {
+		return fmt.Errorf("at least one site ID must be provided")
+	}
+
+	var missing []int
+	for _, id := range siteIds {
+		if _, ok := pm.peers[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("site IDs not tracked as peers: %v", missing)
+	}
+
+	if !pm.gatewayActive {
+		if err := pm.activateGatewayLocked(controlEndpointHost); err != nil {
+			return err
+		}
+		pm.gatewayActive = true
+	}
+
+	newSet := make(map[int]bool, len(siteIds))
+	for _, id := range siteIds {
+		newSet[id] = true
+	}
+	for id := range pm.gatewaySiteIds {
+		if !newSet[id] {
+			pm.releaseGatewayClaimLocked(id)
+		}
+	}
+	for id := range newSet {
+		if !pm.gatewaySiteIds[id] {
+			pm.claimGatewayClaimLocked(id)
+		}
+	}
+	pm.gatewaySiteIds = newSet
+
+	logger.Info("Gateway set to sites %v", siteIds)
+	return nil
+}
+
+// clearGatewayLocked is ClearGateway's body, split out so Close() (which
+// already holds pm.mu) can reuse it without re-locking. Must be called with
+// pm.mu held.
+func (pm *PeerManager) clearGatewayLocked() {
+	if !pm.gatewayActive {
+		return
+	}
+	for id := range pm.gatewaySiteIds {
+		pm.releaseGatewayClaimLocked(id)
+	}
+	pm.gatewaySiteIds = make(map[int]bool)
+	pm.deactivateGatewayLocked()
+	pm.gatewayActive = false
+	logger.Info("Gateway cleared")
+}
+
+// ClearGateway fully removes gateway state: releases every candidate's
+// claim, tears down the OS-level gateway route, and removes every bypass
+// route. No-op if gateway is not currently active.
+func (pm *PeerManager) ClearGateway() error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.clearGatewayLocked()
+	return nil
+}
+
 func (pm *PeerManager) GetAllPeers() []SiteConfig {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
@@ -232,6 +499,17 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 		}
 	}
 
+	// If this site is a gateway candidate, claim the gateway CIDR the same
+	// way as any other shared allowed IP - this must happen even for a
+	// re-add (e.g. server-directed peer churn while gateway mode is active),
+	// or the site would silently lose its claim.
+	if pm.gatewaySiteIds[siteConfig.SiteId] {
+		pm.claimAllowedIP(siteConfig.SiteId, gatewayCIDR)
+		if pm.allowedIPOwners[gatewayCIDR] == siteConfig.SiteId {
+			ownedIPs = append(ownedIPs, gatewayCIDR)
+		}
+	}
+
 	// Create a config with only the owned IPs for WireGuard
 	wgConfig := siteConfig
 	wgConfig.AllowedIps = ownedIPs
@@ -259,6 +537,16 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	}
 
 	pm.peers[siteConfig.SiteId] = siteConfig
+
+	// Independent of gateway candidacy: while gateway mode is active, every
+	// tracked site (not just the current candidates) needs its own endpoint
+	// protected from the default-route-equivalent, so a newly/JIT-connected
+	// site is covered too.
+	if pm.gatewayActive {
+		if ip, ok := pm.resolveActiveEndpointIPLocked(siteConfig); ok {
+			pm.excludeEndpointLocked(ip)
+		}
+	}
 
 	pm.APIServer.AddPeerStatus(siteConfig.SiteId, siteConfig.Name, false, 0, siteConfig.Endpoint, false, false)
 
@@ -343,7 +631,11 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 		pm.dnsProxy.RemoveDNSRecord(alias.Alias, address)
 	}
 
-	// Release all IP claims and promote other peers as needed
+	// Release all IP claims and promote other peers as needed. Scan
+	// allowedIPClaims directly (rather than peer.AllowedIps) so this also
+	// releases claims that never entered SiteConfig.AllowedIps - e.g. the
+	// gateway CIDR (see gatewayCIDR's doc comment) - otherwise removing a
+	// gateway-candidate peer would leak its claim forever.
 	// Collect promotions first to avoid modifying while iterating
 	type promotion struct {
 		newOwner int
@@ -351,7 +643,13 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 	}
 	var promotions []promotion
 
-	for _, ip := range peer.AllowedIps {
+	var claimedCIDRs []string
+	for cidr, claimants := range pm.allowedIPClaims {
+		if claimants[siteId] {
+			claimedCIDRs = append(claimedCIDRs, cidr)
+		}
+	}
+	for _, ip := range claimedCIDRs {
 		newOwner, promoted := pm.releaseAllowedIP(siteId, ip)
 		if promoted && newOwner >= 0 {
 			promotions = append(promotions, promotion{newOwner: newOwner, cidr: ip})
@@ -384,6 +682,21 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 
 	pm.APIServer.RemovePeerStatus(siteId)
 
+	// Deliberately leave siteId in pm.gatewaySiteIds (if present) rather than
+	// deleting it here: it is business intent, separate from the WG-level
+	// claim already released above via the allowedIPClaims scan (which is
+	// what actually matters for ownership/optimizeRoutes), and keeping it
+	// lets AddPeer transparently re-establish the claim if this is a
+	// remove+re-add churn rather than a real removal. A stale entry for a
+	// site that never comes back is harmless - the next SetGateway/
+	// ClearGateway call reconciles it, and releaseGatewayClaimLocked already
+	// no-ops safely for a site with no remaining claim or peer.
+	if pm.gatewayActive {
+		if ip, ok := pm.resolveActiveEndpointIPLocked(peer); ok {
+			pm.unexcludeEndpointLocked(ip)
+		}
+	}
+
 	delete(pm.peers, siteId)
 	return nil
 }
@@ -400,6 +713,14 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 	// Preserve the currently active local endpoint (if any) across updates so an in-progress
 	// local connection isn't disrupted by an unrelated site update.
 	siteConfig.ActiveLocalEndpoint = oldPeer.ActiveLocalEndpoint
+
+	// Snapshot the old active endpoint now, before anything changes, for the
+	// gateway bypass-route churn at the end of this function.
+	var oldEndpointIP string
+	var haveOldEndpointIP bool
+	if pm.gatewayActive {
+		oldEndpointIP, haveOldEndpointIP = pm.resolveActiveEndpointIPLocked(oldPeer)
+	}
 
 	// Update aliases
 	// Remove old aliases
@@ -553,6 +874,16 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 	monitorAddress := strings.Split(siteConfig.ServerIP, "/")[0]
 	monitorPeer := net.JoinHostPort(monitorAddress, strconv.Itoa(int(siteConfig.ServerPort+1))) // +1 for the monitor port
 	pm.peerMonitor.UpdatePeerEndpoint(siteConfig.SiteId, monitorPeer)                           // +1 for monitor port
+
+	if pm.gatewayActive {
+		newIP, haveNewIP := pm.resolveActiveEndpointIPLocked(siteConfig)
+		if haveNewIP {
+			pm.excludeEndpointLocked(newIP)
+		}
+		if haveOldEndpointIP && oldEndpointIP != newIP {
+			pm.unexcludeEndpointLocked(oldEndpointIP)
+		}
+	}
 
 	pm.peers[siteConfig.SiteId] = siteConfig
 	return nil
@@ -899,6 +1230,20 @@ func (pm *PeerManager) RelayPeer(siteId int, relayEndpoint string, relayPort uin
 		logger.Info("Ignoring relay request for site %d: local connection is active", siteId)
 		return
 	}
+	if exists && pm.gatewayActive {
+		// Exclude the endpoint we're switching to before unexcluding the one
+		// we're switching from, so there's never a window with no bypass
+		// route for whichever endpoint is actually in use.
+		oldIP, haveOld := pm.resolveActiveEndpointIPLocked(peer)
+		if newIP, ok := pm.resolveEndpointIPLocked(relayEndpoint); ok {
+			pm.excludeEndpointLocked(newIP)
+			if haveOld && oldIP != newIP {
+				pm.unexcludeEndpointLocked(oldIP)
+			}
+		} else if haveOld {
+			pm.unexcludeEndpointLocked(oldIP)
+		}
+	}
 	if exists {
 		// Store the relay endpoint
 		peer.RelayEndpoint = relayEndpoint
@@ -1018,6 +1363,10 @@ func (pm *PeerManager) Close() {
 	pm.stopRouteOptimizer()
 
 	pm.mu.Lock()
+	// Bypass routes live on the physical interface, not the tun interface, so
+	// unlike tunnel routes they don't disappear for free when the tun device
+	// is torn down - they must be explicitly removed here or they leak.
+	pm.clearGatewayLocked()
 	peerMonitor := pm.peerMonitor
 	pm.peerMonitor = nil
 	pm.mu.Unlock()
@@ -1055,6 +1404,18 @@ func (pm *PeerManager) UnRelayPeer(siteId int, endpoint string) error {
 		pm.mu.Unlock()
 		logger.Info("Ignoring unrelay request for site %d: local connection is active", siteId)
 		return nil
+	}
+	if exists && pm.gatewayActive {
+		// Same add-new-before-remove-old ordering as RelayPeer.
+		oldIP, haveOld := pm.resolveActiveEndpointIPLocked(peer)
+		if newIP, ok := pm.resolveEndpointIPLocked(endpoint); ok {
+			pm.excludeEndpointLocked(newIP)
+			if haveOld && oldIP != newIP {
+				pm.unexcludeEndpointLocked(oldIP)
+			}
+		} else if haveOld {
+			pm.unexcludeEndpointLocked(oldIP)
+		}
 	}
 	if exists {
 		// Store the relay endpoint

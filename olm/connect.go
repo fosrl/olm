@@ -305,6 +305,10 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 
 	o.registered = true
 
+	if len(o.tunnelConfig.GatewaySiteIds) > 0 {
+		o.applyPendingGatewayConfig(o.tunnelConfig.GatewaySiteIds)
+	}
+
 	// Start ping monitor now that we are registered and connected
 	o.websocket.StartPingMonitor()
 
@@ -383,6 +387,7 @@ func (o *Olm) handleTerminate(msg websocket.WSMessage) {
 	o.apiServer.SetConnectionStatus(false)
 	o.apiServer.SetRegistered(false)
 	o.apiServer.ClearPeerStatuses()
+	o.apiServer.SetGatewayStatus(false, nil)
 
 	network.ClearNetworkSettings()
 
