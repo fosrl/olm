@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
@@ -135,6 +136,30 @@ func (o *Olm) getPeerManager() *peers.PeerManager {
 	return pm
 }
 
+// sharedBindNetwork returns the network family to use for the shared UDP
+// socket (WireGuard + hole punch traffic). Everywhere but Windows this is a
+// real dual-stack "udp" wildcard bind, which is what lets the socket reach an
+// exit node/site over IPv6 when that's the only family the network path has
+// a route for (the tunnel payload itself is always IPv4 - see
+// network.ConfigureInterface - but the transport reaching the server/site
+// endpoint isn't restricted to IPv4).
+//
+// On Windows, a dual-stack wildcard bind is unreliable when another VPN's
+// virtual adapter is also active: Windows can select that adapter's IPv6
+// address as the implicit local address for a send to an IPv4 destination,
+// which the OS then rejects outright (WSAEINVAL, "The requested address is
+// not valid in its context"). RebindSocket already worked around this for
+// its own bind by using "udp4" explicitly; do the same here for the initial
+// bind so olm doesn't need a second VPN active to hit it. This does mean
+// Windows can't reach an IPv6-only exit node/site, same trade-off
+// RebindSocket already made. See https://github.com/fosrl/olm/issues/134.
+func sharedBindNetwork() string {
+	if runtime.GOOS == "windows" {
+		return "udp4"
+	}
+	return "udp"
+}
+
 // initTunnelInfo creates the shared UDP socket and holepunch manager.
 // This is used during initial tunnel setup and when switching organizations.
 func (o *Olm) initTunnelInfo(clientID string) error {
@@ -156,7 +181,7 @@ func (o *Olm) initTunnelInfo(clientID string) error {
 		IP:   net.IPv4zero,
 	}
 
-	udpConn, err := net.ListenUDP("udp", localAddr)
+	udpConn, err := net.ListenUDP(sharedBindNetwork(), localAddr)
 	if err != nil {
 		return fmt.Errorf("failed to create UDP socket: %w", err)
 	}
@@ -176,6 +201,11 @@ func (o *Olm) initTunnelInfo(clientID string) error {
 
 	// Create the holepunch manager
 	o.holePunchManager = holepunch.NewManager(sharedBind, clientID, "olm", privateKey.PublicKey().String(), o.tunnelConfig.PublicDNS)
+
+	// A user-disabled hole punch must fully suppress outbound hole punch
+	// packets, not just change what's reported to the server as "relay" (see
+	// SetEnabled's doc comment and https://github.com/fosrl/olm/issues/134).
+	o.holePunchManager.SetEnabled(o.tunnelConfig.Holepunch)
 
 	return nil
 }
@@ -1296,7 +1326,7 @@ func (o *Olm) RebindSocket() error {
 		IP:   net.IPv4zero,
 	}
 
-	newConn, err = net.ListenUDP("udp4", localAddr)
+	newConn, err = net.ListenUDP(sharedBindNetwork(), localAddr)
 	if err != nil {
 		// If we can't reuse the port, find a new one
 		logger.Warn("Could not rebind to port %d, finding new port: %v", currentPort, err)
@@ -1310,8 +1340,7 @@ func (o *Olm) RebindSocket() error {
 			IP:   net.IPv4zero,
 		}
 
-		// Use udp4 explicitly to avoid IPv6 dual-stack issues
-		newConn, err = net.ListenUDP("udp4", localAddr)
+		newConn, err = net.ListenUDP(sharedBindNetwork(), localAddr)
 		if err != nil {
 			return fmt.Errorf("failed to create new UDP socket: %w", err)
 		}
