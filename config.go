@@ -53,6 +53,7 @@ type OlmConfig struct {
 	TunnelDNS         bool   `json:"tunnelDNS"`
 	DisableRelay      bool   `json:"disableRelay"`
 	PreferLocalRoutes bool   `json:"preferLocalRoutes"`
+	SubnetRouter      bool   `json:"subnetRouter"`
 	// DoNotCreateNewClient bool   `json:"doNotCreateNewClient"`
 
 	// Parsed values (not in JSON)
@@ -120,6 +121,7 @@ func DefaultConfig() *OlmConfig {
 	config.sources["tunnelDNS"] = string(SourceDefault)
 	config.sources["disableRelay"] = string(SourceDefault)
 	config.sources["preferLocalRoutes"] = string(SourceDefault)
+	config.sources["subnetRouter"] = string(SourceDefault)
 	// config.sources["doNotCreateNewClient"] = string(SourceDefault)
 
 	return config
@@ -291,6 +293,10 @@ func loadConfigFromEnv(config *OlmConfig) {
 		config.TunnelDNS = true
 		config.sources["tunnelDNS"] = string(SourceEnv)
 	}
+	if val := os.Getenv("SUBNET_ROUTER"); val == "true" {
+		config.SubnetRouter = true
+		config.sources["subnetRouter"] = string(SourceEnv)
+	}
 	// if val := os.Getenv("DO_NOT_CREATE_NEW_CLIENT"); val == "true" {
 	// 	config.DoNotCreateNewClient = true
 	// 	config.sources["doNotCreateNewClient"] = string(SourceEnv)
@@ -324,6 +330,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 		"disableRelay":      config.DisableRelay,
 		"preferLocalRoutes": config.PreferLocalRoutes,
 		"tunnelDNS":         config.TunnelDNS,
+		"subnetRouter":      config.SubnetRouter,
 		// "doNotCreateNewClient": config.DoNotCreateNewClient,
 	}
 
@@ -351,6 +358,7 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	serviceFlags.BoolVar(&config.DisableRelay, "disable-relay", config.DisableRelay, "Disable relay connections")
 	serviceFlags.BoolVar(&config.PreferLocalRoutes, "prefer-local-routes", config.PreferLocalRoutes, "Add tunnel routes with a high metric so overlapping local/connected routes take precedence (default false)")
 	serviceFlags.BoolVar(&config.TunnelDNS, "tunnel-dns", config.TunnelDNS, "When enabled, DNS queries are routed through the tunnel for remote resolution. To ensure queries are tunneled correctly, you must define the DNS server as a Pangolin resource and enter its address as an Upstream DNS Server. (default false)")
+	serviceFlags.BoolVar(&config.SubnetRouter, "subnet-router", config.SubnetRouter, "Enable this client to act as a subnet router: traffic forwarded from the local network is NATed to this client's own tunnel IP before going out over the tunnel. Linux only, requires CAP_NET_ADMIN. (default false)")
 	// serviceFlags.BoolVar(&config.DoNotCreateNewClient, "do-not-create-new-client", config.DoNotCreateNewClient, "Do not create new client")
 
 	version := serviceFlags.Bool("version", false, "Print the version")
@@ -439,6 +447,9 @@ func loadConfigFromCLI(config *OlmConfig, args []string) (bool, bool, error) {
 	}
 	if config.TunnelDNS != origValues["tunnelDNS"].(bool) {
 		config.sources["tunnelDNS"] = string(SourceCLI)
+	}
+	if config.SubnetRouter != origValues["subnetRouter"].(bool) {
+		config.sources["subnetRouter"] = string(SourceCLI)
 	}
 	// if config.DoNotCreateNewClient != origValues["doNotCreateNewClient"].(bool) {
 	// 	config.sources["doNotCreateNewClient"] = string(SourceCLI)
@@ -572,6 +583,10 @@ func mergeConfigs(dest, src *OlmConfig) {
 		dest.PreferLocalRoutes = src.PreferLocalRoutes
 		dest.sources["preferLocalRoutes"] = string(SourceFile)
 	}
+	if src.SubnetRouter {
+		dest.SubnetRouter = src.SubnetRouter
+		dest.sources["subnetRouter"] = string(SourceFile)
+	}
 	// if src.DoNotCreateNewClient {
 	// 	dest.DoNotCreateNewClient = src.DoNotCreateNewClient
 	// 	dest.sources["doNotCreateNewClient"] = string(SourceFile)
@@ -665,6 +680,7 @@ func (c *OlmConfig) ShowConfig() {
 	fmt.Printf("  tunnel-dns            = %v [%s]\n", c.TunnelDNS, getSource("tunnelDNS"))
 	fmt.Printf("  disable-relay         = %v [%s]\n", c.DisableRelay, getSource("disableRelay"))
 	fmt.Printf("  prefer-local-routes   = %v [%s]\n", c.PreferLocalRoutes, getSource("preferLocalRoutes"))
+	fmt.Printf("  subnet-router         = %v [%s]\n", c.SubnetRouter, getSource("subnetRouter"))
 	// fmt.Printf("  do-not-create-new-client = %v [%s]\n", c.DoNotCreateNewClient, getSource("doNotCreateNewClient"))
 	if c.TlsClientCert != "" {
 		fmt.Printf("  tls-cert              = %s [%s]\n", c.TlsClientCert, getSource("tlsClientCert"))

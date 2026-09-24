@@ -35,15 +35,26 @@ type PeerRemove struct {
 	SiteId int `json:"siteId"`
 }
 
+// RelayPeerData represents the server's acknowledgement of an "olm/wg/relay" message. The
+// server replies in kind: SiteId/RelayEndpoint for a single-site request, or the parallel
+// SiteIds/RelayEndpoints arrays for a batched one (RelayPort is shared by the whole batch).
 type RelayPeerData struct {
-	SiteId        int    `json:"siteId"`
-	RelayEndpoint string `json:"relayEndpoint"`
+	SiteId        int    `json:"siteId,omitempty"`
+	RelayEndpoint string `json:"relayEndpoint,omitempty"`
 	RelayPort     uint16 `json:"relayPort"`
+
+	SiteIds        []int    `json:"siteIds,omitempty"`
+	RelayEndpoints []string `json:"relayEndpoints,omitempty"`
 }
 
+// UnRelayPeerData represents the server's acknowledgement of an "olm/wg/unrelay" message,
+// in either its single-site or batched (parallel-array) form. See RelayPeerData.
 type UnRelayPeerData struct {
-	SiteId   int    `json:"siteId"`
-	Endpoint string `json:"endpoint"`
+	SiteId   int    `json:"siteId,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+
+	SiteIds   []int    `json:"siteIds,omitempty"`
+	Endpoints []string `json:"endpoints,omitempty"`
 }
 
 // LocalPeerAckData represents the server's acknowledgement of an "olm/wg/local" or

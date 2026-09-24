@@ -228,28 +228,49 @@ func (o *Olm) handleWgPeerRelay(msg websocket.WSMessage) {
 
 	var relayData struct {
 		peers.RelayPeerData
-		ChainId string `json:"chainId"`
+		ChainId  string   `json:"chainId"`
+		ChainIds []string `json:"chainIds"`
 	}
 	if err := json.Unmarshal(jsonData, &relayData); err != nil {
 		logger.Error("Error unmarshaling relay data: %v", err)
 		return
 	}
 
-	if monitor := pm.GetPeerMonitor(); monitor != nil {
-		monitor.CancelRelaySend(relayData.ChainId)
+	siteIds := relayData.SiteIds
+	relayEndpoints := relayData.RelayEndpoints
+	chainIds := relayData.ChainIds
+	if len(siteIds) == 0 {
+		siteIds = []int{relayData.SiteId}
+		relayEndpoints = []string{relayData.RelayEndpoint}
+		chainIds = []string{relayData.ChainId}
 	}
 
-	primaryRelay, err := util.ResolveDomainUpstream(relayData.RelayEndpoint, o.tunnelConfig.PublicDNS)
+	monitor := pm.GetPeerMonitor()
 
-	if err != nil {
-		logger.Error("Failed to resolve primary relay endpoint: %v", err)
-		return
+	for i, siteId := range siteIds {
+		var relayEndpoint, chainId string
+		if i < len(relayEndpoints) {
+			relayEndpoint = relayEndpoints[i]
+		}
+		if i < len(chainIds) {
+			chainId = chainIds[i]
+		}
+
+		if monitor != nil {
+			monitor.CancelRelaySend(chainId)
+		}
+
+		primaryRelay, err := util.ResolveDomainUpstream(relayEndpoint, o.tunnelConfig.PublicDNS)
+		if err != nil {
+			logger.Error("Failed to resolve primary relay endpoint for site %d: %v", siteId, err)
+			continue
+		}
+
+		// Update HTTP server to mark this peer as using relay
+		o.apiServer.UpdatePeerRelayStatus(siteId, relayEndpoint, true)
+
+		pm.RelayPeer(siteId, primaryRelay, relayData.RelayPort)
 	}
-
-	// Update HTTP server to mark this peer as using relay
-	o.apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.RelayEndpoint, true)
-
-	pm.RelayPeer(relayData.SiteId, primaryRelay, relayData.RelayPort)
 }
 
 func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
@@ -270,27 +291,48 @@ func (o *Olm) handleWgPeerUnrelay(msg websocket.WSMessage) {
 
 	var relayData struct {
 		peers.UnRelayPeerData
-		ChainId string `json:"chainId"`
+		ChainId  string   `json:"chainId"`
+		ChainIds []string `json:"chainIds"`
 	}
 	if err := json.Unmarshal(jsonData, &relayData); err != nil {
 		logger.Error("Error unmarshaling relay data: %v", err)
 		return
 	}
 
-	if monitor := pm.GetPeerMonitor(); monitor != nil {
-		monitor.CancelRelaySend(relayData.ChainId)
+	siteIds := relayData.SiteIds
+	endpoints := relayData.Endpoints
+	chainIds := relayData.ChainIds
+	if len(siteIds) == 0 {
+		siteIds = []int{relayData.SiteId}
+		endpoints = []string{relayData.Endpoint}
+		chainIds = []string{relayData.ChainId}
 	}
 
-	primaryRelay, err := util.ResolveDomainUpstream(relayData.Endpoint, o.tunnelConfig.PublicDNS)
+	monitor := pm.GetPeerMonitor()
 
-	if err != nil {
-		logger.Warn("Failed to resolve primary relay endpoint: %v", err)
+	for i, siteId := range siteIds {
+		var endpoint, chainId string
+		if i < len(endpoints) {
+			endpoint = endpoints[i]
+		}
+		if i < len(chainIds) {
+			chainId = chainIds[i]
+		}
+
+		if monitor != nil {
+			monitor.CancelRelaySend(chainId)
+		}
+
+		primaryRelay, err := util.ResolveDomainUpstream(endpoint, o.tunnelConfig.PublicDNS)
+		if err != nil {
+			logger.Warn("Failed to resolve primary relay endpoint for site %d: %v", siteId, err)
+		}
+
+		// Update HTTP server to mark this peer as using relay
+		o.apiServer.UpdatePeerRelayStatus(siteId, endpoint, false)
+
+		pm.UnRelayPeer(siteId, primaryRelay)
 	}
-
-	// Update HTTP server to mark this peer as using relay
-	o.apiServer.UpdatePeerRelayStatus(relayData.SiteId, relayData.Endpoint, false)
-
-	pm.UnRelayPeer(relayData.SiteId, primaryRelay)
 }
 
 // handleWgPeerLocal handles the server's acknowledgement of an "olm/wg/local" message.
@@ -314,15 +356,23 @@ func (o *Olm) handleWgPeerLocal(msg websocket.WSMessage) {
 
 	var localData struct {
 		peers.LocalPeerAckData
-		ChainId string `json:"chainId"`
+		ChainId  string   `json:"chainId"`
+		ChainIds []string `json:"chainIds"`
 	}
 	if err := json.Unmarshal(jsonData, &localData); err != nil {
 		logger.Error("Error unmarshaling local ack data: %v", err)
 		return
 	}
 
+	chainIds := localData.ChainIds
+	if len(chainIds) == 0 {
+		chainIds = []string{localData.ChainId}
+	}
+
 	if monitor := pm.GetPeerMonitor(); monitor != nil {
-		monitor.CancelLocalSend(localData.ChainId)
+		for _, chainId := range chainIds {
+			monitor.CancelLocalSend(chainId)
+		}
 	}
 }
 
@@ -346,15 +396,23 @@ func (o *Olm) handleWgPeerUnlocal(msg websocket.WSMessage) {
 
 	var localData struct {
 		peers.LocalPeerAckData
-		ChainId string `json:"chainId"`
+		ChainId  string   `json:"chainId"`
+		ChainIds []string `json:"chainIds"`
 	}
 	if err := json.Unmarshal(jsonData, &localData); err != nil {
 		logger.Error("Error unmarshaling unlocal ack data: %v", err)
 		return
 	}
 
+	chainIds := localData.ChainIds
+	if len(chainIds) == 0 {
+		chainIds = []string{localData.ChainId}
+	}
+
 	if monitor := pm.GetPeerMonitor(); monitor != nil {
-		monitor.CancelLocalSend(localData.ChainId)
+		for _, chainId := range chainIds {
+			monitor.CancelLocalSend(chainId)
+		}
 	}
 }
 

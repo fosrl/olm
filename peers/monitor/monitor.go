@@ -40,9 +40,10 @@ type PeerMonitor struct {
 	wsClient    *websocket.Client
 	publicDNS   []string
 
-	// Relay sender tracking
-	relaySends  map[string]func()
-	relaySendMu sync.Mutex
+	// Relay sender tracking — batched per message type so many relay/unrelay decisions
+	// arriving together (e.g. after a network-wide blip) go out as one websocket message.
+	relayBatch   *batchSender
+	unrelayBatch *batchSender
 
 	// Netstack fields
 	middleDev   *middleDevice.MiddleDevice
@@ -82,9 +83,9 @@ type PeerMonitor struct {
 	localSwitchCallback   func(siteId int, endpoint string) // invoked when a local endpoint becomes active
 	localFallbackCallback func(siteId int)                  // invoked when we fall back from a local endpoint
 
-	// Local connection sender tracking, keyed by chainId (informational messages only)
-	localSends  map[string]func()
-	localSendMu sync.Mutex
+	// Local connection sender tracking (informational messages only), batched the same way.
+	localBatch   *batchSender
+	unlocalBatch *batchSender
 
 	// Exponential backoff fields for holepunch monitor
 	defaultHolepunchMinInterval time.Duration // Minimum interval (initial)
@@ -149,14 +150,16 @@ func NewPeerMonitor(wsClient *websocket.Client, middleDev *middleDevice.MiddleDe
 		holepunchEndpoints:   make(map[int]string),
 		holepunchStatus:      make(map[int]bool),
 		relayedPeers:         make(map[int]bool),
-		relaySends:           make(map[string]func()),
+		relayBatch:           newBatchSender(wsClient, "olm/wg/relay"),
+		unrelayBatch:         newBatchSender(wsClient, "olm/wg/unrelay"),
 		holepunchMaxAttempts: 3, // Trigger relay after 3 consecutive failures
 		holepunchFailures:    make(map[int]int),
 		localEndpoints:       make(map[int][]string),
 		localActiveEndpoint:  make(map[int]string),
 		localFailures:        make(map[int]int),
 		localTestTimeout:     300 * time.Millisecond, // local network round trips should be fast
-		localSends:           make(map[string]func()),
+		localBatch:           newBatchSender(wsClient, "olm/wg/local"),
+		unlocalBatch:         newBatchSender(wsClient, "olm/wg/unlocal"),
 		// Rapid initial test settings: complete within ~1.5 seconds
 		rapidTestInterval:    200 * time.Millisecond, // 200ms between attempts
 		rapidTestTimeout:     400 * time.Millisecond, // 400ms timeout per attempt
@@ -628,23 +631,16 @@ func (pm *PeerMonitor) handleConnectionStatusChange(siteID int, status Connectio
 	}
 }
 
-// sendRelay sends a relay message to the server with retry, keyed by chainId
+// sendRelay queues a relay message for the server, batched with any other relay decisions
+// made in the same short window, with retry keyed by chainId.
 func (pm *PeerMonitor) sendRelay(siteID int) error {
 	if pm.wsClient == nil {
 		return fmt.Errorf("websocket client is nil")
 	}
 
-	chainId := generateChainId()
-	stopFunc, _ := pm.wsClient.SendMessageInterval("olm/wg/relay", map[string]interface{}{
-		"siteId":  siteID,
-		"chainId": chainId,
-	}, 2*time.Second, 10)
+	chainId := pm.relayBatch.add(siteID, "")
 
-	pm.relaySendMu.Lock()
-	pm.relaySends[chainId] = stopFunc
-	pm.relaySendMu.Unlock()
-
-	logger.Info("Sent relay message for site %d (chain %s)", siteID, chainId)
+	logger.Info("Queued relay message for site %d (chain %s)", siteID, chainId)
 	return nil
 }
 
@@ -654,23 +650,16 @@ func (pm *PeerMonitor) RequestRelay(siteID int) error {
 	return pm.sendRelay(siteID)
 }
 
-// sendUnRelay sends an unrelay message to the server with retry, keyed by chainId
+// sendUnRelay queues an unrelay message for the server, batched with any other unrelay
+// decisions made in the same short window, with retry keyed by chainId.
 func (pm *PeerMonitor) sendUnRelay(siteID int) error {
 	if pm.wsClient == nil {
 		return fmt.Errorf("websocket client is nil")
 	}
 
-	chainId := generateChainId()
-	stopFunc, _ := pm.wsClient.SendMessageInterval("olm/wg/unrelay", map[string]interface{}{
-		"siteId":  siteID,
-		"chainId": chainId,
-	}, 2*time.Second, 10)
+	chainId := pm.unrelayBatch.add(siteID, "")
 
-	pm.relaySendMu.Lock()
-	pm.relaySends[chainId] = stopFunc
-	pm.relaySendMu.Unlock()
-
-	logger.Info("Sent unrelay message for site %d (chain %s)", siteID, chainId)
+	logger.Info("Queued unrelay message for site %d (chain %s)", siteID, chainId)
 	return nil
 }
 
@@ -683,18 +672,9 @@ func (pm *PeerMonitor) sendLocal(siteID int, endpoint string) {
 		return
 	}
 
-	chainId := generateChainId()
-	stopFunc, _ := pm.wsClient.SendMessageInterval("olm/wg/local", map[string]interface{}{
-		"siteId":   siteID,
-		"endpoint": endpoint,
-		"chainId":  chainId,
-	}, 2*time.Second, 10)
+	chainId := pm.localBatch.add(siteID, endpoint)
 
-	pm.localSendMu.Lock()
-	pm.localSends[chainId] = stopFunc
-	pm.localSendMu.Unlock()
-
-	logger.Info("Sent local-connection message for site %d (%s, chain %s)", siteID, endpoint, chainId)
+	logger.Info("Queued local-connection message for site %d (%s, chain %s)", siteID, endpoint, chainId)
 }
 
 // sendUnLocal notifies the server that this peer fell back from its local network endpoint,
@@ -704,65 +684,39 @@ func (pm *PeerMonitor) sendUnLocal(siteID int) {
 		return
 	}
 
-	chainId := generateChainId()
-	stopFunc, _ := pm.wsClient.SendMessageInterval("olm/wg/unlocal", map[string]interface{}{
-		"siteId":  siteID,
-		"chainId": chainId,
-	}, 2*time.Second, 10)
+	chainId := pm.unlocalBatch.add(siteID, "")
 
-	pm.localSendMu.Lock()
-	pm.localSends[chainId] = stopFunc
-	pm.localSendMu.Unlock()
-
-	logger.Info("Sent unlocal-connection message for site %d (chain %s)", siteID, chainId)
+	logger.Info("Queued unlocal-connection message for site %d (chain %s)", siteID, chainId)
 }
 
-// CancelLocalSend stops the interval sender for the given chainId, if one exists.
-// If chainId is empty, all active local-connection senders are stopped.
+// CancelLocalSend removes chainId from the pending local/unlocal batches, if present.
+// If chainId is empty, all pending local-connection items are cleared.
 func (pm *PeerMonitor) CancelLocalSend(chainId string) {
-	pm.localSendMu.Lock()
-	defer pm.localSendMu.Unlock()
-
 	if chainId == "" {
-		for id, stop := range pm.localSends {
-			if stop != nil {
-				stop()
-			}
-			delete(pm.localSends, id)
-		}
+		pm.localBatch.cancelAll()
+		pm.unlocalBatch.cancelAll()
 		logger.Info("Cancelled all local-connection senders")
 		return
 	}
 
-	if stop, ok := pm.localSends[chainId]; ok {
-		stop()
-		delete(pm.localSends, chainId)
+	if pm.localBatch.cancel(chainId) || pm.unlocalBatch.cancel(chainId) {
 		logger.Info("Cancelled local-connection sender for chain %s", chainId)
 	} else {
 		logger.Warn("CancelLocalSend: no active sender for chain %s", chainId)
 	}
 }
 
-// CancelRelaySend stops the interval sender for the given chainId, if one exists.
-// If chainId is empty, all active relay senders are stopped.
+// CancelRelaySend removes chainId from the pending relay/unrelay batches, if present.
+// If chainId is empty, all pending relay items are cleared.
 func (pm *PeerMonitor) CancelRelaySend(chainId string) {
-	pm.relaySendMu.Lock()
-	defer pm.relaySendMu.Unlock()
-
 	if chainId == "" {
-		for id, stop := range pm.relaySends {
-			if stop != nil {
-				stop()
-			}
-			delete(pm.relaySends, id)
-		}
+		pm.relayBatch.cancelAll()
+		pm.unrelayBatch.cancelAll()
 		logger.Info("Cancelled all relay senders")
 		return
 	}
 
-	if stop, ok := pm.relaySends[chainId]; ok {
-		stop()
-		delete(pm.relaySends, chainId)
+	if pm.relayBatch.cancel(chainId) || pm.unrelayBatch.cancel(chainId) {
 		logger.Info("Cancelled relay sender for chain %s", chainId)
 	} else {
 		logger.Warn("CancelRelaySend: no active sender for chain %s", chainId)
@@ -1177,25 +1131,17 @@ func (pm *PeerMonitor) Close() {
 	}
 	pm.exitNodeMu.Unlock()
 
-	// Stop all pending relay senders
-	pm.relaySendMu.Lock()
-	for chainId, stop := range pm.relaySends {
-		if stop != nil {
-			stop()
-		}
-		delete(pm.relaySends, chainId)
-	}
-	pm.relaySendMu.Unlock()
+	// Stop all pending relay/unrelay batch senders
+	pm.relayBatch.cancelAll()
+	pm.relayBatch.close()
+	pm.unrelayBatch.cancelAll()
+	pm.unrelayBatch.close()
 
-	// Stop all pending local-connection senders
-	pm.localSendMu.Lock()
-	for chainId, stop := range pm.localSends {
-		if stop != nil {
-			stop()
-		}
-		delete(pm.localSends, chainId)
-	}
-	pm.localSendMu.Unlock()
+	// Stop all pending local-connection batch senders
+	pm.localBatch.cancelAll()
+	pm.localBatch.close()
+	pm.unlocalBatch.cancelAll()
+	pm.unlocalBatch.close()
 
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
