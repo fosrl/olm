@@ -81,6 +81,30 @@ func (o *Olm) applyPendingGatewayConfig(requestedSiteIds []int) {
 	}
 }
 
+// flushPendingHolepunchBypassEndpoints re-registers every currently-known
+// hole-punch bypass endpoint (see the OnTokenUpdate handler in olm.go) with
+// the peer manager. OnTokenUpdate typically fires before the peer manager
+// exists - it runs during the initial token/auth fetch in
+// websocket.Client.establishConnection, well before the server's
+// "olm/wg/connect" message creates the peer manager here in handleConnect -
+// so anything recorded into o.hpBypassEndpoints while pm was nil needs to be
+// pushed in once it becomes available. AddGatewayBypassEndpoint is
+// idempotent, so calling it again for an endpoint OnTokenUpdate already
+// managed to register directly (e.g. a later token refresh, once the peer
+// manager already existed) is harmless.
+func (o *Olm) flushPendingHolepunchBypassEndpoints() {
+	pm := o.getPeerManager()
+	if pm == nil {
+		return
+	}
+
+	o.hpBypassMu.Lock()
+	defer o.hpBypassMu.Unlock()
+	for hostport := range o.hpBypassEndpoints {
+		pm.AddGatewayBypassEndpoint(hostport)
+	}
+}
+
 // extractControlEndpointHost returns the bare host (no scheme/port) of the
 // Pangolin server olm is registered against, for gateway bypass-route
 // purposes. Falls back to the raw endpoint string on parse failure -

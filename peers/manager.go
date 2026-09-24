@@ -81,6 +81,17 @@ type PeerManager struct {
 	gatewaySiteIds     map[int]bool
 	gatewayExcludedIPs map[string]int
 	gatewayControlIP   string
+
+	// gatewayExtraEndpoints tracks "host:port" (or already-resolved "ip:port")
+	// endpoints registered by callers outside the normal site-peer lifecycle -
+	// currently hole-punch exit node probing endpoints and a connected exit
+	// node's own WireGuard endpoint (see olm's OnTokenUpdate handler and
+	// connectExitNode) - that must stay off the gateway route the same way a
+	// site peer's own endpoint does, so hole punching / the exit node
+	// connection still originates from the local network rather than looping
+	// through the tunnel. Business intent, independent of gatewayActive - see
+	// AddGatewayBypassEndpoint/RemoveGatewayBypassEndpoint.
+	gatewayExtraEndpoints map[string]bool
 }
 
 // gatewayCIDR is the WireGuard AllowedIPs claim key for "this site is the
@@ -130,19 +141,20 @@ func normalizeServerRouteDestination(serverIP string) string {
 // NewPeerManager creates a new PeerManager with an internal PeerMonitor
 func NewPeerManager(config PeerManagerConfig) *PeerManager {
 	pm := &PeerManager{
-		device:             config.Device,
-		peers:              make(map[int]SiteConfig),
-		dnsProxy:           config.DNSProxy,
-		interfaceName:      config.InterfaceName,
-		localIP:            config.LocalIP,
-		privateKey:         config.PrivateKey,
-		allowedIPOwners:    make(map[string]int),
-		allowedIPClaims:    make(map[string]map[int]bool),
-		APIServer:          config.APIServer,
-		publicDNS:          config.PublicDNS,
-		lastOwnerChange:    make(map[string]time.Time),
-		gatewaySiteIds:     make(map[int]bool),
-		gatewayExcludedIPs: make(map[string]int),
+		device:                config.Device,
+		peers:                 make(map[int]SiteConfig),
+		dnsProxy:              config.DNSProxy,
+		interfaceName:         config.InterfaceName,
+		localIP:               config.LocalIP,
+		privateKey:            config.PrivateKey,
+		allowedIPOwners:       make(map[string]int),
+		allowedIPClaims:       make(map[string]map[int]bool),
+		APIServer:             config.APIServer,
+		publicDNS:             config.PublicDNS,
+		lastOwnerChange:       make(map[string]time.Time),
+		gatewaySiteIds:        make(map[int]bool),
+		gatewayExcludedIPs:    make(map[string]int),
+		gatewayExtraEndpoints: make(map[string]bool),
 	}
 
 	// Create the peer monitor
@@ -302,6 +314,12 @@ func (pm *PeerManager) activateGatewayLocked(controlEndpointHost string) error {
 		}
 	}
 
+	for hostport := range pm.gatewayExtraEndpoints {
+		if ip, ok := pm.resolveEndpointIPLocked(hostport); ok {
+			pm.excludeEndpointLocked(ip)
+		}
+	}
+
 	if err := network.AddGatewayDefaultRoute(pm.interfaceName, pm.localIP); err != nil {
 		return fmt.Errorf("failed to install gateway route: %v", err)
 	}
@@ -452,6 +470,48 @@ func (pm *PeerManager) ClearGateway() error {
 	defer pm.mu.Unlock()
 	pm.clearGatewayLocked()
 	return nil
+}
+
+// AddGatewayBypassEndpoint registers hostport (a "host:port" string, or an
+// already-resolved "ip:port") as needing protection from the gateway
+// default-route-equivalent, for endpoints outside the normal site-peer
+// lifecycle - hole-punch exit node probing endpoints and a connected exit
+// node's own WireGuard endpoint. If gateway mode is currently active, the
+// bypass route is installed immediately; otherwise this only records intent,
+// applied the next time gateway activates. Safe to call repeatedly with the
+// same hostport (idempotent).
+func (pm *PeerManager) AddGatewayBypassEndpoint(hostport string) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	if pm.gatewayExtraEndpoints[hostport] {
+		return
+	}
+	pm.gatewayExtraEndpoints[hostport] = true
+
+	if pm.gatewayActive {
+		if ip, ok := pm.resolveEndpointIPLocked(hostport); ok {
+			pm.excludeEndpointLocked(ip)
+		}
+	}
+}
+
+// RemoveGatewayBypassEndpoint reverses AddGatewayBypassEndpoint. Safe to call
+// on a hostport that was never registered (no-op).
+func (pm *PeerManager) RemoveGatewayBypassEndpoint(hostport string) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	if !pm.gatewayExtraEndpoints[hostport] {
+		return
+	}
+	delete(pm.gatewayExtraEndpoints, hostport)
+
+	if pm.gatewayActive {
+		if ip, ok := pm.resolveEndpointIPLocked(hostport); ok {
+			pm.unexcludeEndpointLocked(ip)
+		}
+	}
 }
 
 func (pm *PeerManager) GetAllPeers() []SiteConfig {

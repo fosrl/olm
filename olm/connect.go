@@ -251,6 +251,12 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 
 	o.peerManager.Start()
 
+	// OnTokenUpdate (see olm.go) typically fires before this peer manager
+	// existed - it runs during the initial token/auth fetch, well before this
+	// "olm/wg/connect" message - so push in whatever hole-punch bypass
+	// endpoints it already recorded now that there's somewhere to put them.
+	o.flushPendingHolepunchBypassEndpoints()
+
 	if err := o.dnsProxy.Start(); err != nil { // start DNS proxy first so there is no downtime
 		logger.Error("Failed to start DNS proxy: %v", err)
 	}

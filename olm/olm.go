@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 
@@ -64,6 +65,20 @@ type Olm struct {
 	// secondary address on the same interface/WireGuard device as the site peers.
 	exitNode   *ExitNodeConfig
 	exitNodeMu sync.Mutex
+	// exitNodeResolvedEndpoint is the exit node's WireGuard endpoint (already
+	// DNS-resolved to "ip:port") as of the last successful connectExitNode
+	// call, kept alongside exitNode purely so removeExitNodePeerLocked can
+	// unregister the exact same gateway bypass-route target it registered -
+	// see connectExitNode's AddGatewayBypassEndpoint call. Guarded by exitNodeMu.
+	exitNodeResolvedEndpoint string
+
+	// hpBypassEndpoints tracks the "host:relayPort" endpoints currently
+	// registered as gateway bypass targets for hole-punch exit nodes (STUN-like
+	// probing, distinct from a connected exit node's own WireGuard peer above) -
+	// diffed against each OnTokenUpdate so stale entries are unregistered and
+	// new ones protected while gateway mode is active.
+	hpBypassEndpoints map[string]bool
+	hpBypassMu        sync.Mutex
 
 	// primaryTunnelIP is the site tunnel's own address (wgData.TunnelIP), set once
 	// per connect in handleConnect. It's the interface's first/primary address -
@@ -222,13 +237,14 @@ func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 	apiServer.SetAgent(config.Agent)
 
 	newOlm := &Olm{
-		logFile:         logFile,
-		olmCtx:          ctx,
-		apiServer:       apiServer,
-		olmConfig:       config,
-		stopPeerSends:   make(map[string]func()),
-		stopPeerInits:   make(map[string]func()),
-		jitPendingSites: make(map[int]string),
+		logFile:           logFile,
+		olmCtx:            ctx,
+		apiServer:         apiServer,
+		olmConfig:         config,
+		stopPeerSends:     make(map[string]func()),
+		stopPeerInits:     make(map[string]func()),
+		jitPendingSites:   make(map[int]string),
+		hpBypassEndpoints: make(map[string]bool),
 	}
 
 	newOlm.registerAPICallbacks()
@@ -746,6 +762,36 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 		logger.Debug("Updated hole punch exit nodes: %v", hpExitNodes)
 
+		// pm can be nil here: this callback runs from establishConnection, as
+		// part of the initial token/auth fetch, which happens well before the
+		// server's "olm/wg/connect" message creates the peer manager in
+		// handleConnect - so on a fresh connect there usually isn't one yet.
+		// o.hpBypassEndpoints is still updated unconditionally so it reflects
+		// the current set regardless; flushPendingHolepunchBypassEndpoints
+		// (called from handleConnect once the peer manager exists) pushes
+		// whatever was recorded here into it.
+		pm := o.getPeerManager()
+		newBypassEndpoints := make(map[string]bool, len(hpExitNodes))
+		for _, node := range hpExitNodes {
+			newBypassEndpoints[net.JoinHostPort(node.Endpoint, strconv.Itoa(int(node.RelayPort)))] = true
+		}
+
+		o.hpBypassMu.Lock()
+		if pm != nil {
+			for hostport := range newBypassEndpoints {
+				if !o.hpBypassEndpoints[hostport] {
+					pm.AddGatewayBypassEndpoint(hostport)
+				}
+			}
+			for hostport := range o.hpBypassEndpoints {
+				if !newBypassEndpoints[hostport] {
+					pm.RemoveGatewayBypassEndpoint(hostport)
+				}
+			}
+		}
+		o.hpBypassEndpoints = newBypassEndpoints
+		o.hpBypassMu.Unlock()
+
 		// Start hole punching using the manager
 		logger.Info("Starting hole punch for %d exit nodes", len(exitNodes))
 		if err := o.holePunchManager.StartMultipleExitNodes(hpExitNodes); err != nil {
@@ -878,10 +924,19 @@ func (o *Olm) Close() {
 
 	// The WireGuard device and TUN interface are being torn down below, which takes
 	// the exit node peer and its secondary address with them - just clear the
-	// in-memory record so a stale config isn't reused on the next connect.
+	// in-memory record so a stale config isn't reused on the next connect. The
+	// peer manager (and its gateway bypass-route state, including anything
+	// registered for this exit node or for hole-punch nodes below) was already
+	// torn down above, so these resets are purely to avoid stale diffing state
+	// carrying into the next connect, not for route cleanup.
 	o.exitNodeMu.Lock()
 	o.exitNode = nil
+	o.exitNodeResolvedEndpoint = ""
 	o.exitNodeMu.Unlock()
+
+	o.hpBypassMu.Lock()
+	o.hpBypassEndpoints = make(map[string]bool)
+	o.hpBypassMu.Unlock()
 
 	if o.uapiListener != nil {
 		_ = o.uapiListener.Close()
