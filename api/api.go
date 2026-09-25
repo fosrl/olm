@@ -13,25 +13,30 @@ import (
 	"github.com/fosrl/newt/network"
 )
 
-// ConnectionRequest defines the structure for an incoming connection request
+// ConnectionRequest defines the structure for an incoming connection request.
+// GatewaySiteResourceId is the numeric ID of the gateway-mode site resource
+// GatewaySiteIds were selected from; it is required when GatewaySiteIds is
+// non-empty, and is how olm later matches server-pushed gateway updates to the
+// resource the user actually connected through.
 type ConnectionRequest struct {
-	ID             string   `json:"id"`
-	Secret         string   `json:"secret"`
-	Endpoint       string   `json:"endpoint"`
-	UserToken      string   `json:"userToken,omitempty"`
-	MTU            int      `json:"mtu,omitempty"`
-	DNS            string   `json:"dns,omitempty"`
-	DNSProxyIP     string   `json:"dnsProxyIP,omitempty"`
-	UpstreamDNS    []string `json:"upstreamDNS,omitempty"`
-	InterfaceName  string   `json:"interfaceName,omitempty"`
-	Holepunch      bool     `json:"holepunch,omitempty"`
-	TlsClientCert  string   `json:"tlsClientCert,omitempty"`
-	PingInterval   string   `json:"pingInterval,omitempty"`
-	PingTimeout    string   `json:"pingTimeout,omitempty"`
-	OrgID          string   `json:"orgId,omitempty"`
-	MatchDomains   []string `json:"matchDomains,omitempty"`
-	SubnetRouter   bool     `json:"subnetRouter,omitempty"`
-	GatewaySiteIds []int    `json:"gatewaySiteIds,omitempty"`
+	ID                    string   `json:"id"`
+	Secret                string   `json:"secret"`
+	Endpoint              string   `json:"endpoint"`
+	UserToken             string   `json:"userToken,omitempty"`
+	MTU                   int      `json:"mtu,omitempty"`
+	DNS                   string   `json:"dns,omitempty"`
+	DNSProxyIP            string   `json:"dnsProxyIP,omitempty"`
+	UpstreamDNS           []string `json:"upstreamDNS,omitempty"`
+	InterfaceName         string   `json:"interfaceName,omitempty"`
+	Holepunch             bool     `json:"holepunch,omitempty"`
+	TlsClientCert         string   `json:"tlsClientCert,omitempty"`
+	PingInterval          string   `json:"pingInterval,omitempty"`
+	PingTimeout           string   `json:"pingTimeout,omitempty"`
+	OrgID                 string   `json:"orgId,omitempty"`
+	MatchDomains          []string `json:"matchDomains,omitempty"`
+	SubnetRouter          bool     `json:"subnetRouter,omitempty"`
+	GatewaySiteResourceId int      `json:"gatewaySiteResourceId,omitempty"`
+	GatewaySiteIds        []int    `json:"gatewaySiteIds,omitempty"`
 }
 
 // SwitchOrgRequest defines the structure for switching organizations
@@ -41,9 +46,12 @@ type SwitchOrgRequest struct {
 
 // GatewayRequest defines the structure for a "select gateway" request: the
 // set of site IDs that should act as the gateway (full-tunnel/default-route)
-// for all tunnel traffic. Every ID must already be a tracked/connected peer.
+// for all tunnel traffic, plus the numeric ID of the gateway site resource
+// they were selected from (used to match later server-pushed updates). Every
+// site ID must already be a tracked/connected peer.
 type GatewayRequest struct {
-	SiteIds []int `json:"siteIds"`
+	SiteResourceId int   `json:"siteResourceId"`
+	SiteIds        []int `json:"siteIds"`
 }
 
 // PowerModeRequest represents a request to change power mode
@@ -94,6 +102,8 @@ type StatusResponse struct {
 	ExitNodeStatus  *ExitNodeStatus         `json:"exitNode,omitempty"`
 	GatewayActive   bool                    `json:"gatewayActive,omitempty"`
 	GatewaySiteIds  []int                   `json:"gatewaySiteIds,omitempty"`
+
+	GatewaySiteResourceId int `json:"gatewaySiteResourceId,omitempty"` // the gateway site resource the selection belongs to; 0 when inactive
 }
 
 type MetadataChangeRequest struct {
@@ -136,6 +146,8 @@ type API struct {
 	olmError       *OlmError
 	gatewayActive  bool
 	gatewaySiteIds []int
+
+	gatewaySiteResourceId int
 
 	version string
 	agent   string
@@ -462,10 +474,11 @@ func (s *API) ClearExitNodeStatus() {
 
 // SetGatewayStatus records the current gateway (full-tunnel/default-route)
 // state for exposure via the status endpoint.
-func (s *API) SetGatewayStatus(active bool, siteIds []int) {
+func (s *API) SetGatewayStatus(active bool, siteResourceId int, siteIds []int) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	s.gatewayActive = active
+	s.gatewaySiteResourceId = siteResourceId
 	s.gatewaySiteIds = siteIds
 }
 
@@ -495,6 +508,10 @@ func (s *API) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Validate required fields
 	if req.ID == "" || req.Secret == "" || req.Endpoint == "" {
 		http.Error(w, "Missing required fields: id, secret, and endpoint must be provided", http.StatusBadRequest)
+		return
+	}
+	if len(req.GatewaySiteIds) > 0 && req.GatewaySiteResourceId <= 0 {
+		http.Error(w, "Missing required field: gatewaySiteResourceId must be provided with gatewaySiteIds", http.StatusBadRequest)
 		return
 	}
 
@@ -536,6 +553,8 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ExitNodeStatus:  s.exitNodeStatus,
 		GatewayActive:   s.gatewayActive,
 		GatewaySiteIds:  s.gatewaySiteIds,
+
+		GatewaySiteResourceId: s.gatewaySiteResourceId,
 	}
 
 	s.statusMu.RUnlock()
@@ -706,6 +725,8 @@ func (s *API) GetStatus() StatusResponse {
 		ExitNodeStatus:  s.exitNodeStatus,
 		GatewayActive:   s.gatewayActive,
 		GatewaySiteIds:  s.gatewaySiteIds,
+
+		GatewaySiteResourceId: s.gatewaySiteResourceId,
 	}
 }
 
@@ -803,12 +824,16 @@ func (s *API) handleSelectGateway(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.SiteResourceId <= 0 {
+		http.Error(w, "Missing required field: siteResourceId must be provided", http.StatusBadRequest)
+		return
+	}
 	if len(req.SiteIds) == 0 {
 		http.Error(w, "Missing required field: siteIds must be provided", http.StatusBadRequest)
 		return
 	}
 
-	logger.Info("Received select-gateway request via API: siteIds=%v", req.SiteIds)
+	logger.Info("Received select-gateway request via API: siteResourceId=%d siteIds=%v", req.SiteResourceId, req.SiteIds)
 
 	if s.onSelectGateway != nil {
 		if err := s.onSelectGateway(req); err != nil {

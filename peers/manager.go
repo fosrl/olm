@@ -3,6 +3,7 @@ package peers
 import (
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -76,11 +77,17 @@ type PeerManager struct {
 	// it any more. gatewayControlIP is the control-plane (Pangolin server)
 	// endpoint, resolved once at activation and excluded for the lifetime of
 	// the gateway so the management connection doesn't depend on the current
-	// gateway-owner site's own uplink.
-	gatewayActive      bool
-	gatewaySiteIds     map[int]bool
-	gatewayExcludedIPs map[string]int
-	gatewayControlIP   string
+	// gateway-owner site's own uplink. gatewaySiteResourceId is the numeric
+	// ID (not the niceId, which can be renamed) of the gateway-mode site
+	// resource the candidate set was selected from, so server-pushed
+	// add/remove/disable updates (see UpdateGatewaySites) are only applied when
+	// they concern that resource and not some other gateway resource that
+	// happens to share a site.
+	gatewayActive         bool
+	gatewaySiteResourceId int
+	gatewaySiteIds        map[int]bool
+	gatewayExcludedIPs    map[string]int
+	gatewayControlIP      string
 
 	// gatewayExtraEndpoints tracks "host:port" (or already-resolved "ip:port")
 	// endpoints registered by callers outside the normal site-peer lifecycle -
@@ -392,8 +399,10 @@ func (pm *PeerManager) releaseGatewayClaimLocked(siteId int) {
 }
 
 // SetGateway designates siteIds as the gateway (full-tunnel/default-route)
-// candidate set. Every siteId must already be a tracked peer, or the call is
-// rejected outright (no partial application). On first activation this
+// candidate set, selected from the gateway site resource siteResourceId (the
+// server only tells us about changes to that one resource - see
+// UpdateGatewaySites). Every siteId must already be a tracked peer, or the
+// call is rejected outright (no partial application). On first activation this
 // installs the OS-level gateway route plus every bypass route needed so the
 // tunnel's own traffic (control-plane endpoint, every tracked peer's active
 // endpoint) isn't captured by it; subsequent calls only change which sites
@@ -401,10 +410,13 @@ func (pm *PeerManager) releaseGatewayClaimLocked(siteId int) {
 // claim/optimizer machinery - exactly like remote subnets. controlEndpointHost
 // is the Pangolin server host olm is registered against (bare host, port
 // optional); always excluded regardless of which sites are selected.
-func (pm *PeerManager) SetGateway(siteIds []int, controlEndpointHost string) error {
+func (pm *PeerManager) SetGateway(siteResourceId int, siteIds []int, controlEndpointHost string) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
+	if siteResourceId <= 0 {
+		return fmt.Errorf("a valid gateway site resource ID must be provided")
+	}
 	if len(siteIds) == 0 {
 		return fmt.Errorf("at least one site ID must be provided")
 	}
@@ -441,9 +453,112 @@ func (pm *PeerManager) SetGateway(siteIds []int, controlEndpointHost string) err
 		}
 	}
 	pm.gatewaySiteIds = newSet
+	pm.gatewaySiteResourceId = siteResourceId
 
-	logger.Info("Gateway set to sites %v", siteIds)
+	logger.Info("Gateway set to sites %v (site resource %d)", siteIds, siteResourceId)
 	return nil
+}
+
+// GetGatewayState returns whether gateway mode is active, the site resource ID
+// it was selected from, and the current candidate site IDs (sorted).
+func (pm *PeerManager) GetGatewayState() (active bool, siteResourceId int, siteIds []int) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return pm.gatewayActive, pm.gatewaySiteResourceId, pm.gatewaySiteIdsSortedLocked()
+}
+
+// gatewaySiteIdsSortedLocked returns the gateway candidate set as a sorted
+// slice, for stable status output. Must be called with pm.mu held.
+func (pm *PeerManager) gatewaySiteIdsSortedLocked() []int {
+	ids := make([]int, 0, len(pm.gatewaySiteIds))
+	for id := range pm.gatewaySiteIds {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	return ids
+}
+
+// UpdateGatewaySites applies a server-pushed change to the gateway candidate
+// set: addedSiteIds/removedSiteIds are the sites that were added to / removed
+// from the gateway site resource siteResourceId. It is a no-op (matched=false)
+// unless gateway mode is active AND was selected from that exact resource, so
+// a site added to some other gateway resource is never pulled into the
+// candidate set. If the update leaves the candidate set empty, gateway mode is
+// cleared entirely (an installed default route with no owning peer would just
+// blackhole traffic). Sites that aren't tracked peers yet are recorded as
+// intent only - AddPeer claims the gateway CIDR for them once their peer
+// arrives (the server sends the peer add and this update independently, so
+// either order is possible). Returns the resulting gateway state.
+func (pm *PeerManager) UpdateGatewaySites(siteResourceId int, addedSiteIds, removedSiteIds []int) (matched bool, active bool, siteIds []int) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	if !pm.gatewayActive || pm.gatewaySiteResourceId != siteResourceId {
+		return false, pm.gatewayActive, pm.gatewaySiteIdsSortedLocked()
+	}
+
+	removed := make(map[int]bool, len(removedSiteIds))
+	for _, id := range removedSiteIds {
+		removed[id] = true
+	}
+
+	// Work out the resulting set first so we can tell up front if it would be
+	// empty, and so removed wins over added if a message lists an ID in both.
+	newSet := make(map[int]bool, len(pm.gatewaySiteIds)+len(addedSiteIds))
+	for id := range pm.gatewaySiteIds {
+		if !removed[id] {
+			newSet[id] = true
+		}
+	}
+	for _, id := range addedSiteIds {
+		if !removed[id] {
+			newSet[id] = true
+		}
+	}
+
+	if len(newSet) == 0 {
+		logger.Info("Gateway: all sites removed from site resource %d, clearing gateway", siteResourceId)
+		pm.clearGatewayLocked()
+		return true, false, nil
+	}
+
+	// Claim added sites BEFORE releasing removed ones, so a swap doesn't leave
+	// a window with no owner of the gateway CIDR (same ordering rationale as
+	// handleWgPeerUpdateData).
+	for id := range newSet {
+		if pm.gatewaySiteIds[id] {
+			continue
+		}
+		pm.gatewaySiteIds[id] = true
+		if _, tracked := pm.peers[id]; tracked {
+			pm.claimGatewayClaimLocked(id)
+		}
+	}
+	for id := range removed {
+		if !pm.gatewaySiteIds[id] {
+			continue
+		}
+		delete(pm.gatewaySiteIds, id)
+		pm.releaseGatewayClaimLocked(id)
+	}
+
+	logger.Info("Gateway sites for site resource %d are now %v", siteResourceId, pm.gatewaySiteIdsSortedLocked())
+	return true, true, pm.gatewaySiteIdsSortedLocked()
+}
+
+// ClearGatewayForResource fully clears gateway state, but only if gateway mode
+// was selected from the site resource siteResourceId (e.g. that resource was
+// deleted, disabled, or this client lost access to it). Returns whether it
+// matched and cleared.
+func (pm *PeerManager) ClearGatewayForResource(siteResourceId int) bool {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	if !pm.gatewayActive || pm.gatewaySiteResourceId != siteResourceId {
+		return false
+	}
+	pm.clearGatewayLocked()
+	return true
 }
 
 // clearGatewayLocked is ClearGateway's body, split out so Close() (which
@@ -457,6 +572,7 @@ func (pm *PeerManager) clearGatewayLocked() {
 		pm.releaseGatewayClaimLocked(id)
 	}
 	pm.gatewaySiteIds = make(map[int]bool)
+	pm.gatewaySiteResourceId = 0
 	pm.deactivateGatewayLocked()
 	pm.gatewayActive = false
 	logger.Info("Gateway cleared")

@@ -289,20 +289,21 @@ func (o *Olm) registerAPICallbacks() {
 			logger.Info("Received connection request via HTTP: id=%s, endpoint=%s", req.ID, req.Endpoint)
 
 			tunnelConfig := TunnelConfig{
-				Endpoint:       req.Endpoint,
-				ID:             req.ID,
-				Secret:         req.Secret,
-				UserToken:      req.UserToken,
-				MTU:            req.MTU,
-				DNS:            req.DNS,
-				UpstreamDNS:    req.UpstreamDNS,
-				InterfaceName:  req.InterfaceName,
-				Holepunch:      req.Holepunch,
-				TlsClientCert:  req.TlsClientCert,
-				OrgID:          req.OrgID,
-				MatchDomains:   req.MatchDomains,
-				SubnetRouter:   req.SubnetRouter,
-				GatewaySiteIds: req.GatewaySiteIds,
+				Endpoint:              req.Endpoint,
+				ID:                    req.ID,
+				Secret:                req.Secret,
+				UserToken:             req.UserToken,
+				MTU:                   req.MTU,
+				DNS:                   req.DNS,
+				UpstreamDNS:           req.UpstreamDNS,
+				InterfaceName:         req.InterfaceName,
+				Holepunch:             req.Holepunch,
+				TlsClientCert:         req.TlsClientCert,
+				OrgID:                 req.OrgID,
+				MatchDomains:          req.MatchDomains,
+				SubnetRouter:          req.SubnetRouter,
+				GatewaySiteIds:        req.GatewaySiteIds,
+				GatewaySiteResourceId: req.GatewaySiteResourceId,
 			}
 
 			var err error
@@ -409,8 +410,8 @@ func (o *Olm) registerAPICallbacks() {
 		},
 		// onSelectGateway
 		func(req api.GatewayRequest) error {
-			logger.Info("Received select-gateway request via API: siteIds=%v", req.SiteIds)
-			return o.SelectGateway(req.SiteIds)
+			logger.Info("Received select-gateway request via API: siteResourceId=%d siteIds=%v", req.SiteResourceId, req.SiteIds)
+			return o.SelectGateway(req.SiteResourceId, req.SiteIds)
 		},
 		// onDisableGateway
 		func() error {
@@ -636,6 +637,11 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	o.websocket.RegisterHandler("olm/wg/exitnode/disconnect", o.handleExitNodeDisconnect)
 	o.websocket.RegisterHandler("olm/wg/exitnode/data/update", o.handleExitNodeUpdateData)
 
+	// Handlers for the server to push changes to the gateway site resource the
+	// client selected (sites added/removed, or the resource going away)
+	o.websocket.RegisterHandler("olm/wg/gateway/sites/update", o.handleGatewaySitesUpdate)
+	o.websocket.RegisterHandler("olm/wg/gateway/disable", o.handleGatewayDisable)
+
 	// Handler for the server to push a live DNS config override (upstream DNS,
 	// tunnel DNS, override DNS, match domains) after registration, mirroring the
 	// DNSConfig field sent on the initial "olm/wg/connect" message.
@@ -842,7 +848,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		o.apiServer.SetRegistered(false)
 		o.apiServer.ClearOlmError()
 		o.apiServer.ClearPeerStatuses()
-		o.apiServer.SetGatewayStatus(false, nil)
+		o.apiServer.SetGatewayStatus(false, 0, nil)
 		network.ClearNetworkSettings()
 
 		o.Close()
@@ -1061,7 +1067,7 @@ func (o *Olm) StopTunnel() error {
 	o.apiServer.SetConnectionStatus(false)
 	o.apiServer.SetRegistered(false)
 	o.apiServer.ClearOlmError()
-	o.apiServer.SetGatewayStatus(false, nil)
+	o.apiServer.SetGatewayStatus(false, 0, nil)
 
 	network.ClearNetworkSettings()
 	o.apiServer.ClearPeerStatuses()

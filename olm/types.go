@@ -187,4 +187,11 @@ type TunnelConfig struct {
 	// starts, for callers that want a gateway already established rather
 	// than issuing a separate SelectGateway API call after connecting.
 	GatewaySiteIds []int
+
+	// GatewaySiteResourceId is the numeric ID (not the niceId, which can be
+	// renamed) of the gateway-mode site resource GatewaySiteIds were selected
+	// from. Required when GatewaySiteIds is non-empty; it is what lets olm
+	// apply server-pushed gateway updates only for the resource the user
+	// actually connected through.
+	GatewaySiteResourceId int
 }
