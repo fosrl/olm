@@ -289,21 +289,22 @@ func (o *Olm) registerAPICallbacks() {
 			logger.Info("Received connection request via HTTP: id=%s, endpoint=%s", req.ID, req.Endpoint)
 
 			tunnelConfig := TunnelConfig{
-				Endpoint:              req.Endpoint,
-				ID:                    req.ID,
-				Secret:                req.Secret,
-				UserToken:             req.UserToken,
-				MTU:                   req.MTU,
-				DNS:                   req.DNS,
-				UpstreamDNS:           req.UpstreamDNS,
-				InterfaceName:         req.InterfaceName,
-				Holepunch:             req.Holepunch,
-				TlsClientCert:         req.TlsClientCert,
-				OrgID:                 req.OrgID,
-				MatchDomains:          req.MatchDomains,
-				SubnetRouter:          req.SubnetRouter,
-				GatewaySiteIds:        req.GatewaySiteIds,
-				GatewaySiteResourceId: req.GatewaySiteResourceId,
+				Endpoint:                req.Endpoint,
+				ID:                      req.ID,
+				Secret:                  req.Secret,
+				UserToken:               req.UserToken,
+				MTU:                     req.MTU,
+				DNS:                     req.DNS,
+				UpstreamDNS:             req.UpstreamDNS,
+				InterfaceName:           req.InterfaceName,
+				Holepunch:               req.Holepunch,
+				TlsClientCert:           req.TlsClientCert,
+				OrgID:                   req.OrgID,
+				MatchDomains:            req.MatchDomains,
+				SubnetRouter:            req.SubnetRouter,
+				DisableRoutesAndAliases: req.DisableRoutesAndAliases,
+				GatewaySiteIds:          req.GatewaySiteIds,
+				GatewaySiteResourceId:   req.GatewaySiteResourceId,
 			}
 
 			var err error

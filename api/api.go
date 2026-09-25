@@ -19,24 +19,25 @@ import (
 // non-empty, and is how olm later matches server-pushed gateway updates to the
 // resource the user actually connected through.
 type ConnectionRequest struct {
-	ID                    string   `json:"id"`
-	Secret                string   `json:"secret"`
-	Endpoint              string   `json:"endpoint"`
-	UserToken             string   `json:"userToken,omitempty"`
-	MTU                   int      `json:"mtu,omitempty"`
-	DNS                   string   `json:"dns,omitempty"`
-	DNSProxyIP            string   `json:"dnsProxyIP,omitempty"`
-	UpstreamDNS           []string `json:"upstreamDNS,omitempty"`
-	InterfaceName         string   `json:"interfaceName,omitempty"`
-	Holepunch             bool     `json:"holepunch,omitempty"`
-	TlsClientCert         string   `json:"tlsClientCert,omitempty"`
-	PingInterval          string   `json:"pingInterval,omitempty"`
-	PingTimeout           string   `json:"pingTimeout,omitempty"`
-	OrgID                 string   `json:"orgId,omitempty"`
-	MatchDomains          []string `json:"matchDomains,omitempty"`
-	SubnetRouter          bool     `json:"subnetRouter,omitempty"`
-	GatewaySiteResourceId int      `json:"gatewaySiteResourceId,omitempty"`
-	GatewaySiteIds        []int    `json:"gatewaySiteIds,omitempty"`
+	ID                      string   `json:"id"`
+	Secret                  string   `json:"secret"`
+	Endpoint                string   `json:"endpoint"`
+	UserToken               string   `json:"userToken,omitempty"`
+	MTU                     int      `json:"mtu,omitempty"`
+	DNS                     string   `json:"dns,omitempty"`
+	DNSProxyIP              string   `json:"dnsProxyIP,omitempty"`
+	UpstreamDNS             []string `json:"upstreamDNS,omitempty"`
+	InterfaceName           string   `json:"interfaceName,omitempty"`
+	Holepunch               bool     `json:"holepunch,omitempty"`
+	TlsClientCert           string   `json:"tlsClientCert,omitempty"`
+	PingInterval            string   `json:"pingInterval,omitempty"`
+	PingTimeout             string   `json:"pingTimeout,omitempty"`
+	OrgID                   string   `json:"orgId,omitempty"`
+	MatchDomains            []string `json:"matchDomains,omitempty"`
+	SubnetRouter            bool     `json:"subnetRouter,omitempty"`
+	DisableRoutesAndAliases bool     `json:"disableRoutesAndAliases,omitempty"`
+	GatewaySiteResourceId   int      `json:"gatewaySiteResourceId,omitempty"`
+	GatewaySiteIds          []int    `json:"gatewaySiteIds,omitempty"`
 }
 
 // SwitchOrgRequest defines the structure for switching organizations

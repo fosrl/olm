@@ -36,6 +36,10 @@ type PeerManagerConfig struct {
 	WSClient  *websocket.Client
 	APIServer *api.API
 	PublicDNS []string
+	// DisableRoutes stops the manager from adding/removing routes in the
+	// system routing table for server IPs and remote subnets. Gateway routes
+	// are unaffected.
+	DisableRoutes bool
 }
 
 type PeerManager struct {
@@ -58,6 +62,7 @@ type PeerManager struct {
 	allowedIPClaims map[string]map[int]bool
 	APIServer       *api.API
 	publicDNS       []string
+	disableRoutes   bool
 
 	PersistentKeepalive int
 
@@ -158,6 +163,7 @@ func NewPeerManager(config PeerManagerConfig) *PeerManager {
 		allowedIPClaims:       make(map[string]map[int]bool),
 		APIServer:             config.APIServer,
 		publicDNS:             config.PublicDNS,
+		disableRoutes:         config.DisableRoutes,
 		lastOwnerChange:       make(map[string]time.Time),
 		gatewaySiteIds:        make(map[int]bool),
 		gatewayExcludedIPs:    make(map[string]int),
@@ -640,6 +646,59 @@ func (pm *PeerManager) GetAllPeers() []SiteConfig {
 	return peers
 }
 
+// addRoutes/removeRoutes/addServerRoute/removeServerRoute wrap the system
+// route helpers for site traffic (server IPs and remote subnets) and are a
+// no-op when route management is disabled. They deliberately do NOT cover the
+// gateway default-route-equivalent or its bypass routes, which are always
+// installed regardless (see activateGatewayLocked).
+func (pm *PeerManager) addRoutes(subnets []string) error {
+	if pm.disableRoutes {
+		return nil
+	}
+	return network.AddRoutesWithSource(subnets, pm.interfaceName, pm.localIP)
+}
+
+func (pm *PeerManager) removeRoutes(subnets []string) error {
+	if pm.disableRoutes {
+		return nil
+	}
+	return network.RemoveRoutes(subnets, pm.interfaceName)
+}
+
+func (pm *PeerManager) addServerRoute(serverIP string) error {
+	if pm.disableRoutes {
+		return nil
+	}
+	return network.AddRouteForServerIPWithSource(normalizeServerRouteDestination(serverIP), pm.interfaceName, pm.localIP)
+}
+
+func (pm *PeerManager) removeServerRoute(serverIP string) error {
+	if pm.disableRoutes {
+		return nil
+	}
+	return network.RemoveRouteForServerIPWithSource(normalizeServerRouteDestination(serverIP), pm.interfaceName, pm.localIP)
+}
+
+// The DNS proxy is not created when aliases are disabled, so every alias
+// record operation must tolerate a nil proxy.
+func (pm *PeerManager) addDNSRecord(alias string, address net.IP, siteId int) {
+	if pm.dnsProxy != nil {
+		pm.dnsProxy.AddDNSRecord(alias, address, siteId)
+	}
+}
+
+func (pm *PeerManager) removeDNSRecord(alias string, address net.IP) {
+	if pm.dnsProxy != nil {
+		pm.dnsProxy.RemoveDNSRecord(alias, address)
+	}
+}
+
+func (pm *PeerManager) removeDNSRecordForSite(alias string, address net.IP, siteId int) {
+	if pm.dnsProxy != nil {
+		pm.dnsProxy.RemoveDNSRecordForSite(alias, address, siteId)
+	}
+}
+
 func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -649,7 +708,7 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 		if address == nil {
 			continue
 		}
-		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteConfig.SiteId)
+		pm.addDNSRecord(alias.Alias, address, siteConfig.SiteId)
 	}
 
 	if siteConfig.PublicKey == "" {
@@ -694,11 +753,10 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 		return err
 	}
 
-	serverRouteDestination := normalizeServerRouteDestination(siteConfig.ServerIP)
-	if err := network.AddRouteForServerIPWithSource(serverRouteDestination, pm.interfaceName, pm.localIP); err != nil {
+	if err := pm.addServerRoute(siteConfig.ServerIP); err != nil {
 		logger.Error("Failed to add route for server IP: %v", err)
 	}
-	if err := network.AddRoutesWithSource(siteConfig.RemoteSubnets, pm.interfaceName, pm.localIP); err != nil {
+	if err := pm.addRoutes(siteConfig.RemoteSubnets); err != nil {
 		logger.Error("Failed to add routes for remote subnets: %v", err)
 	}
 
@@ -769,8 +827,7 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 		return err
 	}
 
-	serverRouteDestination := normalizeServerRouteDestination(peer.ServerIP)
-	if err := network.RemoveRouteForServerIPWithSource(serverRouteDestination, pm.interfaceName, pm.localIP); err != nil {
+	if err := pm.removeServerRoute(peer.ServerIP); err != nil {
 		logger.Error("Failed to remove route for server IP: %v", err)
 	}
 
@@ -792,7 +849,7 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 			}
 		}
 		if !subnetStillInUse {
-			if err := network.RemoveRoutes([]string{subnet}, pm.interfaceName); err != nil {
+			if err := pm.removeRoutes([]string{subnet}); err != nil {
 				logger.Error("Failed to remove route for remote subnet %s: %v", subnet, err)
 			}
 		}
@@ -804,7 +861,7 @@ func (pm *PeerManager) RemovePeer(siteId int) error {
 		if address == nil {
 			continue
 		}
-		pm.dnsProxy.RemoveDNSRecord(alias.Alias, address)
+		pm.removeDNSRecord(alias.Alias, address)
 	}
 
 	// Release all IP claims and promote other peers as needed. Scan
@@ -905,7 +962,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 		if address == nil {
 			continue
 		}
-		pm.dnsProxy.RemoveDNSRecord(alias.Alias, address)
+		pm.removeDNSRecord(alias.Alias, address)
 	}
 	// Add new aliases
 	for _, alias := range siteConfig.Aliases {
@@ -913,7 +970,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 		if address == nil {
 			continue
 		}
-		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteConfig.SiteId)
+		pm.addDNSRecord(alias.Alias, address, siteConfig.SiteId)
 	}
 
 	if siteConfig.PublicKey == "" {
@@ -1031,7 +1088,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 			}
 		}
 		if !subnetStillInUse {
-			if err := network.RemoveRoutes([]string{subnet}, pm.interfaceName); err != nil {
+			if err := pm.removeRoutes([]string{subnet}); err != nil {
 				logger.Error("Failed to remove route for subnet %s: %v", subnet, err)
 			}
 		}
@@ -1039,7 +1096,7 @@ func (pm *PeerManager) UpdatePeer(siteConfig SiteConfig) error {
 
 	// Add routes for added subnets
 	if len(addedSubnets) > 0 {
-		if err := network.AddRoutesWithSource(addedSubnets, pm.interfaceName, pm.localIP); err != nil {
+		if err := pm.addRoutes(addedSubnets); err != nil {
 			logger.Error("Failed to add routes: %v", err)
 		}
 	}
@@ -1250,7 +1307,7 @@ func (pm *PeerManager) AddRemoteSubnet(siteId int, cidr string) error {
 	}
 
 	// Add route
-	if err := network.AddRoutesWithSource([]string{cidr}, pm.interfaceName, pm.localIP); err != nil {
+	if err := pm.addRoutes([]string{cidr}); err != nil {
 		return err
 	}
 
@@ -1310,7 +1367,7 @@ func (pm *PeerManager) RemoveRemoteSubnet(siteId int, ip string) error {
 
 	// Only remove route if no other peer needs it
 	if !subnetStillInUse {
-		if err := network.RemoveRoutes([]string{ip}, pm.interfaceName); err != nil {
+		if err := pm.removeRoutes([]string{ip}); err != nil {
 			return err
 		}
 	}
@@ -1333,7 +1390,7 @@ func (pm *PeerManager) AddAlias(siteId int, alias Alias) error {
 
 	address := net.ParseIP(alias.AliasAddress)
 	if address != nil {
-		pm.dnsProxy.AddDNSRecord(alias.Alias, address, siteId)
+		pm.addDNSRecord(alias.Alias, address, siteId)
 	}
 
 	// Add an allowed IP for the alias
@@ -1371,7 +1428,7 @@ func (pm *PeerManager) RemoveAlias(siteId int, aliasName string) error {
 
 	address := net.ParseIP(aliasToRemove.AliasAddress)
 	if address != nil {
-		pm.dnsProxy.RemoveDNSRecordForSite(aliasName, address, siteId)
+		pm.removeDNSRecordForSite(aliasName, address, siteId)
 	}
 
 	peer.Aliases = newAliases

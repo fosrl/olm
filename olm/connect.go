@@ -181,10 +181,17 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		logger.Warn("Failed to parse tunnel IP %q: %v", interfaceIP, err)
 	}
 
-	// Create and start DNS proxy
-	o.dnsProxy, err = dns.NewDNSProxy(o.middleDev, o.tunnelConfig.MTU, wgData.UtilitySubnet, o.tunnelConfig.UpstreamDNS, o.tunnelConfig.TunnelDNS, interfaceIP, o.tunnelConfig.MatchDomains, o.tunnelConfig.PublicDNS)
-	if err != nil {
-		logger.Error("Failed to create DNS proxy: %v", err)
+	// Create the DNS proxy, unless routes/aliases are disabled - the proxy is
+	// what resolves aliases, and the utility subnet it lives on is only
+	// reachable through a system route we wouldn't add. o.dnsProxy stays nil
+	// in that case; everything that uses it is nil-checked.
+	if o.tunnelConfig.DisableRoutesAndAliases {
+		logger.Info("Routes and aliases disabled: not adding system routes and not starting the DNS proxy (gateway routes are unaffected)")
+	} else {
+		o.dnsProxy, err = dns.NewDNSProxy(o.middleDev, o.tunnelConfig.MTU, wgData.UtilitySubnet, o.tunnelConfig.UpstreamDNS, o.tunnelConfig.TunnelDNS, interfaceIP, o.tunnelConfig.MatchDomains, o.tunnelConfig.PublicDNS)
+		if err != nil {
+			logger.Error("Failed to create DNS proxy: %v", err)
+		}
 	}
 
 	// Tell the system DNS monitor to exclude the proxy IP so that subsequent
@@ -207,8 +214,10 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		}
 	}
 
-	if err := network.AddRoutesWithSource([]string{wgData.UtilitySubnet}, o.tunnelConfig.InterfaceName, interfaceIP); err != nil { // also route the utility subnet
-		logger.Error("Failed to add route for utility subnet: %v", err)
+	if !o.tunnelConfig.DisableRoutesAndAliases {
+		if err := network.AddRoutesWithSource([]string{wgData.UtilitySubnet}, o.tunnelConfig.InterfaceName, interfaceIP); err != nil { // also route the utility subnet
+			logger.Error("Failed to add route for utility subnet: %v", err)
+		}
 	}
 
 	// Create peer manager with integrated peer monitoring
@@ -223,6 +232,7 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		WSClient:      o.websocket,
 		APIServer:     o.apiServer,
 		PublicDNS:     o.tunnelConfig.PublicDNS,
+		DisableRoutes: o.tunnelConfig.DisableRoutesAndAliases,
 	})
 
 	for i := range wgData.Sites {
@@ -257,42 +267,44 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	// endpoints it already recorded now that there's somewhere to put them.
 	o.flushPendingHolepunchBypassEndpoints()
 
-	if err := o.dnsProxy.Start(); err != nil { // start DNS proxy first so there is no downtime
-		logger.Error("Failed to start DNS proxy: %v", err)
+	if o.dnsProxy != nil {
+		if err := o.dnsProxy.Start(); err != nil { // start DNS proxy first so there is no downtime
+			logger.Error("Failed to start DNS proxy: %v", err)
+		}
+
+		// Register JIT handler: when the DNS proxy resolves a local record, check whether
+		// the owning site is already connected and, if not, initiate a JIT connection.
+		o.dnsProxy.SetJITHandler(func(siteId int) {
+			pm := o.getPeerManager()
+			if pm == nil || o.websocket == nil {
+				return
+			}
+
+			// Site already has an active peer connection - nothing to do.
+			if _, exists := pm.GetPeer(siteId); exists {
+				return
+			}
+
+			o.peerSendMu.Lock()
+			defer o.peerSendMu.Unlock()
+
+			// A JIT request for this site is already in-flight - avoid duplicate sends.
+			if _, pending := o.jitPendingSites[siteId]; pending {
+				return
+			}
+
+			chainId := generateChainId()
+			logger.Info("DNS-triggered JIT connect for site %d (chainId=%s)", siteId, chainId)
+			stopFunc, _ := o.websocket.SendMessageInterval("olm/wg/server/peer/init", map[string]interface{}{
+				"siteId":  siteId,
+				"chainId": chainId,
+			}, 2*time.Second, 10)
+			o.stopPeerInits[chainId] = stopFunc
+			o.jitPendingSites[siteId] = chainId
+		})
 	}
 
-	// Register JIT handler: when the DNS proxy resolves a local record, check whether
-	// the owning site is already connected and, if not, initiate a JIT connection.
-	o.dnsProxy.SetJITHandler(func(siteId int) {
-		pm := o.getPeerManager()
-		if pm == nil || o.websocket == nil {
-			return
-		}
-
-		// Site already has an active peer connection - nothing to do.
-		if _, exists := pm.GetPeer(siteId); exists {
-			return
-		}
-
-		o.peerSendMu.Lock()
-		defer o.peerSendMu.Unlock()
-
-		// A JIT request for this site is already in-flight - avoid duplicate sends.
-		if _, pending := o.jitPendingSites[siteId]; pending {
-			return
-		}
-
-		chainId := generateChainId()
-		logger.Info("DNS-triggered JIT connect for site %d (chainId=%s)", siteId, chainId)
-		stopFunc, _ := o.websocket.SendMessageInterval("olm/wg/server/peer/init", map[string]interface{}{
-			"siteId":  siteId,
-			"chainId": chainId,
-		}, 2*time.Second, 10)
-		o.stopPeerInits[chainId] = stopFunc
-		o.jitPendingSites[siteId] = chainId
-	})
-
-	if o.tunnelConfig.OverrideDNS {
+	if o.tunnelConfig.OverrideDNS && o.dnsProxy != nil {
 		if err := o.applyDNSOverride(true); err != nil {
 			logger.Error("%v", err)
 			return

@@ -182,6 +182,16 @@ type TunnelConfig struct {
 	// LAN address it originally arrived with. Linux only. Defaults to false.
 	SubnetRouter bool
 
+	// DisableRoutesAndAliases, when enabled, stops olm from adding routes to
+	// the host's routing table (server IPs, remote subnets, the utility
+	// subnet) and from launching the DNS proxy, so aliases are not resolved
+	// either. WireGuard AllowedIPs are still configured, so the tunnel can
+	// still be used by anything that reaches it without the OS routing table
+	// (e.g. a file descriptor/netstack consumer). Gateway routes (the
+	// default-route-equivalent and its endpoint bypass routes) are unaffected
+	// and are still installed. Defaults to false.
+	DisableRoutesAndAliases bool
+
 	// GatewaySiteIds, when non-empty, designates these site IDs as gateway
 	// (full-tunnel/default-route) candidates from the moment the tunnel
 	// starts, for callers that want a gateway already established rather
