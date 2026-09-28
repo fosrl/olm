@@ -81,6 +81,18 @@ type Olm struct {
 	hpBypassEndpoints map[string]bool
 	hpBypassMu        sync.Mutex
 
+	// dnsBypassEndpoints tracks the "host:port" upstream DNS servers (see
+	// TunnelConfig.UpstreamDNS / dns.DNSProxy's upstreamDNS - the DNS proxy's
+	// primary/secondary real resolvers) currently registered as gateway bypass
+	// targets, so the proxy's own outbound DNS queries aren't captured by the
+	// gateway default-route-equivalent and end up looping back through the
+	// tunnel. Diffed against every update - the initial value in StartTunnel, a
+	// live server-pushed DNS config override, or system DNS detection/
+	// SetSystemDNS - so stale entries are unregistered and new ones protected
+	// while gateway mode is active. Mirrors hpBypassEndpoints.
+	dnsBypassEndpoints map[string]bool
+	dnsBypassMu        sync.Mutex
+
 	// primaryTunnelIP is the site tunnel's own address (wgData.TunnelIP), set once
 	// per connect in handleConnect. It's the interface's first/primary address -
 	// on macOS/iOS NetworkExtension, an unbound outbound socket's source gets
@@ -526,6 +538,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 			if o.dnsProxy != nil {
 				o.dnsProxy.SetUpstreamDNS(servers)
 			}
+			o.updateDNSBypassEndpoints(servers)
 		} else {
 			logger.Debug("Not updating UpstreamDNS: statically configured to %v", config.UpstreamDNS)
 		}
@@ -549,6 +562,13 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	if len(o.tunnelConfig.UpstreamDNS) == 0 {
 		o.tunnelConfig.UpstreamDNS = []string{"8.8.8.8:53"}
 	}
+	// Register the startup upstream DNS servers as gateway bypass targets
+	// regardless of how they were determined (statically configured, defaulted
+	// above, or already applied from a dynamic detection callback a moment
+	// ago) - the peer manager doesn't exist yet at this point, so this only
+	// records intent; flushPendingDNSBypassEndpoints (called from
+	// handleConnect) pushes it in once the peer manager is created.
+	o.updateDNSBypassEndpoints(o.tunnelConfig.UpstreamDNS)
 
 	// Reset terminated status when tunnel starts
 	o.apiServer.SetTerminated(false)

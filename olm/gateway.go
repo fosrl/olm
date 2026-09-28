@@ -214,6 +214,66 @@ func (o *Olm) flushPendingHolepunchBypassEndpoints() {
 	}
 }
 
+// updateDNSBypassEndpoints diffs servers (the DNS proxy's upstream/primary
+// and secondary DNS servers - see TunnelConfig.UpstreamDNS and
+// dns.DNSProxy.SetUpstreamDNS) against the currently-registered set and
+// adds/removes gateway bypass routes for the difference, via the same
+// AddGatewayBypassEndpoint/RemoveGatewayBypassEndpoint machinery used for
+// hole-punch endpoints above. This keeps the DNS proxy's own outbound queries
+// to its real upstream resolvers off the gateway default-route-equivalent, so
+// they reach the real servers directly instead of looping back through the
+// tunnel. Called from StartTunnel (initial value and dynamic system-DNS
+// updates, including SetSystemDNS pushes) and applyDNSConfigUpdate (live
+// server-pushed overrides). Safe to call before the peer manager exists (see
+// flushPendingDNSBypassEndpoints) and safe to call repeatedly with the same
+// servers (no-op).
+func (o *Olm) updateDNSBypassEndpoints(servers []string) {
+	pm := o.getPeerManager()
+
+	newBypassEndpoints := make(map[string]bool, len(servers))
+	for _, server := range servers {
+		newBypassEndpoints[server] = true
+	}
+
+	o.dnsBypassMu.Lock()
+	defer o.dnsBypassMu.Unlock()
+	if pm != nil {
+		for server := range newBypassEndpoints {
+			if !o.dnsBypassEndpoints[server] {
+				pm.AddGatewayBypassEndpoint(server)
+			}
+		}
+		for server := range o.dnsBypassEndpoints {
+			if !newBypassEndpoints[server] {
+				pm.RemoveGatewayBypassEndpoint(server)
+			}
+		}
+	}
+	o.dnsBypassEndpoints = newBypassEndpoints
+}
+
+// flushPendingDNSBypassEndpoints re-registers every currently-known upstream
+// DNS bypass endpoint with the peer manager. Mirrors
+// flushPendingHolepunchBypassEndpoints: updateDNSBypassEndpoints typically
+// runs before the peer manager exists (the initial UpstreamDNS value is
+// applied in StartTunnel, and a DNS config override may arrive at the very
+// start of handleConnect - see olm/dns_config.go - both well before
+// handleConnect constructs the peer manager further down), so whatever was
+// recorded needs to be pushed in once it becomes available.
+// AddGatewayBypassEndpoint is idempotent.
+func (o *Olm) flushPendingDNSBypassEndpoints() {
+	pm := o.getPeerManager()
+	if pm == nil {
+		return
+	}
+
+	o.dnsBypassMu.Lock()
+	defer o.dnsBypassMu.Unlock()
+	for server := range o.dnsBypassEndpoints {
+		pm.AddGatewayBypassEndpoint(server)
+	}
+}
+
 // extractControlEndpointHost returns the bare host (no scheme/port) of the
 // Pangolin server olm is registered against, for gateway bypass-route
 // purposes. Falls back to the raw endpoint string on parse failure -

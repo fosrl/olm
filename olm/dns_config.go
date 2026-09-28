@@ -26,6 +26,7 @@ func (o *Olm) applyDNSConfigUpdate(cfg DNSConfigUpdate) {
 		if o.dnsProxy != nil {
 			o.dnsProxy.SetUpstreamDNS(cfg.UpstreamDNS)
 		}
+		o.updateDNSBypassEndpoints(cfg.UpstreamDNS)
 	}
 
 	if len(cfg.MatchDomains) > 0 {
