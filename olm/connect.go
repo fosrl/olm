@@ -181,17 +181,15 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		logger.Warn("Failed to parse tunnel IP %q: %v", interfaceIP, err)
 	}
 
-	// Create the DNS proxy, unless routes/aliases are disabled - the proxy is
-	// what resolves aliases, and the utility subnet it lives on is only
-	// reachable through a system route we wouldn't add. o.dnsProxy stays nil
-	// in that case; everything that uses it is nil-checked.
-	if o.tunnelConfig.DisableRoutesAndAliases {
-		logger.Info("Routes and aliases disabled: not adding system routes and not starting the DNS proxy (gateway routes are unaffected)")
-	} else {
-		o.dnsProxy, err = dns.NewDNSProxy(o.middleDev, o.tunnelConfig.MTU, wgData.UtilitySubnet, o.tunnelConfig.UpstreamDNS, o.tunnelConfig.TunnelDNS, interfaceIP, o.tunnelConfig.MatchDomains, o.tunnelConfig.PublicDNS)
-		if err != nil {
-			logger.Error("Failed to create DNS proxy: %v", err)
-		}
+	// The DNS proxy is always created - it resolves both exit node aliases
+	// (unaffected by DisableRoutesAndAliasesOnExitNode - see connectExitNode)
+	// and site resource aliases, which the peer manager created below adds
+	// and removes dynamically as an exit node connects/disconnects (see
+	// PeerManager.SetExitNode/ClearExitNode). o.dnsProxy is still nil-checked
+	// everywhere it's used, in case creation itself fails.
+	o.dnsProxy, err = dns.NewDNSProxy(o.middleDev, o.tunnelConfig.MTU, wgData.UtilitySubnet, o.tunnelConfig.UpstreamDNS, o.tunnelConfig.TunnelDNS, interfaceIP, o.tunnelConfig.MatchDomains, o.tunnelConfig.PublicDNS)
+	if err != nil {
+		logger.Error("Failed to create DNS proxy: %v", err)
 	}
 
 	// Tell the system DNS monitor to exclude the proxy IP so that subsequent
@@ -214,25 +212,34 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 		}
 	}
 
-	if !o.tunnelConfig.DisableRoutesAndAliases {
-		if err := network.AddRoutesWithSource([]string{wgData.UtilitySubnet}, o.tunnelConfig.InterfaceName, interfaceIP); err != nil { // also route the utility subnet
-			logger.Error("Failed to add route for utility subnet: %v", err)
-		}
+	// The utility subnet route is what makes the DNS proxy (always created
+	// above) reachable at all, so it's always added too, independent of
+	// DisableRoutesAndAliasesOnExitNode - which only gates routes/aliases for
+	// individual site resources, applied dynamically below as the peer
+	// manager is told about the exit node's connection state.
+	if err := network.AddRoutesWithSource([]string{wgData.UtilitySubnet}, o.tunnelConfig.InterfaceName, interfaceIP); err != nil { // also route the utility subnet
+		logger.Error("Failed to add route for utility subnet: %v", err)
 	}
 
-	// Create peer manager with integrated peer monitoring
+	// Create peer manager with integrated peer monitoring. If
+	// DisableRoutesAndAliasesOnExitNode is enabled, resource routes/aliases
+	// are suppressed reactively once an exit node (ExitNodeConfig peer or
+	// gateway mode) actually activates below/later - see
+	// PeerManager.SetExitNode/SetGateway - rather than being pre-seeded here,
+	// so a failed initial exit-node/gateway setup can never leave routes
+	// stuck suppressed with nothing active to justify it.
 	o.peerManager = peers.NewPeerManager(peers.PeerManagerConfig{
-		Device:        o.dev,
-		DNSProxy:      o.dnsProxy,
-		InterfaceName: o.tunnelConfig.InterfaceName,
-		PrivateKey:    o.privateKey,
-		MiddleDev:     o.middleDev,
-		LocalIP:       interfaceIP,
-		SharedBind:    o.sharedBind,
-		WSClient:      o.websocket,
-		APIServer:     o.apiServer,
-		PublicDNS:     o.tunnelConfig.PublicDNS,
-		DisableRoutes: o.tunnelConfig.DisableRoutesAndAliases,
+		Device:                            o.dev,
+		DNSProxy:                          o.dnsProxy,
+		InterfaceName:                     o.tunnelConfig.InterfaceName,
+		PrivateKey:                        o.privateKey,
+		MiddleDev:                         o.middleDev,
+		LocalIP:                           interfaceIP,
+		SharedBind:                        o.sharedBind,
+		WSClient:                          o.websocket,
+		APIServer:                         o.apiServer,
+		PublicDNS:                         o.tunnelConfig.PublicDNS,
+		DisableRoutesAndAliasesOnExitNode: o.tunnelConfig.DisableRoutesAndAliasesOnExitNode,
 	})
 
 	for i := range wgData.Sites {

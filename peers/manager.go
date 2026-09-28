@@ -36,10 +36,19 @@ type PeerManagerConfig struct {
 	WSClient  *websocket.Client
 	APIServer *api.API
 	PublicDNS []string
-	// DisableRoutes stops the manager from adding/removing routes in the
-	// system routing table for server IPs and remote subnets. Gateway routes
-	// are unaffected.
-	DisableRoutes bool
+	// DisableRoutesAndAliasesOnExitNode, when true, suppresses routes and
+	// alias DNS records for individual resources (server IPs, remote
+	// subnets, alias records) for as long as an "exit node" is active, and
+	// restores them as soon as it's no longer active. Two distinct
+	// mechanisms both count as "exit node" here and are ORed together (see
+	// exitNodeOrGatewayActiveLocked): the ExitNodeConfig WireGuard peer used
+	// for resources hosted directly on an exit node server (SetExitNode/
+	// ClearExitNode), and gateway/full-tunnel mode (SetGateway/
+	// clearGatewayLocked) - which is what client apps and the CLI actually
+	// mean by "select exit node" (a gateway-mode site resource). The
+	// gateway's own default-route-equivalent and bypass routes are
+	// unaffected either way.
+	DisableRoutesAndAliasesOnExitNode bool
 }
 
 type PeerManager struct {
@@ -62,7 +71,24 @@ type PeerManager struct {
 	allowedIPClaims map[string]map[int]bool
 	APIServer       *api.API
 	publicDNS       []string
-	disableRoutes   bool
+	// disableRoutesAndAliasesOnExitNode is static config (see
+	// PeerManagerConfig) for whether resource routes/aliases should ever be
+	// suppressed while an "exit node" (see the doc comment on
+	// PeerManagerConfig.DisableRoutesAndAliasesOnExitNode) is active.
+	disableRoutesAndAliasesOnExitNode bool
+	// exitNodeActive tracks whether the ExitNodeConfig WireGuard peer is
+	// currently connected - see SetExitNode/ClearExitNode. gatewayActive
+	// (below, pre-existing) is the other "exit node" signal.
+	exitNodeActive bool
+	// resourceRoutesSuppressed is the live, computed state: true exactly
+	// when disableRoutesAndAliasesOnExitNode && (exitNodeActive ||
+	// gatewayActive) - see exitNodeOrGatewayActiveLocked. It gates
+	// addRoutes/removeRoutes/addServerRoute/removeServerRoute/addDNSRecord/
+	// removeDNSRecord/removeDNSRecordForSite below. Kept as its own field
+	// (rather than recomputed each time) so suppressResourceRoutesLocked/
+	// restoreResourceRoutesLocked can tell whether a transition actually
+	// occurred.
+	resourceRoutesSuppressed bool
 
 	PersistentKeepalive int
 
@@ -153,21 +179,21 @@ func normalizeServerRouteDestination(serverIP string) string {
 // NewPeerManager creates a new PeerManager with an internal PeerMonitor
 func NewPeerManager(config PeerManagerConfig) *PeerManager {
 	pm := &PeerManager{
-		device:                config.Device,
-		peers:                 make(map[int]SiteConfig),
-		dnsProxy:              config.DNSProxy,
-		interfaceName:         config.InterfaceName,
-		localIP:               config.LocalIP,
-		privateKey:            config.PrivateKey,
-		allowedIPOwners:       make(map[string]int),
-		allowedIPClaims:       make(map[string]map[int]bool),
-		APIServer:             config.APIServer,
-		publicDNS:             config.PublicDNS,
-		disableRoutes:         config.DisableRoutes,
-		lastOwnerChange:       make(map[string]time.Time),
-		gatewaySiteIds:        make(map[int]bool),
-		gatewayExcludedIPs:    make(map[string]int),
-		gatewayExtraEndpoints: make(map[string]bool),
+		device:                            config.Device,
+		peers:                             make(map[int]SiteConfig),
+		dnsProxy:                          config.DNSProxy,
+		interfaceName:                     config.InterfaceName,
+		localIP:                           config.LocalIP,
+		privateKey:                        config.PrivateKey,
+		allowedIPOwners:                   make(map[string]int),
+		allowedIPClaims:                   make(map[string]map[int]bool),
+		APIServer:                         config.APIServer,
+		publicDNS:                         config.PublicDNS,
+		disableRoutesAndAliasesOnExitNode: config.DisableRoutesAndAliasesOnExitNode,
+		lastOwnerChange:                   make(map[string]time.Time),
+		gatewaySiteIds:                    make(map[int]bool),
+		gatewayExcludedIPs:                make(map[string]int),
+		gatewayExtraEndpoints:             make(map[string]bool),
 	}
 
 	// Create the peer monitor
@@ -204,21 +230,35 @@ func (pm *PeerManager) GetPeerMonitor() *monitor.PeerMonitor {
 // SetExitNode starts (or updates) ICMP connectivity monitoring of the given exit node.
 // tunnelIP is the secondary address assigned to us for this exit node, which the ping
 // probe must be sourced from since the exit node's WireGuard peer entry only accepts
-// traffic from that address.
+// traffic from that address. If DisableRoutesAndAliasesOnExitNode was enabled (see
+// PeerManagerConfig), this also suppresses resource routes/aliases for every tracked
+// site peer - see suppressResourceRoutesLocked.
 func (pm *PeerManager) SetExitNode(serverIP, tunnelIP string) {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
 	if pm.peerMonitor != nil {
 		pm.peerMonitor.SetExitNode(serverIP, tunnelIP)
 	}
+	pm.exitNodeActive = true
+	if pm.disableRoutesAndAliasesOnExitNode {
+		pm.suppressResourceRoutesLocked()
+	}
 }
 
-// ClearExitNode stops ICMP connectivity monitoring of the exit node
+// ClearExitNode stops ICMP connectivity monitoring of the exit node. If
+// DisableRoutesAndAliasesOnExitNode was enabled (see PeerManagerConfig), this
+// also restores resource routes/aliases for every tracked site peer - unless
+// gateway mode is still active, since that's the other "exit node" signal
+// (see exitNodeOrGatewayActiveLocked) - see restoreResourceRoutesLocked.
 func (pm *PeerManager) ClearExitNode() {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
 	if pm.peerMonitor != nil {
 		pm.peerMonitor.ClearExitNode()
+	}
+	pm.exitNodeActive = false
+	if pm.disableRoutesAndAliasesOnExitNode && !pm.exitNodeOrGatewayActiveLocked() {
+		pm.restoreResourceRoutesLocked()
 	}
 }
 
@@ -442,6 +482,12 @@ func (pm *PeerManager) SetGateway(siteResourceId int, siteIds []int, controlEndp
 			return err
 		}
 		pm.gatewayActive = true
+		// Gateway/full-tunnel mode is what client apps and the CLI call
+		// "exit node" - see the doc comment on
+		// PeerManagerConfig.DisableRoutesAndAliasesOnExitNode.
+		if pm.disableRoutesAndAliasesOnExitNode {
+			pm.suppressResourceRoutesLocked()
+		}
 	}
 
 	newSet := make(map[int]bool, len(siteIds))
@@ -581,6 +627,12 @@ func (pm *PeerManager) clearGatewayLocked() {
 	pm.gatewaySiteResourceId = 0
 	pm.deactivateGatewayLocked()
 	pm.gatewayActive = false
+	// Mirror SetGateway's activation hook, restoring resource routes/aliases
+	// unless the ExitNodeConfig WireGuard peer is still active (the other
+	// "exit node" signal).
+	if pm.disableRoutesAndAliasesOnExitNode && !pm.exitNodeOrGatewayActiveLocked() {
+		pm.restoreResourceRoutesLocked()
+	}
 	logger.Info("Gateway cleared")
 }
 
@@ -648,55 +700,160 @@ func (pm *PeerManager) GetAllPeers() []SiteConfig {
 
 // addRoutes/removeRoutes/addServerRoute/removeServerRoute wrap the system
 // route helpers for site traffic (server IPs and remote subnets) and are a
-// no-op when route management is disabled. They deliberately do NOT cover the
-// gateway default-route-equivalent or its bypass routes, which are always
-// installed regardless (see activateGatewayLocked).
+// no-op while resource routes are suppressed (see resourceRoutesSuppressed).
+// They deliberately do NOT cover the gateway default-route-equivalent or its
+// bypass routes, which are always installed regardless (see
+// activateGatewayLocked).
 func (pm *PeerManager) addRoutes(subnets []string) error {
-	if pm.disableRoutes {
+	if pm.resourceRoutesSuppressed {
 		return nil
 	}
 	return network.AddRoutesWithSource(subnets, pm.interfaceName, pm.localIP)
 }
 
 func (pm *PeerManager) removeRoutes(subnets []string) error {
-	if pm.disableRoutes {
+	if pm.resourceRoutesSuppressed {
 		return nil
 	}
 	return network.RemoveRoutes(subnets, pm.interfaceName)
 }
 
 func (pm *PeerManager) addServerRoute(serverIP string) error {
-	if pm.disableRoutes {
+	if pm.resourceRoutesSuppressed {
 		return nil
 	}
 	return network.AddRouteForServerIPWithSource(normalizeServerRouteDestination(serverIP), pm.interfaceName, pm.localIP)
 }
 
 func (pm *PeerManager) removeServerRoute(serverIP string) error {
-	if pm.disableRoutes {
+	if pm.resourceRoutesSuppressed {
 		return nil
 	}
 	return network.RemoveRouteForServerIPWithSource(normalizeServerRouteDestination(serverIP), pm.interfaceName, pm.localIP)
 }
 
-// The DNS proxy is not created when aliases are disabled, so every alias
-// record operation must tolerate a nil proxy.
+// addDNSRecord/removeDNSRecord/removeDNSRecordForSite tolerate a nil proxy
+// (defensively - the proxy is now always created, see olm's handleConnect)
+// and are a no-op while resource routes/aliases are suppressed, same as the
+// route helpers above.
 func (pm *PeerManager) addDNSRecord(alias string, address net.IP, siteId int) {
-	if pm.dnsProxy != nil {
-		pm.dnsProxy.AddDNSRecord(alias, address, siteId)
+	if pm.dnsProxy == nil || pm.resourceRoutesSuppressed {
+		return
 	}
+	pm.dnsProxy.AddDNSRecord(alias, address, siteId)
 }
 
 func (pm *PeerManager) removeDNSRecord(alias string, address net.IP) {
-	if pm.dnsProxy != nil {
-		pm.dnsProxy.RemoveDNSRecord(alias, address)
+	if pm.dnsProxy == nil || pm.resourceRoutesSuppressed {
+		return
 	}
+	pm.dnsProxy.RemoveDNSRecord(alias, address)
 }
 
 func (pm *PeerManager) removeDNSRecordForSite(alias string, address net.IP, siteId int) {
-	if pm.dnsProxy != nil {
-		pm.dnsProxy.RemoveDNSRecordForSite(alias, address, siteId)
+	if pm.dnsProxy == nil || pm.resourceRoutesSuppressed {
+		return
 	}
+	pm.dnsProxy.RemoveDNSRecordForSite(alias, address, siteId)
+}
+
+// exitNodeOrGatewayActiveLocked reports whether either "exit node" signal is
+// currently active - the ExitNodeConfig WireGuard peer (SetExitNode) or
+// gateway/full-tunnel mode (SetGateway), which is what client apps and the
+// CLI actually mean by "select exit node" - see the doc comment on
+// PeerManagerConfig.DisableRoutesAndAliasesOnExitNode. Must be called with
+// pm.mu held.
+func (pm *PeerManager) exitNodeOrGatewayActiveLocked() bool {
+	return pm.exitNodeActive || pm.gatewayActive
+}
+
+// suppressResourceRoutesLocked removes routes and alias DNS records for every
+// tracked site peer's resources (server IP, remote subnets, aliases) so that
+// only the exit node's own routes remain in effect. WireGuard peer
+// configuration (AllowedIps) is left untouched - the tunnel remains usable by
+// anything that reaches it without relying on the OS routing table. Called
+// when either "exit node" signal becomes active while
+// DisableRoutesAndAliasesOnExitNode is enabled (see SetExitNode/SetGateway).
+// No-op if already suppressed. Must be called with pm.mu held.
+//
+// Deliberately calls network.* and pm.dnsProxy directly rather than through
+// the addRoutes/removeRoutes/addServerRoute/removeServerRoute/addDNSRecord/
+// removeDNSRecord wrappers above: those are gated on resourceRoutesSuppressed,
+// which this function is itself in the middle of flipping - going through
+// them here would silently no-op the very removal this function exists to do.
+func (pm *PeerManager) suppressResourceRoutesLocked() {
+	if pm.resourceRoutesSuppressed {
+		return
+	}
+	pm.resourceRoutesSuppressed = true
+
+	removedSubnets := make(map[string]bool, len(pm.peers))
+	for _, peer := range pm.peers {
+		if err := network.RemoveRouteForServerIPWithSource(normalizeServerRouteDestination(peer.ServerIP), pm.interfaceName, pm.localIP); err != nil {
+			logger.Warn("Exit node active: failed to remove route for server IP %s: %v", peer.ServerIP, err)
+		}
+		for _, subnet := range peer.RemoteSubnets {
+			if removedSubnets[subnet] {
+				continue
+			}
+			removedSubnets[subnet] = true
+			if err := network.RemoveRoutes([]string{subnet}, pm.interfaceName); err != nil {
+				logger.Warn("Exit node active: failed to remove route for remote subnet %s: %v", subnet, err)
+			}
+		}
+		if pm.dnsProxy != nil {
+			for _, alias := range peer.Aliases {
+				address := net.ParseIP(alias.AliasAddress)
+				if address == nil {
+					continue
+				}
+				pm.dnsProxy.RemoveDNSRecordForSite(alias.Alias, address, peer.SiteId)
+			}
+		}
+	}
+
+	logger.Info("Exit node active: removed resource routes/aliases for %d site(s)", len(pm.peers))
+}
+
+// restoreResourceRoutesLocked is suppressResourceRoutesLocked's inverse,
+// re-adding routes and alias DNS records for every tracked site peer's
+// resources. Called when neither "exit node" signal remains active (see
+// ClearExitNode/clearGatewayLocked). No-op if not currently suppressed. Must
+// be called with pm.mu held.
+func (pm *PeerManager) restoreResourceRoutesLocked() {
+	if !pm.resourceRoutesSuppressed {
+		return
+	}
+	pm.resourceRoutesSuppressed = false
+
+	addedSubnets := make(map[string]bool, len(pm.peers))
+	for _, peer := range pm.peers {
+		if err := network.AddRouteForServerIPWithSource(normalizeServerRouteDestination(peer.ServerIP), pm.interfaceName, pm.localIP); err != nil {
+			logger.Warn("Exit node inactive: failed to add route for server IP %s: %v", peer.ServerIP, err)
+		}
+		for _, subnet := range peer.RemoteSubnets {
+			if addedSubnets[subnet] {
+				continue
+			}
+			addedSubnets[subnet] = true
+			if err := network.AddRoutesWithSource([]string{subnet}, pm.interfaceName, pm.localIP); err != nil {
+				logger.Warn("Exit node inactive: failed to add route for remote subnet %s: %v", subnet, err)
+			}
+		}
+		if pm.dnsProxy != nil {
+			for _, alias := range peer.Aliases {
+				address := net.ParseIP(alias.AliasAddress)
+				if address == nil {
+					continue
+				}
+				if err := pm.dnsProxy.AddDNSRecord(alias.Alias, address, peer.SiteId); err != nil {
+					logger.Warn("Exit node inactive: failed to add DNS record for alias %s: %v", alias.Alias, err)
+				}
+			}
+		}
+	}
+
+	logger.Info("Exit node inactive: restored resource routes/aliases for %d site(s)", len(pm.peers))
 }
 
 func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
