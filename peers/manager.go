@@ -767,14 +767,35 @@ func (pm *PeerManager) exitNodeOrGatewayActiveLocked() bool {
 	return pm.exitNodeActive || pm.gatewayActive
 }
 
+// shouldPushAllowedIPLocked reports whether cidr should actually be pushed
+// into WireGuard right now. The gateway CIDR (see gatewayCIDR) always should
+// be - gateway/full-tunnel routing must keep working regardless of resource
+// suppression. Every other (resource) CIDR should be unless resource routes/
+// aliases are currently suppressed (see resourceRoutesSuppressed), in which
+// case WireGuard's own crypto-key routing must not be able to reach it
+// either - not just the OS routing table - since anything that reaches the
+// tunnel interface directly (e.g. a mobile netstack/FD consumer bypassing
+// the OS route table) would otherwise still get forwarded there. Ownership
+// bookkeeping (allowedIPOwners/allowedIPClaims/the route optimizer) keeps
+// running normally regardless, via getOwnedAllowedIPs/getWireGuardAllowedIPs
+// deferring to this check only for what actually gets pushed to WireGuard -
+// so the correct set is immediately ready the moment suppression lifts. Must
+// be called with pm.mu held.
+func (pm *PeerManager) shouldPushAllowedIPLocked(cidr string) bool {
+	return cidr == gatewayCIDR || !pm.resourceRoutesSuppressed
+}
+
 // suppressResourceRoutesLocked removes routes and alias DNS records for every
-// tracked site peer's resources (server IP, remote subnets, aliases) so that
-// only the exit node's own routes remain in effect. WireGuard peer
-// configuration (AllowedIps) is left untouched - the tunnel remains usable by
-// anything that reaches it without relying on the OS routing table. Called
-// when either "exit node" signal becomes active while
-// DisableRoutesAndAliasesOnExitNode is enabled (see SetExitNode/SetGateway).
-// No-op if already suppressed. Must be called with pm.mu held.
+// tracked site peer's resources (server IP, remote subnets, aliases), and
+// strips those same resource CIDRs from each peer's WireGuard AllowedIPs, so
+// that only the exit node's own routes remain reachable at all - both via
+// the OS routing table and via WireGuard's own crypto-key routing. The
+// server IP and any owned gateway-CIDR claim are always kept in WireGuard
+// (see shouldPushAllowedIPLocked), so the tunnel's control/monitoring
+// traffic and gateway/full-tunnel routing are unaffected. Called when either
+// "exit node" signal becomes active while DisableRoutesAndAliasesOnExitNode
+// is enabled (see SetExitNode/SetGateway). No-op if already suppressed. Must
+// be called with pm.mu held.
 //
 // Deliberately calls network.* and pm.dnsProxy directly rather than through
 // the addRoutes/removeRoutes/addServerRoute/removeServerRoute/addDNSRecord/
@@ -785,10 +806,14 @@ func (pm *PeerManager) suppressResourceRoutesLocked() {
 	if pm.resourceRoutesSuppressed {
 		return
 	}
+	// Flipped before the loop below (rather than after, like the OS-route/DNS
+	// work above it) because getWireGuardAllowedIPs must already reflect the
+	// suppressed state for the RemoveAllowedIP replace-call below to compute
+	// the correct reduced set to keep.
 	pm.resourceRoutesSuppressed = true
 
 	removedSubnets := make(map[string]bool, len(pm.peers))
-	for _, peer := range pm.peers {
+	for siteId, peer := range pm.peers {
 		if err := network.RemoveRouteForServerIPWithSource(normalizeServerRouteDestination(peer.ServerIP), pm.interfaceName, pm.localIP); err != nil {
 			logger.Warn("Exit node active: failed to remove route for server IP %s: %v", peer.ServerIP, err)
 		}
@@ -810,24 +835,34 @@ func (pm *PeerManager) suppressResourceRoutesLocked() {
 				pm.dnsProxy.RemoveDNSRecordForSite(alias.Alias, address, peer.SiteId)
 			}
 		}
+
+		if peer.PublicKey != "" {
+			remaining := pm.getWireGuardAllowedIPs(siteId)
+			if err := RemoveAllowedIP(pm.device, peer.PublicKey, remaining); err != nil {
+				logger.Warn("Exit node active: failed to strip resource allowed IPs for site %d: %v", siteId, err)
+			}
+		}
 	}
 
 	logger.Info("Exit node active: removed resource routes/aliases for %d site(s)", len(pm.peers))
 }
 
 // restoreResourceRoutesLocked is suppressResourceRoutesLocked's inverse,
-// re-adding routes and alias DNS records for every tracked site peer's
-// resources. Called when neither "exit node" signal remains active (see
-// ClearExitNode/clearGatewayLocked). No-op if not currently suppressed. Must
-// be called with pm.mu held.
+// re-adding routes, alias DNS records, and WireGuard AllowedIPs for every
+// tracked site peer's resources. Called when neither "exit node" signal
+// remains active (see ClearExitNode/clearGatewayLocked). No-op if not
+// currently suppressed. Must be called with pm.mu held.
 func (pm *PeerManager) restoreResourceRoutesLocked() {
 	if !pm.resourceRoutesSuppressed {
 		return
 	}
+	// Flipped before the loop below (rather than after) because
+	// getOwnedAllowedIPs must already reflect the restored state for the
+	// AddAllowedIP calls below to know which resource CIDRs to add back.
 	pm.resourceRoutesSuppressed = false
 
 	addedSubnets := make(map[string]bool, len(pm.peers))
-	for _, peer := range pm.peers {
+	for siteId, peer := range pm.peers {
 		if err := network.AddRouteForServerIPWithSource(normalizeServerRouteDestination(peer.ServerIP), pm.interfaceName, pm.localIP); err != nil {
 			logger.Warn("Exit node inactive: failed to add route for server IP %s: %v", peer.ServerIP, err)
 		}
@@ -848,6 +883,20 @@ func (pm *PeerManager) restoreResourceRoutesLocked() {
 				}
 				if err := pm.dnsProxy.AddDNSRecord(alias.Alias, address, peer.SiteId); err != nil {
 					logger.Warn("Exit node inactive: failed to add DNS record for alias %s: %v", alias.Alias, err)
+				}
+			}
+		}
+
+		if peer.PublicKey != "" {
+			// getOwnedAllowedIPs already reflects the just-restored state, so
+			// this is exactly the resource CIDRs (plus the gateway CIDR,
+			// already present and unaffected by suppression) this peer
+			// currently owns. AddAllowedIP is additive/idempotent, so
+			// re-adding an already-present entry (e.g. the gateway CIDR) is
+			// harmless.
+			for _, cidr := range pm.getOwnedAllowedIPs(siteId) {
+				if err := AddAllowedIP(pm.device, peer.PublicKey, cidr); err != nil {
+					logger.Warn("Exit node inactive: failed to restore allowed IP %s for site %d: %v", cidr, siteId, err)
 				}
 			}
 		}
@@ -881,12 +930,16 @@ func (pm *PeerManager) AddPeer(siteConfig SiteConfig) error {
 	}
 	siteConfig.AllowedIps = allowedIPs
 
-	// Register claims for all allowed IPs and determine which ones this peer will own
+	// Register claims for all allowed IPs and determine which ones this peer
+	// will own in WireGuard. Claims are registered regardless of suppression
+	// (ownership bookkeeping always continues - see
+	// shouldPushAllowedIPLocked), but an owned resource IP is only actually
+	// pushed to WireGuard if resource routes/aliases aren't currently
+	// suppressed.
 	ownedIPs := make([]string, 0, len(allowedIPs))
 	for _, ip := range allowedIPs {
 		pm.claimAllowedIP(siteConfig.SiteId, ip)
-		// Check if this peer became the owner
-		if pm.allowedIPOwners[ip] == siteConfig.SiteId {
+		if pm.allowedIPOwners[ip] == siteConfig.SiteId && pm.shouldPushAllowedIPLocked(ip) {
 			ownedIPs = append(ownedIPs, ip)
 		}
 	}
@@ -1329,14 +1382,20 @@ func (pm *PeerManager) releaseAllowedIP(siteId int, cidr string) (newOwner int, 
 	return -1, false
 }
 
-// getOwnedAllowedIPs returns the list of allowed IPs that a peer currently owns in WireGuard.
-// Must be called with lock held.
+// getOwnedAllowedIPs returns the list of allowed IPs that a peer currently
+// owns and that should be reflected in WireGuard right now - see
+// shouldPushAllowedIPLocked for what's excluded while resource routes are
+// suppressed. Must be called with lock held.
 func (pm *PeerManager) getOwnedAllowedIPs(siteId int) []string {
 	var owned []string
 	for cidr, owner := range pm.allowedIPOwners {
-		if owner == siteId {
-			owned = append(owned, cidr)
+		if owner != siteId {
+			continue
 		}
+		if !pm.shouldPushAllowedIPLocked(cidr) {
+			continue
+		}
+		owned = append(owned, cidr)
 	}
 	return owned
 }
@@ -1363,8 +1422,11 @@ func (pm *PeerManager) addAllowedIp(siteId int, ip string) error {
 	peer.AllowedIps = append(peer.AllowedIps, ip)
 	pm.peers[siteId] = peer
 
-	// Only update WireGuard if we own this IP
-	if pm.allowedIPOwners[ip] == siteId {
+	// Only update WireGuard if we own this IP and it should currently be
+	// pushed (see shouldPushAllowedIPLocked - resource CIDRs are held back
+	// while suppressed, even though the claim above still registers
+	// ownership).
+	if pm.allowedIPOwners[ip] == siteId && pm.shouldPushAllowedIPLocked(ip) {
 		if err := AddAllowedIP(pm.device, peer.PublicKey, ip); err != nil {
 			return err
 		}
@@ -1424,8 +1486,11 @@ func (pm *PeerManager) removeAllowedIp(siteId int, cidr string) error {
 		return err
 	}
 
-	// If another peer was promoted to owner, add the IP to their WireGuard config
-	if promoted && newOwner >= 0 {
+	// If another peer was promoted to owner, add the IP to their WireGuard
+	// config - unless it's a resource CIDR held back by suppression (see
+	// shouldPushAllowedIPLocked); the promotion itself (ownership bookkeeping)
+	// still happened above via releaseAllowedIP regardless.
+	if promoted && newOwner >= 0 && pm.shouldPushAllowedIPLocked(cidr) {
 		if newOwnerPeer, exists := pm.peers[newOwner]; exists {
 			if err := AddAllowedIP(pm.device, newOwnerPeer.PublicKey, cidr); err != nil {
 				logger.Error("Failed to promote peer %d for IP %s: %v", newOwner, cidr, err)
@@ -1993,22 +2058,18 @@ func (pm *PeerManager) shouldSwitchOwner(cidr string, currentSiteId, candidateSi
 	return true
 }
 
-// getWireGuardAllowedIPs returns the full set of IPs that should be in WireGuard
-// for a peer: server IP /32 plus all shared IPs it currently owns.
-// Must be called with pm.mu held.
+// getWireGuardAllowedIPs returns the full set of IPs that should be in
+// WireGuard for a peer right now: server IP /32 (always) plus every shared
+// IP it currently owns that getOwnedAllowedIPs/shouldPushAllowedIPLocked
+// says should actually be pushed (i.e. excluding resource CIDRs while
+// suppressed). Must be called with pm.mu held.
 func (pm *PeerManager) getWireGuardAllowedIPs(siteId int) []string {
 	peer, exists := pm.peers[siteId]
 	if !exists {
 		return nil
 	}
 	serverIP := strings.Split(peer.ServerIP, "/")[0] + "/32"
-	ips := []string{serverIP}
-	for cidr, owner := range pm.allowedIPOwners {
-		if owner == siteId {
-			ips = append(ips, cidr)
-		}
-	}
-	return ips
+	return append([]string{serverIP}, pm.getOwnedAllowedIPs(siteId)...)
 }
 
 // transferOwnership moves WireGuard ownership of cidr from fromSiteId to toSiteId.
@@ -2027,8 +2088,11 @@ func (pm *PeerManager) transferOwnership(cidr string, fromSiteId int, toSiteId i
 		}
 	}
 
-	// Add cidr to new owner's WireGuard allowed IPs
-	if toPeer, exists := pm.peers[toSiteId]; exists {
+	// Add cidr to new owner's WireGuard allowed IPs - unless it's a resource
+	// CIDR held back by suppression (see shouldPushAllowedIPLocked); the
+	// ownership change above still stands regardless, so it's ready to push
+	// the moment suppression lifts (see restoreResourceRoutesLocked).
+	if toPeer, exists := pm.peers[toSiteId]; exists && pm.shouldPushAllowedIPLocked(cidr) {
 		if err := AddAllowedIP(pm.device, toPeer.PublicKey, cidr); err != nil {
 			return fmt.Errorf("add IP %s to site %d: %v", cidr, toSiteId, err)
 		}
@@ -2058,10 +2122,13 @@ func (pm *PeerManager) optimizeRoutes() {
 		}
 
 		if !hasOwner {
-			// No current owner, just assign
+			// No current owner, just assign. Ownership is recorded
+			// regardless of suppression; the WireGuard push is skipped for a
+			// resource CIDR held back by suppression (see
+			// shouldPushAllowedIPLocked), same rationale as transferOwnership.
 			pm.allowedIPOwners[cidr] = bestOwner
 			pm.lastOwnerChange[cidr] = time.Now()
-			if toPeer, exists := pm.peers[bestOwner]; exists {
+			if toPeer, exists := pm.peers[bestOwner]; exists && pm.shouldPushAllowedIPLocked(cidr) {
 				if err := AddAllowedIP(pm.device, toPeer.PublicKey, cidr); err != nil {
 					logger.Error("Failed to assign IP %s to site %d: %v", cidr, bestOwner, err)
 				}
