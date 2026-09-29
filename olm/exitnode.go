@@ -210,7 +210,14 @@ persistent_keepalive_interval=%d`, util.FixKey(cfg.PublicKey), allowedIP, resolv
 
 	if pm := o.getPeerManager(); pm != nil {
 		pm.SetExitNode(strings.Split(cfg.ServerIP, "/")[0], strings.Split(cfg.TunnelIP, "/")[0])
+		// Distinct from the hole-punch exit nodes registered in olm.go's
+		// OnTokenUpdate handler: this is the exit node actually connected as a
+		// WireGuard peer above. Its own traffic must stay off the gateway
+		// route the same way a site peer's endpoint does, or it would loop
+		// through the tunnel it's part of maintaining.
+		pm.AddGatewayBypassEndpoint(resolvedEndpoint)
 	}
+	o.exitNodeResolvedEndpoint = resolvedEndpoint
 
 	logger.Info("Connected to exit node at %s", resolvedEndpoint)
 	return nil
@@ -232,9 +239,14 @@ func (o *Olm) removeExitNodePeerLocked() error {
 	}
 	cfg := o.exitNode
 	o.exitNode = nil
+	resolvedEndpoint := o.exitNodeResolvedEndpoint
+	o.exitNodeResolvedEndpoint = ""
 
 	if pm := o.getPeerManager(); pm != nil {
 		pm.ClearExitNode()
+		if resolvedEndpoint != "" {
+			pm.RemoveGatewayBypassEndpoint(resolvedEndpoint)
+		}
 	}
 
 	if o.dnsProxy != nil {

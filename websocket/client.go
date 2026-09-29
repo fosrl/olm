@@ -104,7 +104,8 @@ type Client struct {
 	configVersionMux  sync.RWMutex
 	token             string                // Cached authentication token
 	exitNodes         []ExitNode            // Cached exit nodes from token response
-	tokenMux          sync.RWMutex          // Protects token and exitNodes
+	serverVersion     string                // Server version from the last token response
+	tokenMux          sync.RWMutex          // Protects token, exitNodes and serverVersion
 	forceNewToken     bool                  // Flag to force fetching a new token on next connection
 	processingMessage bool                  // Flag to track if a message is currently being processed
 	processingMux     sync.RWMutex          // Protects processingMessage
@@ -423,11 +424,11 @@ func (c *Client) RegisterHandler(messageType string, handler MessageHandler) {
 	c.handlers[messageType] = handler
 }
 
-func (c *Client) getToken() (string, []ExitNode, error) {
+func (c *Client) getToken() (string, []ExitNode, string, error) {
 	// Parse the base URL to ensure we have the correct hostname
 	baseURL, err := url.Parse(c.baseURL)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to parse base URL: %w", err)
+		return "", nil, "", fmt.Errorf("failed to parse base URL: %w", err)
 	}
 
 	// Ensure we have the base URL without trailing slashes
@@ -439,7 +440,7 @@ func (c *Client) getToken() (string, []ExitNode, error) {
 	if c.tlsConfig.ClientCertFile != "" || c.tlsConfig.ClientKeyFile != "" || len(c.tlsConfig.CAFiles) > 0 || c.tlsConfig.PKCS12File != "" {
 		tlsConfig, err = c.setupTLS()
 		if err != nil {
-			return "", nil, fmt.Errorf("failed to setup TLS configuration: %w", err)
+			return "", nil, "", fmt.Errorf("failed to setup TLS configuration: %w", err)
 		}
 	}
 
@@ -461,7 +462,7 @@ func (c *Client) getToken() (string, []ExitNode, error) {
 	jsonData, err := json.Marshal(tokenData)
 
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to marshal token request data: %w", err)
+		return "", nil, "", fmt.Errorf("failed to marshal token request data: %w", err)
 	}
 
 	// Create a new request
@@ -471,7 +472,7 @@ func (c *Client) getToken() (string, []ExitNode, error) {
 		bytes.NewBuffer(jsonData),
 	)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to create request: %w", err)
+		return "", nil, "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Set headers
@@ -490,7 +491,7 @@ func (c *Client) getToken() (string, []ExitNode, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to request new token: %w", err)
+		return "", nil, "", fmt.Errorf("failed to request new token: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -500,33 +501,33 @@ func (c *Client) getToken() (string, []ExitNode, error) {
 
 		// Return AuthError for 401/403 status codes
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return "", nil, &AuthError{
+			return "", nil, "", &AuthError{
 				StatusCode: resp.StatusCode,
 				Message:    string(body),
 			}
 		}
 
 		// For other errors (5xx, network issues, etc.), return regular error
-		return "", nil, fmt.Errorf("failed to get token with status code: %d, body: %s", resp.StatusCode, string(body))
+		return "", nil, "", fmt.Errorf("failed to get token with status code: %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	var tokenResp TokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
 		logger.Error("websocket: Failed to decode token response.")
-		return "", nil, fmt.Errorf("failed to decode token response: %w", err)
+		return "", nil, "", fmt.Errorf("failed to decode token response: %w", err)
 	}
 
 	if !tokenResp.Success {
-		return "", nil, fmt.Errorf("failed to get token: %s", tokenResp.Message)
+		return "", nil, "", fmt.Errorf("failed to get token: %s", tokenResp.Message)
 	}
 
 	if tokenResp.Data.Token == "" {
-		return "", nil, fmt.Errorf("received empty token from server")
+		return "", nil, "", fmt.Errorf("received empty token from server")
 	}
 
 	logger.Debug("websocket: Received token: %s", tokenResp.Data.Token)
 
-	return tokenResp.Data.Token, tokenResp.Data.ExitNodes, nil
+	return tokenResp.Data.Token, tokenResp.Data.ExitNodes, tokenResp.Data.ServerVersion, nil
 }
 
 func (c *Client) connectWithRetry() {
@@ -564,13 +565,14 @@ func (c *Client) establishConnection() error {
 	c.tokenMux.Lock()
 	needNewToken := c.token == "" || c.forceNewToken
 	if needNewToken {
-		token, exitNodes, err := c.getToken()
+		token, exitNodes, serverVersion, err := c.getToken()
 		if err != nil {
 			c.tokenMux.Unlock()
 			return fmt.Errorf("failed to get token: %w", err)
 		}
 		c.token = token
 		c.exitNodes = exitNodes
+		c.serverVersion = serverVersion
 		c.forceNewToken = false
 
 		if c.onTokenUpdate != nil {

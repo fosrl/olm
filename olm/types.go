@@ -11,6 +11,22 @@ type WgData struct {
 	TunnelIP      string             `json:"tunnelIP"`
 	UtilitySubnet string             `json:"utilitySubnet"` // this is for things like the DNS server, and alias addresses
 	ExitNode      *ExitNodeConfig    `json:"exitNode,omitempty"`
+	DNSConfig     *DNSConfigUpdate   `json:"dnsConfig,omitempty"`
+}
+
+// DNSConfigUpdate describes a server-driven override of the olm client's DNS
+// configuration - the same settings that can otherwise only be set locally
+// (see TunnelConfig's UpstreamDNS/OverrideDNS/TunnelDNS/MatchDomains). It
+// arrives on the initial "olm/wg/connect" message and can also be sent later
+// via "olm/wg/dns/update" to change the running config without reconnecting.
+// Every field is optional/nil-able: an omitted field leaves the client's
+// current value (local config, or whatever a previous update set) unchanged,
+// while a present field always overrides it.
+type DNSConfigUpdate struct {
+	UpstreamDNS  []string `json:"upstreamDns,omitempty"`
+	OverrideDNS  *bool    `json:"overrideDns,omitempty"`
+	TunnelDNS    *bool    `json:"tunnelDns,omitempty"`
+	MatchDomains []string `json:"matchDomains,omitempty"`
 }
 
 // ExitNodeConfig describes an exit node the olm client can connect to for
@@ -158,4 +174,42 @@ type TunnelConfig struct {
 	// false, preserving the routing behavior from before this option was
 	// introduced.
 	PreferLocalRoutes bool
+
+	// SubnetRouter, when enabled, lets this client forward traffic from its
+	// local network out over the tunnel: forwarded packets are NATed to the
+	// client's own tunnel IP before being encrypted, since the server side
+	// authorizes traffic by the client's tunnel identity, not by whatever
+	// LAN address it originally arrived with. Linux only. Defaults to false.
+	SubnetRouter bool
+
+	// DisableRoutesAndAliasesOnExitNode, when enabled, makes the exit node
+	// take precedence over individual resources: for as long as an exit node
+	// is connected, olm removes routes to the host's routing table for site
+	// resources (server IPs, remote subnets) and their alias DNS records, and
+	// restores them the moment the exit node disconnects. If the tunnel
+	// starts with an exit node already selected, these routes/aliases are
+	// never added in the first place. The exit node's own routes and aliases
+	// are unaffected, and it can connect/disconnect at any time - via the
+	// initial connect, a server push (olm/wg/exitnode/connect|disconnect), or
+	// the local API - all of which converge through the same connect/
+	// disconnect path (see PeerManager.SetExitNode/ClearExitNode).
+	// WireGuard AllowedIPs are still configured throughout, so the tunnel can
+	// still be used by anything that reaches it without the OS routing table
+	// (e.g. a file descriptor/netstack consumer). Gateway routes (the
+	// default-route-equivalent and its endpoint bypass routes) are unaffected
+	// and are always installed. Defaults to false.
+	DisableRoutesAndAliasesOnExitNode bool
+
+	// GatewaySiteIds, when non-empty, designates these site IDs as gateway
+	// (full-tunnel/default-route) candidates from the moment the tunnel
+	// starts, for callers that want a gateway already established rather
+	// than issuing a separate SelectGateway API call after connecting.
+	GatewaySiteIds []int
+
+	// GatewaySiteResourceId is the numeric ID (not the niceId, which can be
+	// renamed) of the gateway-mode site resource GatewaySiteIds were selected
+	// from. Required when GatewaySiteIds is non-empty; it is what lets olm
+	// apply server-pushed gateway updates only for the resource the user
+	// actually connected through.
+	GatewaySiteResourceId int
 }

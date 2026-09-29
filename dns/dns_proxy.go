@@ -866,6 +866,29 @@ func (p *DNSProxy) SetUpstreamDNS(servers []string) {
 	p.upstreamDNS = servers
 }
 
+// SetTunnelDNS changes whether upstream DNS queries are sent over the
+// WireGuard tunnel (true) or directly via host networking (false). Only
+// takes effect for queries issued after the call; in-flight queries keep
+// using whichever path they already started on. Switching to true after the
+// proxy has already started lazily brings up the tunnel netstack and its
+// packet-forwarding goroutine if they weren't already running - NewDNSProxy
+// only does that eagerly when tunnelDns is true from the start.
+func (p *DNSProxy) SetTunnelDNS(tunnelDNS bool) {
+	if tunnelDNS && p.tunnelStack == nil {
+		if !p.tunnelIP.IsValid() {
+			logger.Warn("Cannot enable tunnel DNS: tunnel IP not set")
+			return
+		}
+		if err := p.initTunnelNetstack(); err != nil {
+			logger.Error("Failed to initialize tunnel netstack for tunnel DNS: %v", err)
+			return
+		}
+		p.wg.Add(1)
+		go p.runTunnelPacketSender()
+	}
+	p.tunnelDNS = tunnelDNS
+}
+
 // AddDNSRecord adds a DNS record to the local store
 // domain should be a domain name (e.g., "example.com" or "example.com.")
 // ip should be a valid IPv4 or IPv6 address

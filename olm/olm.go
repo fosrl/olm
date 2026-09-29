@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	_ "net/http/pprof"
+	"net/netip"
 	"os"
 	"os/exec"
+	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -27,6 +29,7 @@ import (
 	"github.com/fosrl/olm/dns"
 	dnsOverride "github.com/fosrl/olm/dns/override"
 	"github.com/fosrl/olm/peers"
+	"github.com/fosrl/olm/subnetrouter"
 	"github.com/fosrl/olm/websocket"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -63,6 +66,32 @@ type Olm struct {
 	// secondary address on the same interface/WireGuard device as the site peers.
 	exitNode   *ExitNodeConfig
 	exitNodeMu sync.Mutex
+	// exitNodeResolvedEndpoint is the exit node's WireGuard endpoint (already
+	// DNS-resolved to "ip:port") as of the last successful connectExitNode
+	// call, kept alongside exitNode purely so removeExitNodePeerLocked can
+	// unregister the exact same gateway bypass-route target it registered -
+	// see connectExitNode's AddGatewayBypassEndpoint call. Guarded by exitNodeMu.
+	exitNodeResolvedEndpoint string
+
+	// hpBypassEndpoints tracks the "host:relayPort" endpoints currently
+	// registered as gateway bypass targets for hole-punch exit nodes (STUN-like
+	// probing, distinct from a connected exit node's own WireGuard peer above) -
+	// diffed against each OnTokenUpdate so stale entries are unregistered and
+	// new ones protected while gateway mode is active.
+	hpBypassEndpoints map[string]bool
+	hpBypassMu        sync.Mutex
+
+	// dnsBypassEndpoints tracks the "host:port" upstream DNS servers (see
+	// TunnelConfig.UpstreamDNS / dns.DNSProxy's upstreamDNS - the DNS proxy's
+	// primary/secondary real resolvers) currently registered as gateway bypass
+	// targets, so the proxy's own outbound DNS queries aren't captured by the
+	// gateway default-route-equivalent and end up looping back through the
+	// tunnel. Diffed against every update - the initial value in StartTunnel, a
+	// live server-pushed DNS config override, or system DNS detection/
+	// SetSystemDNS - so stale entries are unregistered and new ones protected
+	// while gateway mode is active. Mirrors hpBypassEndpoints.
+	dnsBypassEndpoints map[string]bool
+	dnsBypassMu        sync.Mutex
 
 	// primaryTunnelIP is the site tunnel's own address (wgData.TunnelIP), set once
 	// per connect in handleConnect. It's the interface's first/primary address -
@@ -119,6 +148,30 @@ func (o *Olm) getPeerManager() *peers.PeerManager {
 	return pm
 }
 
+// sharedBindNetwork returns the network family to use for the shared UDP
+// socket (WireGuard + hole punch traffic). Everywhere but Windows this is a
+// real dual-stack "udp" wildcard bind, which is what lets the socket reach an
+// exit node/site over IPv6 when that's the only family the network path has
+// a route for (the tunnel payload itself is always IPv4 - see
+// network.ConfigureInterface - but the transport reaching the server/site
+// endpoint isn't restricted to IPv4).
+//
+// On Windows, a dual-stack wildcard bind is unreliable when another VPN's
+// virtual adapter is also active: Windows can select that adapter's IPv6
+// address as the implicit local address for a send to an IPv4 destination,
+// which the OS then rejects outright (WSAEINVAL, "The requested address is
+// not valid in its context"). RebindSocket already worked around this for
+// its own bind by using "udp4" explicitly; do the same here for the initial
+// bind so olm doesn't need a second VPN active to hit it. This does mean
+// Windows can't reach an IPv6-only exit node/site, same trade-off
+// RebindSocket already made. See https://github.com/fosrl/olm/issues/134.
+func sharedBindNetwork() string {
+	if runtime.GOOS == "windows" {
+		return "udp4"
+	}
+	return "udp"
+}
+
 // initTunnelInfo creates the shared UDP socket and holepunch manager.
 // This is used during initial tunnel setup and when switching organizations.
 func (o *Olm) initTunnelInfo(clientID string) error {
@@ -140,7 +193,7 @@ func (o *Olm) initTunnelInfo(clientID string) error {
 		IP:   net.IPv4zero,
 	}
 
-	udpConn, err := net.ListenUDP("udp", localAddr)
+	udpConn, err := net.ListenUDP(sharedBindNetwork(), localAddr)
 	if err != nil {
 		return fmt.Errorf("failed to create UDP socket: %w", err)
 	}
@@ -160,6 +213,11 @@ func (o *Olm) initTunnelInfo(clientID string) error {
 
 	// Create the holepunch manager
 	o.holePunchManager = holepunch.NewManager(sharedBind, clientID, "olm", privateKey.PublicKey().String(), o.tunnelConfig.PublicDNS)
+
+	// A user-disabled hole punch must fully suppress outbound hole punch
+	// packets, not just change what's reported to the server as "relay" (see
+	// SetEnabled's doc comment and https://github.com/fosrl/olm/issues/134).
+	o.holePunchManager.SetEnabled(o.tunnelConfig.Holepunch)
 
 	return nil
 }
@@ -221,13 +279,14 @@ func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 	apiServer.SetAgent(config.Agent)
 
 	newOlm := &Olm{
-		logFile:         logFile,
-		olmCtx:          ctx,
-		apiServer:       apiServer,
-		olmConfig:       config,
-		stopPeerSends:   make(map[string]func()),
-		stopPeerInits:   make(map[string]func()),
-		jitPendingSites: make(map[int]string),
+		logFile:           logFile,
+		olmCtx:            ctx,
+		apiServer:         apiServer,
+		olmConfig:         config,
+		stopPeerSends:     make(map[string]func()),
+		stopPeerInits:     make(map[string]func()),
+		jitPendingSites:   make(map[int]string),
+		hpBypassEndpoints: make(map[string]bool),
 	}
 
 	newOlm.registerAPICallbacks()
@@ -242,18 +301,22 @@ func (o *Olm) registerAPICallbacks() {
 			logger.Info("Received connection request via HTTP: id=%s, endpoint=%s", req.ID, req.Endpoint)
 
 			tunnelConfig := TunnelConfig{
-				Endpoint:      req.Endpoint,
-				ID:            req.ID,
-				Secret:        req.Secret,
-				UserToken:     req.UserToken,
-				MTU:           req.MTU,
-				DNS:           req.DNS,
-				UpstreamDNS:   req.UpstreamDNS,
-				InterfaceName: req.InterfaceName,
-				Holepunch:     req.Holepunch,
-				TlsClientCert: req.TlsClientCert,
-				OrgID:         req.OrgID,
-				MatchDomains:  req.MatchDomains,
+				Endpoint:                          req.Endpoint,
+				ID:                                req.ID,
+				Secret:                            req.Secret,
+				UserToken:                         req.UserToken,
+				MTU:                               req.MTU,
+				DNS:                               req.DNS,
+				UpstreamDNS:                       req.UpstreamDNS,
+				InterfaceName:                     req.InterfaceName,
+				Holepunch:                         req.Holepunch,
+				TlsClientCert:                     req.TlsClientCert,
+				OrgID:                             req.OrgID,
+				MatchDomains:                      req.MatchDomains,
+				SubnetRouter:                      req.SubnetRouter,
+				DisableRoutesAndAliasesOnExitNode: req.DisableRoutesAndAliasesOnExitNode,
+				GatewaySiteIds:                    req.GatewaySiteIds,
+				GatewaySiteResourceId:             req.GatewaySiteResourceId,
 			}
 
 			var err error
@@ -357,6 +420,16 @@ func (o *Olm) registerAPICallbacks() {
 			o.peerSendMu.Unlock()
 
 			return nil
+		},
+		// onSelectGateway
+		func(req api.GatewayRequest) error {
+			logger.Info("Received select-gateway request via API: siteResourceId=%d siteIds=%v", req.SiteResourceId, req.SiteIds)
+			return o.SelectGateway(req.SiteResourceId, req.SiteIds)
+		},
+		// onDisableGateway
+		func() error {
+			logger.Info("Received disable-gateway request via API")
+			return o.DisableGateway()
 		},
 	)
 }
@@ -465,6 +538,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 			if o.dnsProxy != nil {
 				o.dnsProxy.SetUpstreamDNS(servers)
 			}
+			o.updateDNSBypassEndpoints(servers)
 		} else {
 			logger.Debug("Not updating UpstreamDNS: statically configured to %v", config.UpstreamDNS)
 		}
@@ -488,6 +562,13 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	if len(o.tunnelConfig.UpstreamDNS) == 0 {
 		o.tunnelConfig.UpstreamDNS = []string{"8.8.8.8:53"}
 	}
+	// Register the startup upstream DNS servers as gateway bypass targets
+	// regardless of how they were determined (statically configured, defaulted
+	// above, or already applied from a dynamic detection callback a moment
+	// ago) - the peer manager doesn't exist yet at this point, so this only
+	// records intent; flushPendingDNSBypassEndpoints (called from
+	// handleConnect) pushes it in once the peer manager is created.
+	o.updateDNSBypassEndpoints(o.tunnelConfig.UpstreamDNS)
 
 	// Reset terminated status when tunnel starts
 	o.apiServer.SetTerminated(false)
@@ -576,6 +657,16 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	o.websocket.RegisterHandler("olm/wg/exitnode/connect", o.handleExitNodeConnect)
 	o.websocket.RegisterHandler("olm/wg/exitnode/disconnect", o.handleExitNodeDisconnect)
 	o.websocket.RegisterHandler("olm/wg/exitnode/data/update", o.handleExitNodeUpdateData)
+
+	// Handlers for the server to push changes to the gateway site resource the
+	// client selected (sites added/removed, or the resource going away)
+	o.websocket.RegisterHandler("olm/wg/gateway/sites/update", o.handleGatewaySitesUpdate)
+	o.websocket.RegisterHandler("olm/wg/gateway/disable", o.handleGatewayDisable)
+
+	// Handler for the server to push a live DNS config override (upstream DNS,
+	// tunnel DNS, override DNS, match domains) after registration, mirroring the
+	// DNSConfig field sent on the initial "olm/wg/connect" message.
+	o.websocket.RegisterHandler("olm/wg/dns/update", o.handleDNSConfigUpdate)
 
 	o.websocket.RegisterHandler("olm/ping/exitNodes", func(msg websocket.WSMessage) {
 		logger.Debug("Received exit node ping request")
@@ -728,6 +819,36 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 		logger.Debug("Updated hole punch exit nodes: %v", hpExitNodes)
 
+		// pm can be nil here: this callback runs from establishConnection, as
+		// part of the initial token/auth fetch, which happens well before the
+		// server's "olm/wg/connect" message creates the peer manager in
+		// handleConnect - so on a fresh connect there usually isn't one yet.
+		// o.hpBypassEndpoints is still updated unconditionally so it reflects
+		// the current set regardless; flushPendingHolepunchBypassEndpoints
+		// (called from handleConnect once the peer manager exists) pushes
+		// whatever was recorded here into it.
+		pm := o.getPeerManager()
+		newBypassEndpoints := make(map[string]bool, len(hpExitNodes))
+		for _, node := range hpExitNodes {
+			newBypassEndpoints[net.JoinHostPort(node.Endpoint, strconv.Itoa(int(node.RelayPort)))] = true
+		}
+
+		o.hpBypassMu.Lock()
+		if pm != nil {
+			for hostport := range newBypassEndpoints {
+				if !o.hpBypassEndpoints[hostport] {
+					pm.AddGatewayBypassEndpoint(hostport)
+				}
+			}
+			for hostport := range o.hpBypassEndpoints {
+				if !newBypassEndpoints[hostport] {
+					pm.RemoveGatewayBypassEndpoint(hostport)
+				}
+			}
+		}
+		o.hpBypassEndpoints = newBypassEndpoints
+		o.hpBypassMu.Unlock()
+
 		// Start hole punching using the manager
 		logger.Info("Starting hole punch for %d exit nodes", len(exitNodes))
 		if err := o.holePunchManager.StartMultipleExitNodes(hpExitNodes); err != nil {
@@ -748,6 +869,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		o.apiServer.SetRegistered(false)
 		o.apiServer.ClearOlmError()
 		o.apiServer.ClearPeerStatuses()
+		o.apiServer.SetGatewayStatus(false, 0, nil)
 		network.ClearNetworkSettings()
 
 		o.Close()
@@ -831,6 +953,12 @@ func (o *Olm) Close() {
 		o.stopDNSWatchdog()
 	}
 
+	if o.tunnelConfig.SubnetRouter {
+		if err := subnetrouter.Disable(o.tunnelConfig.InterfaceName); err != nil {
+			logger.Error("Failed to disable subnet router: %v", err)
+		}
+	}
+
 	if o.holePunchManager != nil {
 		o.holePunchManager.Stop()
 		o.holePunchManager = nil
@@ -853,10 +981,19 @@ func (o *Olm) Close() {
 
 	// The WireGuard device and TUN interface are being torn down below, which takes
 	// the exit node peer and its secondary address with them - just clear the
-	// in-memory record so a stale config isn't reused on the next connect.
+	// in-memory record so a stale config isn't reused on the next connect. The
+	// peer manager (and its gateway bypass-route state, including anything
+	// registered for this exit node or for hole-punch nodes below) was already
+	// torn down above, so these resets are purely to avoid stale diffing state
+	// carrying into the next connect, not for route cleanup.
 	o.exitNodeMu.Lock()
 	o.exitNode = nil
+	o.exitNodeResolvedEndpoint = ""
 	o.exitNodeMu.Unlock()
+
+	o.hpBypassMu.Lock()
+	o.hpBypassEndpoints = make(map[string]bool)
+	o.hpBypassMu.Unlock()
 
 	if o.uapiListener != nil {
 		_ = o.uapiListener.Close()
@@ -951,6 +1088,7 @@ func (o *Olm) StopTunnel() error {
 	o.apiServer.SetConnectionStatus(false)
 	o.apiServer.SetRegistered(false)
 	o.apiServer.ClearOlmError()
+	o.apiServer.SetGatewayStatus(false, 0, nil)
 
 	network.ClearNetworkSettings()
 	o.apiServer.ClearPeerStatuses()
@@ -1215,7 +1353,7 @@ func (o *Olm) RebindSocket() error {
 		IP:   net.IPv4zero,
 	}
 
-	newConn, err = net.ListenUDP("udp4", localAddr)
+	newConn, err = net.ListenUDP(sharedBindNetwork(), localAddr)
 	if err != nil {
 		// If we can't reuse the port, find a new one
 		logger.Warn("Could not rebind to port %d, finding new port: %v", currentPort, err)
@@ -1229,8 +1367,7 @@ func (o *Olm) RebindSocket() error {
 			IP:   net.IPv4zero,
 		}
 
-		// Use udp4 explicitly to avoid IPv6 dual-stack issues
-		newConn, err = net.ListenUDP("udp4", localAddr)
+		newConn, err = net.ListenUDP(sharedBindNetwork(), localAddr)
 		if err != nil {
 			return fmt.Errorf("failed to create new UDP socket: %w", err)
 		}

@@ -1,5 +1,8 @@
 # Olm
 
+> [!NOTE]
+> Olm is being phased out in favor of the [Pangolin CLI](https://github.com/fosrl/cli) and is only meant for advanced use cases.
+
 Olm is the cross-platform internal networking library built into every Pangolin client. It does the heavy-lifting of connecting the client to Pangolin sites.
 
 Don't use Olm as a standalone machine client. Instead, use the [Pangolin CLI](https://github.com/fosrl/cli).
