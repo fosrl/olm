@@ -400,7 +400,7 @@ func (o *Olm) handleTerminate(msg websocket.WSMessage) {
 			logger.Info("Terminate reason (code: %s): %s", errorData.Code, errorData.Message)
 
 			if errorData.Code == "TERMINATED_INACTIVITY" {
-				logger.Info("Ignoring...")
+				logger.Debug("Ignoring TERMINATED_INACTIVITY message for now because we could have been sleeping...")
 				return
 			}
 
