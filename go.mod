@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
-	github.com/fosrl/newt v1.16.0
+	github.com/fosrl/newt v1.18.0
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/nftables v0.3.0
 	github.com/gorilla/websocket v1.5.3
@@ -35,4 +35,4 @@ require (
 )
 
 // To be used ONLY for local development
-replace github.com/fosrl/newt => ../newt
+// replace github.com/fosrl/newt => ../newt
