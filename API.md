@@ -316,6 +316,24 @@ Simple health check endpoint to verify the API server is running.
 
 ---
 
+### Unknown routes
+
+Any request to a path not listed above (for example `/jit-connect` on an older running instance after the CLI was upgraded) returns:
+
+- **Status Code:** `426 Upgrade Required`
+- **Content-Type:** `application/json`
+
+```json
+{
+  "error": "api_route_unavailable",
+  "message": "This API path is not supported by the running Olm instance. Restart the client after upgrading."
+}
+```
+
+Clients should treat `426` as a stale Olm API daemon and prompt the user to restart the background client (`down` then `up`). Older instances that predate this behavior may still return Go's default `404` for unknown paths.
+
+---
+
 ## Usage Examples
 
 ### Update metadata before connecting (recommended)
