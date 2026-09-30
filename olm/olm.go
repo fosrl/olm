@@ -554,7 +554,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	// Fall back to hardcoded DNS if the system monitor could not detect any.
 	if len(o.tunnelConfig.PublicDNS) == 0 {
 		if o.tunnelConfig.DNS != "" {
-			o.tunnelConfig.PublicDNS = []string{o.tunnelConfig.DNS + ":53"}
+			o.tunnelConfig.PublicDNS = []string{net.JoinHostPort(o.tunnelConfig.DNS, "53")}
 		} else {
 			o.tunnelConfig.PublicDNS = []string{"8.8.8.8:53"}
 		}
