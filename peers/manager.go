@@ -1,6 +1,8 @@
 package peers
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -127,7 +129,16 @@ type PeerManager struct {
 	// through the tunnel. Business intent, independent of gatewayActive - see
 	// AddGatewayBypassEndpoint/RemoveGatewayBypassEndpoint.
 	gatewayExtraEndpoints map[string]bool
+
+	// gatewayRouteWatchCancel stops the goroutines started by
+	// startBypassRouteWatcherLocked; nil while gateway mode is inactive.
+	gatewayRouteWatchCancel context.CancelFunc
 }
+
+// bypassRouteReconcileInterval is how often bypass routes are re-checked
+// while gateway mode is active, as a fallback for route changes the OS
+// watcher (network.WatchRouteChanges) misses.
+const bypassRouteReconcileInterval = 30 * time.Second
 
 // gatewayCIDR is the WireGuard AllowedIPs claim key for "this site is the
 // gateway (full-tunnel/default-route)". It is never added to
@@ -346,11 +357,11 @@ func (pm *PeerManager) unexcludeEndpointLocked(ip string) {
 
 // activateGatewayLocked performs the one-time setup for gateway mode:
 // resolving and excluding every currently-tracked peer's active endpoint and
-// every extra bypass endpoint (including the control plane - see
-// gatewayExtraEndpoints) (so none of them can be captured
-// by the default-route-equivalent installed at the end), then installing
-// that route. Must be called with pm.mu held, and only once (guarded by
-// pm.gatewayActive in the caller).
+// every extra bypass endpoint (see gatewayExtraEndpoints), so none of them
+// can be captured by the default-route-equivalent installed at the end, then
+// installing that route and starting to watch for network changes that need
+// the bypass routes reconciled. Must be called with pm.mu held, and only once
+// (guarded by pm.gatewayActive in the caller).
 func (pm *PeerManager) activateGatewayLocked() error {
 	for _, peer := range pm.peers {
 		if ip, ok := pm.resolveActiveEndpointIPLocked(peer); ok {
@@ -368,13 +379,89 @@ func (pm *PeerManager) activateGatewayLocked() error {
 		return fmt.Errorf("failed to install gateway route: %v", err)
 	}
 
+	pm.startBypassRouteWatcherLocked()
+
 	return nil
 }
 
-// deactivateGatewayLocked reverses activateGatewayLocked: removes the
-// default-route-equivalent, then every remaining bypass route, and resets gateway exclusion state. Must be called with
+// startBypassRouteWatcherLocked keeps the bypass routes in step with the
+// physical network for as long as gateway mode is active: the OS removes
+// them along with the interface or address they were on when the network
+// changes (e.g. switching Wi-Fi networks, Wi-Fi to Ethernet), and without
+// them the tunnel's own traffic would be captured by the gateway route.
+// Reconciles on every OS route change notification, and periodically as a
+// fallback. A no-op where bypasses are applied by the host app from
+// NetworkSettings (mobile, macOS NetworkExtension), which tracks the physical
+// network itself. Must be called with pm.mu held.
+func (pm *PeerManager) startBypassRouteWatcherLocked() {
+	if !network.ManagesHostRoutes() || pm.gatewayRouteWatchCancel != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	pm.gatewayRouteWatchCancel = cancel
+
+	if err := network.WatchRouteChanges(ctx, pm.ReconcileGatewayBypassRoutes); err != nil {
+		logger.Warn("Gateway: failed to watch for route changes, bypass routes will only be re-checked every %v: %v", bypassRouteReconcileInterval, err)
+	}
+
+	go func() {
+		ticker := time.NewTicker(bypassRouteReconcileInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				pm.ReconcileGatewayBypassRoutes()
+			}
+		}
+	}()
+}
+
+// stopBypassRouteWatcherLocked reverses startBypassRouteWatcherLocked. A
+// reconcile already waiting on pm.mu may still run once afterwards, which is
+// harmless: it is a no-op once gateway mode is inactive. Must be called with
 // pm.mu held.
+func (pm *PeerManager) stopBypassRouteWatcherLocked() {
+	if pm.gatewayRouteWatchCancel != nil {
+		pm.gatewayRouteWatchCancel()
+		pm.gatewayRouteWatchCancel = nil
+	}
+}
+
+// ReconcileGatewayBypassRoutes re-checks every bypass route while gateway
+// mode is active, re-adding any the OS has dropped and moving any that no
+// longer follow the current physical path (see network.ReconcileBypassRoute).
+// Also repairs routes that failed to install in the first place (e.g. added
+// while offline). Idempotent and cheap when nothing has changed; safe to call
+// at any time.
+func (pm *PeerManager) ReconcileGatewayBypassRoutes() {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	if !pm.gatewayActive {
+		return
+	}
+	for ip := range pm.gatewayExcludedIPs {
+		changed, err := network.ReconcileBypassRoute(ip, pm.interfaceName)
+		switch {
+		case errors.Is(err, network.ErrNoPhysicalRoute):
+			logger.Debug("Gateway: no physical route for bypass %s yet: %v", ip, err)
+		case err != nil:
+			logger.Warn("Gateway: failed to reconcile bypass route for %s: %v", ip, err)
+		case changed:
+			logger.Info("Gateway: restored bypass route for %s after a network change", ip)
+		}
+	}
+}
+
+// deactivateGatewayLocked reverses activateGatewayLocked: stops watching
+// for network changes, removes the default-route-equivalent, then every
+// remaining bypass route, and resets gateway exclusion state. Must be called
+// with pm.mu held.
 func (pm *PeerManager) deactivateGatewayLocked() {
+	pm.stopBypassRouteWatcherLocked()
+
 	if err := network.RemoveGatewayDefaultRoute(pm.interfaceName); err != nil {
 		logger.Error("Gateway: failed to remove gateway route: %v", err)
 	}

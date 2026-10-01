@@ -313,6 +313,13 @@ func (o *Olm) updateControlBypassEndpoints(ips []string) {
 		}
 	}
 	o.controlBypassEndpoints = newBypassEndpoints
+
+	// A (re)connect is a good moment to check the bypass routes: the
+	// previous connection may have dropped because the network changed and
+	// took them with it.
+	if pm != nil {
+		pm.ReconcileGatewayBypassRoutes()
+	}
 }
 
 // flushPendingControlBypassEndpoints re-registers every currently-known

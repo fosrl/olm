@@ -1406,6 +1406,12 @@ func (o *Olm) RebindSocket() error {
 
 	logger.Info("Successfully rebound UDP socket on port %d", newPort)
 
+	// A rebind is requested on network changes; the bypass routes may need
+	// to follow the new physical path too.
+	if pm := o.getPeerManager(); pm != nil {
+		pm.ReconcileGatewayBypassRoutes()
+	}
+
 	// Check if we're in low power mode before triggering hole punch
 	o.powerModeMu.Lock()
 	isLowPower := o.currentPowerMode == "low"
