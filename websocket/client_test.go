@@ -1,6 +1,8 @@
 package websocket
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -109,5 +111,41 @@ func TestReconnectClearsCurrentConnection(t *testing.T) {
 
 	if got := c.getConn(); got != nil {
 		t.Fatalf("expected conn to be cleared after reconnect(a) when a was still current, got %v", got)
+	}
+}
+
+// TestDialContextReportsTargetsBeforeDialing checks that dialContext reports
+// the resolved server IPs via onDialTargets before connecting, and then
+// connects to one of exactly those IPs - the contract olm relies on to install
+// gateway bypass routes for the control connection.
+func TestDialContextReportsTargetsBeforeDialing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(srv.Close)
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := newTestClient()
+	var reported []string
+	c.OnDialTargets(func(ips []string) {
+		if len(reported) != 0 {
+			t.Errorf("onDialTargets called more than once")
+		}
+		reported = append([]string(nil), ips...)
+	})
+
+	conn, err := c.dialContext(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", port))
+	if err != nil {
+		t.Fatalf("dialContext: %v", err)
+	}
+	defer conn.Close()
+
+	if len(reported) != 1 || reported[0] != "127.0.0.1" {
+		t.Fatalf("onDialTargets got %v, want [127.0.0.1]", reported)
+	}
+	remoteHost, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+	if remoteHost != reported[0] {
+		t.Fatalf("dialed %s, but reported %v", remoteHost, reported)
 	}
 }

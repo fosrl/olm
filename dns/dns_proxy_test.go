@@ -2,9 +2,11 @@ package dns
 
 import (
 	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/miekg/dns"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 func TestCheckLocalRecordsNODATAForAAAA(t *testing.T) {
@@ -174,5 +176,19 @@ func TestCheckLocalRecordsNODATAWildcard(t *testing.T) {
 	}
 	if len(response.Answer) != 1 {
 		t.Fatalf("Expected 1 answer, got %d", len(response.Answer))
+	}
+}
+
+func TestDialTunnelRejectsIPv6Upstream(t *testing.T) {
+	proxy := &DNSProxy{
+		tunnelStack:       stack.New(stack.Options{}),
+		tunnelIP:          netip.MustParseAddr("100.90.128.1"),
+		tunnelActivePorts: make(map[uint16]bool),
+	}
+	defer proxy.tunnelStack.Close()
+
+	// Must return an error rather than panic: the tunnel netstack is IPv4-only
+	if _, _, err := proxy.dialTunnel("udp", "[2606:4700:4700::1111]:53"); err == nil {
+		t.Fatal("Expected error dialing an IPv6 upstream through the tunnel, got nil")
 	}
 }

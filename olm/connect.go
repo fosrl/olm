@@ -274,6 +274,7 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	// endpoints it already recorded now that there's somewhere to put them.
 	o.flushPendingHolepunchBypassEndpoints()
 	o.flushPendingDNSBypassEndpoints()
+	o.flushPendingControlBypassEndpoints()
 
 	if o.dnsProxy != nil {
 		if err := o.dnsProxy.Start(); err != nil { // start DNS proxy first so there is no downtime

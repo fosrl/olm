@@ -713,6 +713,14 @@ func (p *DNSProxy) dialTunnel(network, addr string) (net.Conn, uint16, error) {
 		return nil, 0, err
 	}
 
+	// The tunnel netstack only has an IPv4 address and route (the WireGuard
+	// interface IP), so an IPv6 upstream server can't be reached through it.
+	// To4() is nil for those, and converting that to a [4]byte below would panic.
+	raddrIP := raddr.IP.To4()
+	if raddrIP == nil {
+		return nil, 0, fmt.Errorf("upstream DNS server %s is not an IPv4 address, only IPv4 is supported over the tunnel", addr)
+	}
+
 	// Use tunnel IP as source
 	ipBytes := p.tunnelIP.As4()
 
@@ -725,7 +733,7 @@ func (p *DNSProxy) dialTunnel(network, addr string) (net.Conn, uint16, error) {
 
 	raddrTcpip := &tcpip.FullAddress{
 		NIC:  1,
-		Addr: tcpip.AddrFrom4([4]byte(raddr.IP.To4())),
+		Addr: tcpip.AddrFrom4([4]byte(raddrIP)),
 		Port: uint16(raddr.Port),
 	}
 
