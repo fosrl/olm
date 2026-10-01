@@ -3,7 +3,7 @@ package olm
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
+	"net"
 
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/olm/peers"
@@ -55,8 +55,7 @@ func (o *Olm) DisableGateway() error {
 	return nil
 }
 
-// applySelectGateway resolves the control-plane endpoint host and delegates
-// to the peer manager. Shared by SelectGateway (API-invoked, already
+// applySelectGateway delegates to the peer manager. Shared by SelectGateway (API-invoked, already
 // registered-checked by the caller) and applyPendingGatewayConfig
 // (StartTunnel-time, called after registration completes).
 func (o *Olm) applySelectGateway(siteResourceId int, siteIds []int) error {
@@ -64,7 +63,7 @@ func (o *Olm) applySelectGateway(siteResourceId int, siteIds []int) error {
 	if pm == nil {
 		return fmt.Errorf("cannot select gateway: tunnel not running")
 	}
-	if err := pm.SetGateway(siteResourceId, siteIds, extractControlEndpointHost(o.tunnelConfig.Endpoint)); err != nil {
+	if err := pm.SetGateway(siteResourceId, siteIds); err != nil {
 		return err
 	}
 	o.apiServer.SetGatewayStatus(true, siteResourceId, siteIds)
@@ -274,15 +273,63 @@ func (o *Olm) flushPendingDNSBypassEndpoints() {
 	}
 }
 
-// extractControlEndpointHost returns the bare host (no scheme/port) of the
-// Pangolin server olm is registered against, for gateway bypass-route
-// purposes. Falls back to the raw endpoint string on parse failure -
-// resolveEndpointIPLocked/net.SplitHostPort tolerate a bare host - rather
-// than failing the whole gateway activation over a cosmetic parse issue.
-func extractControlEndpointHost(endpoint string) string {
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Hostname() == "" {
-		return endpoint
+// updateControlBypassEndpoints is the websocket client's OnDialTargets
+// callback: ips are every address the Pangolin server host resolved to,
+// about to be dialed for the token request or websocket. It diffs them
+// against the currently-registered set and adds/removes gateway bypass routes
+// for the difference, via the same AddGatewayBypassEndpoint machinery used
+// for hole-punch and DNS endpoints above. Runs synchronously before the dial,
+// so the control connection is pinned to the physical network before its
+// first packet - whether or not gateway mode is active yet. Replacing the set
+// on each dial is safe because the websocket client only dials while it has
+// no live connection (initial connect, or reconnect after tearing the old one
+// down); a DNS change while connected has no effect on the established
+// connection and is picked up on the next dial. Only IPv4 addresses are
+// registered: the gateway route only captures IPv4, and bypass routes are
+// IPv4 host routes. Safe to call before the peer manager exists (see
+// flushPendingControlBypassEndpoints).
+func (o *Olm) updateControlBypassEndpoints(ips []string) {
+	pm := o.getPeerManager()
+
+	newBypassEndpoints := make(map[string]bool, len(ips))
+	for _, ip := range ips {
+		if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() != nil {
+			newBypassEndpoints[ip] = true
+		}
 	}
-	return u.Hostname()
+
+	o.controlBypassMu.Lock()
+	defer o.controlBypassMu.Unlock()
+	if pm != nil {
+		for ip := range newBypassEndpoints {
+			if !o.controlBypassEndpoints[ip] {
+				pm.AddGatewayBypassEndpoint(ip)
+			}
+		}
+		for ip := range o.controlBypassEndpoints {
+			if !newBypassEndpoints[ip] {
+				pm.RemoveGatewayBypassEndpoint(ip)
+			}
+		}
+	}
+	o.controlBypassEndpoints = newBypassEndpoints
+}
+
+// flushPendingControlBypassEndpoints re-registers every currently-known
+// control-plane bypass endpoint with the peer manager. Mirrors
+// flushPendingHolepunchBypassEndpoints: the websocket's first dial happens
+// well before handleConnect creates the peer manager, so whatever was
+// recorded needs to be pushed in once it becomes available.
+// AddGatewayBypassEndpoint is idempotent.
+func (o *Olm) flushPendingControlBypassEndpoints() {
+	pm := o.getPeerManager()
+	if pm == nil {
+		return
+	}
+
+	o.controlBypassMu.Lock()
+	defer o.controlBypassMu.Unlock()
+	for ip := range o.controlBypassEndpoints {
+		pm.AddGatewayBypassEndpoint(ip)
+	}
 }

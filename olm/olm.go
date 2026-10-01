@@ -93,6 +93,16 @@ type Olm struct {
 	dnsBypassEndpoints map[string]bool
 	dnsBypassMu        sync.Mutex
 
+	// controlBypassEndpoints tracks the Pangolin server (control-plane) IPs
+	// currently registered as gateway bypass targets: every IPv4 address the
+	// server host resolved to on the websocket client's most recent dial (see
+	// websocket.Client.OnDialTargets). Replaced on every dial, before any
+	// packet is sent, so the websocket and token requests are never captured
+	// by the gateway default-route-equivalent - including after the server's
+	// DNS record changes. Mirrors hpBypassEndpoints.
+	controlBypassEndpoints map[string]bool
+	controlBypassMu        sync.Mutex
+
 	// primaryTunnelIP is the site tunnel's own address (wgData.TunnelIP), set once
 	// per connect in handleConnect. It's the interface's first/primary address -
 	// on macOS/iOS NetworkExtension, an unbound outbound socket's source gets
@@ -279,14 +289,15 @@ func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 	apiServer.SetAgent(config.Agent)
 
 	newOlm := &Olm{
-		logFile:           logFile,
-		olmCtx:            ctx,
-		apiServer:         apiServer,
-		olmConfig:         config,
-		stopPeerSends:     make(map[string]func()),
-		stopPeerInits:     make(map[string]func()),
-		jitPendingSites:   make(map[int]string),
-		hpBypassEndpoints: make(map[string]bool),
+		logFile:                logFile,
+		olmCtx:                 ctx,
+		apiServer:              apiServer,
+		olmConfig:              config,
+		stopPeerSends:          make(map[string]func()),
+		stopPeerInits:          make(map[string]func()),
+		jitPendingSites:        make(map[int]string),
+		hpBypassEndpoints:      make(map[string]bool),
+		controlBypassEndpoints: make(map[string]bool),
 	}
 
 	newOlm.registerAPICallbacks()
@@ -617,6 +628,12 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 				"postures":    o.postures,
 			}
 		}),
+		// Resolve the server host via the physical network's DNS, the same
+		// way WireGuard endpoints are, rather than through olm's own DNS
+		// override.
+		websocket.WithPublicDNSProvider(func() []string {
+			return o.tunnelConfig.PublicDNS
+		}),
 	)
 	if err != nil {
 		logger.Error("Failed to create olm: %v", err)
@@ -789,6 +806,8 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 		return nil
 	})
+
+	o.websocket.OnDialTargets(o.updateControlBypassEndpoints)
 
 	o.websocket.OnTokenUpdate(func(token string, exitNodes []websocket.ExitNode) {
 		// Check if tunnel is still running and hole punch manager exists
@@ -994,6 +1013,10 @@ func (o *Olm) Close() {
 	o.hpBypassMu.Lock()
 	o.hpBypassEndpoints = make(map[string]bool)
 	o.hpBypassMu.Unlock()
+
+	o.controlBypassMu.Lock()
+	o.controlBypassEndpoints = make(map[string]bool)
+	o.controlBypassMu.Unlock()
 
 	if o.uapiListener != nil {
 		_ = o.uapiListener.Close()

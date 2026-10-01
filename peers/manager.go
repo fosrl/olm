@@ -105,10 +105,7 @@ type PeerManager struct {
 	// allowedIPClaims (see gatewayCIDR). gatewayExcludedIPs is a refcount so a
 	// destination referenced by more than one thing (or re-added while
 	// already excluded) is only actually un-excluded once nothing references
-	// it any more. gatewayControlIP is the control-plane (Pangolin server)
-	// endpoint, resolved once at activation and excluded for the lifetime of
-	// the gateway so the management connection doesn't depend on the current
-	// gateway-owner site's own uplink. gatewaySiteResourceId is the numeric
+	// it any more. gatewaySiteResourceId is the numeric
 	// ID (not the niceId, which can be renamed) of the gateway-mode site
 	// resource the candidate set was selected from, so server-pushed
 	// add/remove/disable updates (see UpdateGatewaySites) are only applied when
@@ -118,13 +115,13 @@ type PeerManager struct {
 	gatewaySiteResourceId int
 	gatewaySiteIds        map[int]bool
 	gatewayExcludedIPs    map[string]int
-	gatewayControlIP      string
 
 	// gatewayExtraEndpoints tracks "host:port" (or already-resolved "ip:port")
 	// endpoints registered by callers outside the normal site-peer lifecycle -
-	// currently hole-punch exit node probing endpoints and a connected exit
-	// node's own WireGuard endpoint (see olm's OnTokenUpdate handler and
-	// connectExitNode) - that must stay off the gateway route the same way a
+	// currently hole-punch exit node probing endpoints, a connected exit
+	// node's own WireGuard endpoint, upstream DNS servers, and the control-plane
+	// (Pangolin server) IPs the websocket dials (see olm's OnTokenUpdate and
+	// OnDialTargets handlers and connectExitNode) - that must stay off the gateway route the same way a
 	// site peer's own endpoint does, so hole punching / the exit node
 	// connection still originates from the local network rather than looping
 	// through the tunnel. Business intent, independent of gatewayActive - see
@@ -323,7 +320,7 @@ func (pm *PeerManager) excludeEndpointLocked(ip string) {
 		return
 	}
 	if pm.gatewayExcludedIPs[ip] == 0 {
-		if err := network.AddBypassRouteForDestination(ip); err != nil {
+		if err := network.AddBypassRouteForDestination(ip, pm.interfaceName); err != nil {
 			logger.Error("Gateway: failed to add bypass route for %s: %v", ip, err)
 		}
 	}
@@ -348,19 +345,13 @@ func (pm *PeerManager) unexcludeEndpointLocked(ip string) {
 }
 
 // activateGatewayLocked performs the one-time setup for gateway mode:
-// resolving and excluding the control-plane endpoint and every
-// currently-tracked peer's active endpoint (so none of them can be captured
+// resolving and excluding every currently-tracked peer's active endpoint and
+// every extra bypass endpoint (including the control plane - see
+// gatewayExtraEndpoints) (so none of them can be captured
 // by the default-route-equivalent installed at the end), then installing
 // that route. Must be called with pm.mu held, and only once (guarded by
 // pm.gatewayActive in the caller).
-func (pm *PeerManager) activateGatewayLocked(controlEndpointHost string) error {
-	if ip, ok := pm.resolveEndpointIPLocked(controlEndpointHost); ok {
-		pm.gatewayControlIP = ip
-		pm.excludeEndpointLocked(ip)
-	} else if controlEndpointHost != "" {
-		logger.Warn("Gateway: failed to resolve control endpoint %q for bypass route", controlEndpointHost)
-	}
-
+func (pm *PeerManager) activateGatewayLocked() error {
 	for _, peer := range pm.peers {
 		if ip, ok := pm.resolveActiveEndpointIPLocked(peer); ok {
 			pm.excludeEndpointLocked(ip)
@@ -381,8 +372,7 @@ func (pm *PeerManager) activateGatewayLocked(controlEndpointHost string) error {
 }
 
 // deactivateGatewayLocked reverses activateGatewayLocked: removes the
-// default-route-equivalent, then every remaining bypass route (including the
-// control endpoint), and resets gateway exclusion state. Must be called with
+// default-route-equivalent, then every remaining bypass route, and resets gateway exclusion state. Must be called with
 // pm.mu held.
 func (pm *PeerManager) deactivateGatewayLocked() {
 	if err := network.RemoveGatewayDefaultRoute(pm.interfaceName); err != nil {
@@ -395,7 +385,6 @@ func (pm *PeerManager) deactivateGatewayLocked() {
 		}
 	}
 	pm.gatewayExcludedIPs = make(map[string]int)
-	pm.gatewayControlIP = ""
 }
 
 // claimGatewayClaimLocked registers siteId's claim to the gateway CIDR via
@@ -450,13 +439,12 @@ func (pm *PeerManager) releaseGatewayClaimLocked(siteId int) {
 // UpdateGatewaySites). Every siteId must already be a tracked peer, or the
 // call is rejected outright (no partial application). On first activation this
 // installs the OS-level gateway route plus every bypass route needed so the
-// tunnel's own traffic (control-plane endpoint, every tracked peer's active
-// endpoint) isn't captured by it; subsequent calls only change which sites
-// may own the "0.0.0.0/0" WireGuard AllowedIP, via the existing generic
-// claim/optimizer machinery - exactly like remote subnets. controlEndpointHost
-// is the Pangolin server host olm is registered against (bare host, port
-// optional); always excluded regardless of which sites are selected.
-func (pm *PeerManager) SetGateway(siteResourceId int, siteIds []int, controlEndpointHost string) error {
+// tunnel's own traffic (every tracked peer's active endpoint, plus every
+// extra bypass endpoint such as the control plane) isn't captured by it;
+// subsequent calls only change which sites may own the "0.0.0.0/0" WireGuard
+// AllowedIP, via the existing generic claim/optimizer machinery - exactly
+// like remote subnets.
+func (pm *PeerManager) SetGateway(siteResourceId int, siteIds []int) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -478,7 +466,7 @@ func (pm *PeerManager) SetGateway(siteResourceId int, siteIds []int, controlEndp
 	}
 
 	if !pm.gatewayActive {
-		if err := pm.activateGatewayLocked(controlEndpointHost); err != nil {
+		if err := pm.activateGatewayLocked(); err != nil {
 			return err
 		}
 		pm.gatewayActive = true
@@ -649,8 +637,7 @@ func (pm *PeerManager) ClearGateway() error {
 // AddGatewayBypassEndpoint registers hostport (a "host:port" string, or an
 // already-resolved "ip:port") as needing protection from the gateway
 // default-route-equivalent, for endpoints outside the normal site-peer
-// lifecycle - hole-punch exit node probing endpoints and a connected exit
-// node's own WireGuard endpoint. If gateway mode is currently active, the
+// lifecycle - see gatewayExtraEndpoints. If gateway mode is currently active, the
 // bypass route is installed immediately; otherwise this only records intent,
 // applied the next time gateway activates. Safe to call repeatedly with the
 // same hostport (idempotent).
