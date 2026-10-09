@@ -3,7 +3,7 @@ module github.com/fosrl/olm
 go 1.26.0
 
 require (
-	github.com/Microsoft/go-winio v0.6.2
+	github.com/Microsoft/go-winio v0.6.3
 	github.com/fosrl/newt v1.18.1
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/nftables v0.3.0
@@ -26,7 +26,7 @@ require (
 	github.com/vishvananda/netns v0.0.5 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6 // indirect
-	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v1.1.1 // indirect
