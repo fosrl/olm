@@ -288,6 +288,8 @@ func Init(ctx context.Context, config OlmConfig) (*Olm, error) {
 	apiServer.SetVersion(config.Version)
 	apiServer.SetAgent(config.Agent)
 
+	config.OlmVersion = resolveOlmVersion(config)
+
 	newOlm := &Olm{
 		logFile:                logFile,
 		olmCtx:                 ctx,
@@ -727,16 +729,17 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 		publicKey := o.privateKey.PublicKey()
 		logger.Debug("Sending registration message to server with public key: %s, relay: %v, pingResults: %+v", publicKey, !config.Holepunch, pingResults)
 		o.stopRegister, o.updateRegister = o.websocket.SendMessageInterval("olm/wg/register", map[string]any{
-			"publicKey":   publicKey.String(),
-			"relay":       !config.Holepunch,
-			"olmVersion":  o.olmConfig.Version,
-			"olmAgent":    o.olmConfig.Agent,
-			"orgId":       config.OrgID,
-			"userToken":   userToken,
-			"fingerprint": o.fingerprint,
-			"postures":    o.postures,
-			"pingResults": pingResults,
-			"chainId":     generateChainId(), // use a random chainId for registration updates - it won't be used for cancellation since registration is a one-time message but for tracking the session
+			"publicKey":    publicKey.String(),
+			"relay":        !config.Holepunch,
+			"olmVersion":   o.olmConfig.OlmVersion,
+			"olmAgent":     o.olmConfig.Agent,
+			"agentVersion": o.olmConfig.Version,
+			"orgId":        config.OrgID,
+			"userToken":    userToken,
+			"fingerprint":  o.fingerprint,
+			"postures":     o.postures,
+			"pingResults":  pingResults,
+			"chainId":      generateChainId(), // use a random chainId for registration updates - it won't be used for cancellation since registration is a one-time message but for tracking the session
 		}, 2*time.Second, 20) // after 18 tries on the server side we send the error so dont change this without changing that
 	})
 
@@ -786,8 +789,9 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 			if err := o.websocket.SendMessage("olm/wg/register", map[string]any{
 				"publicKey":           publicKey.String(),
 				"relay":               !config.Holepunch,
-				"olmVersion":          o.olmConfig.Version,
+				"olmVersion":          o.olmConfig.OlmVersion,
 				"olmAgent":            o.olmConfig.Agent,
+				"agentVersion":        o.olmConfig.Version,
 				"orgId":               config.OrgID,
 				"userToken":           userToken,
 				"fingerprint":         o.fingerprint,
