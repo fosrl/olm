@@ -3,9 +3,9 @@ module github.com/fosrl/olm
 go 1.26.0
 
 require (
-	github.com/Microsoft/go-winio v0.6.2
+	github.com/Microsoft/go-winio v0.6.4
 	github.com/fosrl/newt v1.19.0
-	github.com/godbus/dbus/v5 v5.2.2
+	github.com/godbus/dbus/v5 v5.2.4
 	github.com/google/nftables v0.3.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/miekg/dns v1.1.73
