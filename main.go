@@ -238,7 +238,8 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 		SocketPath:   config.SocketPath,
 		Version:      config.Version,
 		Agent:        "Olm CLI",
-		OnExit:       cancel, // Pass cancel function directly to trigger shutdown
+		OlmVersion:   config.Version, // the standalone binary is olm itself
+		OnExit:       cancel,         // Pass cancel function directly to trigger shutdown
 		OnTerminated: cancel,
 		PprofAddr:    ":4444", // TODO: REMOVE OR MAKE CONFIGURABLE
 		// Re-invoke this binary in watchdog mode to clean up DNS if we die.

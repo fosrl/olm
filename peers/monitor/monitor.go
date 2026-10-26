@@ -481,7 +481,7 @@ func (pm *PeerMonitor) rapidTestOnLocalFallback(siteID int, publicEndpoint strin
 
 	pm.mutex.Lock()
 	_, stillTracked := pm.localEndpoints[siteID]
-	noLocalActiveYet := pm.localActiveEndpoint[siteID] == ""
+	winnerStillActive := pm.localActiveEndpoint[siteID] == localWinner
 	switchCb := pm.localSwitchCallback
 	pm.mutex.Unlock()
 
@@ -492,8 +492,8 @@ func (pm *PeerMonitor) rapidTestOnLocalFallback(siteID int, publicEndpoint strin
 	if localWinner != "" {
 		// RapidTestLocalEndpoints already recorded the new active endpoint and notified the
 		// server, but doesn't move the WireGuard peer itself - do that here, unless a
-		// concurrent checkLocalEndpoints tick already beat us to activating something.
-		if noLocalActiveYet && switchCb != nil {
+		// concurrent checkLocalEndpoints tick has since activated a different endpoint.
+		if winnerStillActive && switchCb != nil {
 			switchCb(siteID, localWinner)
 		}
 		logger.Info("Rapid fallback test: local connection %s viable for site %d", localWinner, siteID)
