@@ -9,7 +9,7 @@ require (
 	github.com/google/nftables v0.3.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/miekg/dns v1.1.73
-	golang.org/x/net v0.60.0
+	golang.org/x/net v0.61.0
 	golang.org/x/sys v0.49.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
