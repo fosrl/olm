@@ -398,6 +398,30 @@ func (c *Client) SendMessage(messageType string, data interface{}) error {
 	return conn.WriteJSON(msg)
 }
 
+// SendMessageNoLog is SendMessage without the debug log of the payload. Use it
+// for large messages such as batched logs.
+func (c *Client) SendMessageNoLog(messageType string, data interface{}) error {
+	if c == nil {
+		return fmt.Errorf("client is nil")
+	}
+	conn := c.getConn()
+	if c.isDisconnected || conn == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	msg := WSMessage{
+		Type: messageType,
+		Data: data,
+	}
+
+	c.writeMux.Lock()
+	defer c.writeMux.Unlock()
+	if err := conn.SetWriteDeadline(time.Now().Add(writeDeadline)); err != nil {
+		return err
+	}
+	return conn.WriteJSON(msg)
+}
+
 func (c *Client) SendMessageInterval(messageType string, data interface{}, interval time.Duration, maxAttempts int) (stop func(), update func(newData interface{})) {
 	if c == nil {
 		return func() {}, func(interface{}) {}

@@ -103,6 +103,7 @@ type StatusResponse struct {
 	ExitNodeStatus  *ExitNodeStatus         `json:"exitNode,omitempty"`
 	GatewayActive   bool                    `json:"gatewayActive,omitempty"`
 	GatewaySiteIds  []int                   `json:"gatewaySiteIds,omitempty"`
+	DNSBlocked      uint64                  `json:"dnsBlocked,omitempty"` // DNS queries refused by the blocklist since the tunnel started
 
 	GatewaySiteResourceId int `json:"gatewaySiteResourceId,omitempty"` // the gateway site resource the selection belongs to; 0 when inactive
 }
@@ -149,6 +150,10 @@ type API struct {
 	gatewaySiteIds []int
 
 	gatewaySiteResourceId int
+
+	// dnsBlockedProvider reports the blocked query count. It is a callback
+	// because the count changes on every blocked query.
+	dnsBlockedProvider func() uint64
 
 	version string
 	agent   string
@@ -389,6 +394,21 @@ func (s *API) SetAgent(agent string) {
 	s.agent = agent
 }
 
+// SetDNSBlockedProvider sets the function that reports how many DNS queries
+// the blocklist has refused. Pass nil to clear it.
+func (s *API) SetDNSBlockedProvider(fn func() uint64) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.dnsBlockedProvider = fn
+}
+
+func (s *API) dnsBlocked() uint64 {
+	if s.dnsBlockedProvider == nil {
+		return 0
+	}
+	return s.dnsBlockedProvider()
+}
+
 // SetOrgID sets the organization ID
 func (s *API) SetOrgID(orgID string) {
 	s.statusMu.Lock()
@@ -554,6 +574,7 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ExitNodeStatus:  s.exitNodeStatus,
 		GatewayActive:   s.gatewayActive,
 		GatewaySiteIds:  s.gatewaySiteIds,
+		DNSBlocked:      s.dnsBlocked(),
 
 		GatewaySiteResourceId: s.gatewaySiteResourceId,
 	}
@@ -726,6 +747,7 @@ func (s *API) GetStatus() StatusResponse {
 		ExitNodeStatus:  s.exitNodeStatus,
 		GatewayActive:   s.gatewayActive,
 		GatewaySiteIds:  s.gatewaySiteIds,
+		DNSBlocked:      s.dnsBlocked(),
 
 		GatewaySiteResourceId: s.gatewaySiteResourceId,
 	}

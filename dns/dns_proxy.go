@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fosrl/newt/logger"
@@ -64,6 +65,17 @@ type DNSProxy struct {
 	// connected yet, giving the caller a chance to initiate a JIT connection.
 	// It is invoked asynchronously so it never blocks DNS resolution.
 	jitHandler func(siteId int)
+
+	// blocklist holds the domains this proxy refuses to resolve. It is swapped
+	// whole by SetBlocklist so queries read it without locking. A nil pointer
+	// (the default) blocks nothing.
+	blocklist atomic.Pointer[Blocklist]
+	// blockLog aggregates blocked queries for reporting to the server. Nil when
+	// the server did not ask for blocks to be reported.
+	blockLog atomic.Pointer[BlockLog]
+	// blockedCount is every query blocked since the proxy started, whether or
+	// not blocks are reported.
+	blockedCount atomic.Uint64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -273,6 +285,9 @@ func (p *DNSProxy) Stop() {
 	}
 	p.cancel()
 
+	// Flush any pending block log entries while the websocket is still up.
+	p.SetBlockLogSender(nil)
+
 	// Close the endpoint first to unblock any pending Read() calls in runPacketSender
 	if p.ep != nil {
 		p.ep.Close()
@@ -406,6 +421,25 @@ func (p *DNSProxy) handleDNSQuery(udpConn *gonet.UDPConn, queryData []byte, clie
 	question := msg.Question[0]
 	logger.Debug("DNS query for %s (type %s)", question.Name, dns.TypeToString[question.Qtype])
 
+	// Blocked names are refused before anything else, including names that
+	// matchDomains would otherwise send straight to the host's own DNS servers.
+	if p.shouldBlock(question.Name) {
+		logger.Debug("Blocking DNS query for %s", question.Name)
+		p.blockedCount.Add(1)
+		if bl := p.blockLog.Load(); bl != nil {
+			bl.Record(strings.ToLower(strings.TrimSuffix(question.Name, ".")))
+		}
+		responseData, err := blockedResponse(msg).Pack()
+		if err != nil {
+			logger.Error("Failed to pack blocked DNS response: %v", err)
+			return
+		}
+		if _, err := udpConn.WriteTo(responseData, clientAddr); err != nil {
+			logger.Error("Failed to send blocked DNS response: %v", err)
+		}
+		return
+	}
+
 	// If matchDomains is configured and this query's name doesn't match any of
 	// the configured patterns, skip local records and upstream entirely and
 	// send it straight to the host's own system DNS servers.
@@ -465,6 +499,55 @@ func (p *DNSProxy) handleDNSQuery(udpConn *gonet.UDPConn, queryData []byte, clie
 	if err != nil {
 		logger.Error("Failed to send DNS response: %v", err)
 	}
+}
+
+// shouldBlock reports whether a query for name must be refused. Names that have
+// a local record (Pangolin aliases) are never blocked, so a bad blocklist entry
+// cannot break access to private resources.
+func (p *DNSProxy) shouldBlock(name string) bool {
+	bl := p.blocklist.Load()
+	if bl == nil || !bl.Blocked(name) {
+		return false
+	}
+	if _, exists := p.recordStore.GetRecords(name, RecordTypeA); exists {
+		return false
+	}
+	if _, exists := p.recordStore.GetRecords(name, RecordTypeAAAA); exists {
+		return false
+	}
+	return true
+}
+
+// blockedResponse builds the reply for a blocked query: NXDOMAIN, so clients
+// fail fast instead of waiting on a timeout.
+func blockedResponse(query *dns.Msg) *dns.Msg {
+	response := new(dns.Msg)
+	response.SetRcode(query, dns.RcodeNameError)
+	response.RecursionAvailable = true
+	return response
+}
+
+// SetBlocklist replaces the set of blocked domains. Pass nil to stop blocking.
+func (p *DNSProxy) SetBlocklist(bl *Blocklist) {
+	p.blocklist.Store(bl)
+}
+
+// SetBlockLogSender enables reporting of blocked queries. Blocked queries are
+// aggregated and handed to send in batches. Passing nil stops reporting and
+// flushes what is pending.
+func (p *DNSProxy) SetBlockLogSender(send BlockLogSendFunc) {
+	var next *BlockLog
+	if send != nil {
+		next = NewBlockLog(send)
+	}
+	if old := p.blockLog.Swap(next); old != nil {
+		old.Stop()
+	}
+}
+
+// BlockedCount returns how many queries this proxy has blocked.
+func (p *DNSProxy) BlockedCount() uint64 {
+	return p.blockedCount.Load()
 }
 
 // checkLocalRecords checks if we have local records for the query
