@@ -169,6 +169,7 @@ Returns the current connection status, registration state, and peer information.
   - `peerAddress`: Peer's IP address in the tunnel
   - `holepunchConnected`: Whether holepunch connection is established
 - `networkSettings`: Current network configuration including tunnel IP
+- `dnsBlocked`: Number of DNS queries refused by the DNS blocklist since the tunnel started (omitted when zero)
 
 **Error Responses:**
 - `405 Method Not Allowed` - Non-GET requests

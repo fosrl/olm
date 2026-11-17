@@ -191,6 +191,9 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	if err != nil {
 		logger.Error("Failed to create DNS proxy: %v", err)
 	}
+	if o.dnsProxy != nil {
+		o.setupDNSBlocking()
+	}
 
 	// Tell the system DNS monitor to exclude the proxy IP so that subsequent
 	// polls never mistake the proxy for a real upstream server (on Linux the OS

@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fosrl/newt/bind"
@@ -51,6 +52,15 @@ type Olm struct {
 
 	dnsProxy   *dns.DNSProxy
 	dnsMonitor *dns.SystemDNSMonitor
+	// blocklist is the latest DNS blocklist pushed by the server (nil when none).
+	// It is kept here, not just on the proxy, because it can arrive before the
+	// proxy exists and is applied to it once it does. blocklistSeq orders pushes
+	// so a slow decode of an older one can't overwrite a newer one.
+	blocklistMu sync.Mutex
+	blocklist   *dns.Blocklist
+	// blockLogEnabled is whether the server wants blocked queries reported.
+	blockLogEnabled bool
+	blocklistSeq    atomic.Uint64
 	// pendingSystemDNS holds a SetSystemDNS report received before dnsMonitor exists
 	// (e.g. Android/iOS push a value while the tunnel is still starting up), so it
 	// isn't silently dropped. Drained into dnsMonitor as soon as StartTunnel creates it.
@@ -694,6 +704,10 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	// DNSConfig field sent on the initial "olm/wg/connect" message.
 	o.websocket.RegisterHandler("olm/wg/dns/update", o.handleDNSConfigUpdate)
 
+	// Handler for the DNS blocklist the server sends after registration and
+	// again whenever the user's effective blocklist changes.
+	o.websocket.RegisterHandler("olm/dns/blocklist", o.handleDNSBlocklist)
+
 	o.websocket.RegisterHandler("olm/ping/exitNodes", func(msg websocket.WSMessage) {
 		logger.Debug("Received exit node ping request")
 
@@ -1045,6 +1059,8 @@ func (o *Olm) Close() {
 		o.dnsProxy.Stop()
 		o.dnsProxy = nil
 	}
+	o.apiServer.SetDNSBlockedProvider(nil)
+	o.clearDNSBlocklist()
 
 	// Close MiddleDevice first - this closes the TUN and signals the closed channel
 	// This unblocks the pump goroutine and allows WireGuard's TUN reader to exit
