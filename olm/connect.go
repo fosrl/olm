@@ -424,3 +424,25 @@ func (o *Olm) handleTerminate(msg websocket.WSMessage) {
 		go o.olmConfig.OnTerminated()
 	}
 }
+
+// handleRestart tears down the tunnel and websocket and starts them again with
+// the same config, as requested by an administrator from the dashboard. It
+// runs in its own goroutine because StopTunnel closes the websocket and waits
+// for the tunnel goroutine, which must not happen on the websocket's own
+// message handling path.
+func (o *Olm) handleRestart(msg websocket.WSMessage) {
+	logger.Info("Received restart message")
+
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring restart message")
+		return
+	}
+
+	go func() {
+		if err := o.StopTunnel(); err != nil {
+			logger.Error("Failed to stop tunnel for restart: %v", err)
+			return
+		}
+		o.StartTunnel(o.tunnelConfig)
+	}()
+}

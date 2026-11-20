@@ -652,6 +652,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	o.websocket.RegisterHandler("olm/wg/connect", o.handleConnect)
 	o.websocket.RegisterHandler("olm/error", o.handleOlmError)
 	o.websocket.RegisterHandler("olm/terminate", o.handleTerminate)
+	o.websocket.RegisterHandler("olm/restart", o.handleRestart)
 
 	// Handlers for managing peers
 	o.websocket.RegisterHandler("olm/wg/peer/add", o.handleWgPeerAdd)
