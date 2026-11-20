@@ -94,6 +94,7 @@ type StatusResponse struct {
 	Connected       bool                    `json:"connected"`
 	Registered      bool                    `json:"registered"`
 	Terminated      bool                    `json:"terminated"`
+	Restarting      bool                    `json:"restarting,omitempty"` // a server-requested restart is underway (olm/restart until registered again)
 	OlmError        *OlmError               `json:"error,omitempty"`
 	Version         string                  `json:"version,omitempty"`
 	Agent           string                  `json:"agent,omitempty"`
@@ -144,6 +145,7 @@ type API struct {
 	isConnected    bool
 	isRegistered   bool
 	isTerminated   bool
+	isRestarting   bool
 	olmError       *OlmError
 	gatewayActive  bool
 	gatewaySiteIds []int
@@ -368,6 +370,13 @@ func (s *API) SetTerminated(terminated bool) {
 	s.isTerminated = terminated
 }
 
+// SetRestarting sets whether a server-requested restart is in progress
+func (s *API) SetRestarting(restarting bool) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.isRestarting = restarting
+}
+
 // ClearPeerStatuses clears all peer statuses
 func (s *API) ClearPeerStatuses() {
 	s.statusMu.Lock()
@@ -545,6 +554,7 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Connected:       s.isConnected,
 		Registered:      s.isRegistered,
 		Terminated:      s.isTerminated,
+		Restarting:      s.isRestarting,
 		OlmError:        s.olmError,
 		Version:         s.version,
 		Agent:           s.agent,
@@ -717,6 +727,7 @@ func (s *API) GetStatus() StatusResponse {
 		Connected:       s.isConnected,
 		Registered:      s.isRegistered,
 		Terminated:      s.isTerminated,
+		Restarting:      s.isRestarting,
 		OlmError:        s.olmError,
 		Version:         s.version,
 		Agent:           s.agent,

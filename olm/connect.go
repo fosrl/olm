@@ -329,6 +329,7 @@ func (o *Olm) handleConnect(msg websocket.WSMessage) {
 	}
 
 	o.apiServer.SetRegistered(true)
+	o.apiServer.SetRestarting(false)
 
 	o.registered = true
 
@@ -411,6 +412,7 @@ func (o *Olm) handleTerminate(msg websocket.WSMessage) {
 	}
 
 	o.apiServer.SetTerminated(true)
+	o.apiServer.SetRestarting(false)
 	o.apiServer.SetConnectionStatus(false)
 	o.apiServer.SetRegistered(false)
 	o.apiServer.ClearPeerStatuses()
@@ -423,4 +425,45 @@ func (o *Olm) handleTerminate(msg websocket.WSMessage) {
 	if o.olmConfig.OnTerminated != nil {
 		go o.olmConfig.OnTerminated()
 	}
+}
+
+// handleRestart handles a restart requested by an administrator from the
+// dashboard. A host that set OnRestart owns the restart (for example a mobile
+// app that must recreate its VPN service to get a fresh TUN descriptor).
+// Otherwise olm stops and starts the tunnel itself, which is only safe when it
+// created the TUN device: StopTunnel closes a host-provided descriptor, and
+// StartTunnel would then reuse the stale number.
+func (o *Olm) handleRestart(msg websocket.WSMessage) {
+	logger.Info("Received restart message")
+
+	if !o.tunnelRunning {
+		logger.Debug("Tunnel stopped, ignoring restart message")
+		return
+	}
+
+	if o.olmConfig.OnRestart == nil && o.tunnelConfig.FileDescriptorTun != 0 {
+		logger.Warn("Ignoring restart message: the TUN device belongs to the host application, which does not support restarts")
+		return
+	}
+
+	// Cleared once the tunnel registers again (or is terminated).
+	o.apiServer.SetRestarting(true)
+
+	if o.olmConfig.OnRestart != nil {
+		go o.olmConfig.OnRestart()
+		return
+	}
+
+	cfg := o.RestartTunnelConfig(0)
+
+	// Run on its own goroutine: StopTunnel closes the websocket and waits for
+	// the tunnel goroutine, which must not happen on the websocket's message
+	// handling path.
+	go func() {
+		if err := o.StopTunnel(); err != nil {
+			logger.Error("Failed to stop tunnel for restart: %v", err)
+			return
+		}
+		o.StartTunnel(cfg)
+	}()
 }

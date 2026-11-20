@@ -100,6 +100,12 @@ type OlmConfig struct {
 	OnAuthError  func(statusCode int, message string) // Called when auth fails (401/403)
 	OnOlmError   func(code string, message string)    // Called when registration fails
 	OnExit       func()                               // Called when exit is requested via API
+	// OnRestart is called when the server asks the client to restart its
+	// connection (olm/restart). Hosts that hand olm a TUN file descriptor
+	// must set it and restart the tunnel themselves, since olm cannot get a
+	// new descriptor. When unset, olm restarts in-process if it owns its TUN
+	// device and ignores the request otherwise.
+	OnRestart func()
 
 	// DNS watchdog (optional). When WatchdogSubcommand is non-empty, the
 	// olm package will spawn an external watchdog subprocess after a DNS

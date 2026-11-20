@@ -122,6 +122,11 @@ type Olm struct {
 
 	olmConfig    OlmConfig
 	tunnelConfig TunnelConfig
+	// startConfig is the config the tunnel was last started with, before olm
+	// filled in detected DNS servers and the real interface name. Restarts
+	// and org switches start from it so detected values are not mistaken for
+	// configured ones.
+	startConfig TunnelConfig
 
 	// Metadata to send alongside pings
 	fingerprint map[string]any
@@ -506,6 +511,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 
 	o.tunnelRunning = true // Also set it here in case it is called externally
 	o.tunnelConfig = config
+	o.startConfig = config
 	network.PreferLocalRoutes = config.PreferLocalRoutes
 
 	// Determine whether the system DNS monitor should also manage UpstreamDNS.
@@ -652,6 +658,7 @@ func (o *Olm) StartTunnel(config TunnelConfig) {
 	o.websocket.RegisterHandler("olm/wg/connect", o.handleConnect)
 	o.websocket.RegisterHandler("olm/error", o.handleOlmError)
 	o.websocket.RegisterHandler("olm/terminate", o.handleTerminate)
+	o.websocket.RegisterHandler("olm/restart", o.handleRestart)
 
 	// Handlers for managing peers
 	o.websocket.RegisterHandler("olm/wg/peer/add", o.handleWgPeerAdd)
@@ -1163,10 +1170,40 @@ func (o *Olm) SwitchOrg(orgID string) error {
 
 	o.tunnelConfig.OrgID = orgID
 
-	// Restart the tunnel with the same config but new org ID
-	go o.StartTunnel(o.tunnelConfig)
+	// Restart the tunnel with the same config but new org ID. Start from the
+	// config as originally given: o.tunnelConfig holds detected DNS servers,
+	// which StartTunnel would otherwise treat as statically configured.
+	cfg := o.startConfig
+	cfg.OrgID = orgID
+	go o.StartTunnel(cfg)
 
 	return nil
+}
+
+// RestartTunnelConfig returns the config to restart the tunnel with: the one
+// it was last started with, updated with the current gateway selection and
+// device metadata, and using fileDescriptorTun as the TUN device (0 to let
+// olm create its own). Call it before StopTunnel, which clears the gateway
+// status this reads.
+func (o *Olm) RestartTunnelConfig(fileDescriptorTun uint32) TunnelConfig {
+	cfg := o.startConfig
+	cfg.FileDescriptorTun = fileDescriptorTun
+
+	status := o.apiServer.GetStatus()
+	if status.GatewayActive {
+		cfg.GatewaySiteResourceId = status.GatewaySiteResourceId
+		cfg.GatewaySiteIds = append([]int(nil), status.GatewaySiteIds...)
+	} else {
+		cfg.GatewaySiteResourceId = 0
+		cfg.GatewaySiteIds = nil
+	}
+
+	o.metaMu.Lock()
+	cfg.InitialFingerprint = o.fingerprint
+	cfg.InitialPostures = o.postures
+	o.metaMu.Unlock()
+
+	return cfg
 }
 
 func (o *Olm) SetFingerprint(data map[string]any) {
