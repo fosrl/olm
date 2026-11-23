@@ -175,6 +175,13 @@ func TestBrowserTrustLeavesInvalidFirefoxPolicy(t *testing.T) {
 	if got := string(readAll(t, policyFile)); got != broken {
 		t.Errorf("policies.json was rewritten to %q", got)
 	}
+	// It does not mention olm's CA, so removal leaves it alone quietly.
+	if err := removeBrowserTrust(); err != nil {
+		t.Errorf("removal failed on a policies.json olm never changed: %v", err)
+	}
+	if got := string(readAll(t, policyFile)); got != broken {
+		t.Errorf("policies.json was rewritten to %q", got)
+	}
 }
 
 func firefoxInstallList(t *testing.T, path string) []string {

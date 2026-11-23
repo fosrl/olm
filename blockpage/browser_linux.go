@@ -119,12 +119,31 @@ func installBrowserTrust(ca *CA) error {
 func removeBrowserTrust() error {
 	var errs []error
 	for _, b := range chromiumBrowsers {
-		errs = append(errs, removeIfExists(filepath.Join(b.policyDir, trustFileName+".json")))
+		path := filepath.Join(b.policyDir, trustFileName+".json")
+		if !fileExists(path) {
+			continue
+		}
+		if err := removeIfExists(path); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		logger.Info("Removed block page CA from the %s policy", b.name)
 	}
 	for _, f := range firefoxInstalls {
 		for _, policyFile := range f.policyFiles() {
 			certPath := firefoxCertPath(policyFile)
-			errs = append(errs, removeFirefoxCert(policyFile, certPath), removeIfExists(certPath))
+			removed, err := removeFirefoxCert(policyFile, certPath)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if err := removeIfExists(certPath); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if removed {
+				logger.Info("Removed block page CA from the %s policy in %s", f.name, policyFile)
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -202,14 +221,23 @@ func addFirefoxCert(policyFile, certPath string) (bool, error) {
 }
 
 // removeFirefoxCert removes certPath from Certificates.Install in policyFile.
-// It deletes the file when nothing else is left in it.
-func removeFirefoxCert(policyFile, certPath string) error {
-	if !fileExists(policyFile) {
-		return nil
+// It deletes the file when nothing else is left in it, and reports whether
+// it found the entry.
+func removeFirefoxCert(policyFile, certPath string) (bool, error) {
+	raw, err := os.ReadFile(policyFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !bytes.Contains(raw, []byte(certPath)) {
+		// Not ours to touch, even if it is not valid JSON.
+		return false, nil
 	}
 	doc, err := readPolicyJSON(policyFile)
 	if err != nil {
-		return err
+		return false, err
 	}
 	policies, _ := doc["policies"].(map[string]any)
 	certs, _ := policies["Certificates"].(map[string]any)
@@ -222,7 +250,7 @@ func removeFirefoxCert(policyFile, certPath string) error {
 		}
 	}
 	if len(kept) == len(install) {
-		return nil
+		return false, nil
 	}
 
 	if len(kept) > 0 {
@@ -237,9 +265,9 @@ func removeFirefoxCert(policyFile, certPath string) error {
 		}
 	}
 	if len(doc) == 0 {
-		return removeIfExists(policyFile)
+		return true, removeIfExists(policyFile)
 	}
-	return writePolicyJSON(policyFile, doc)
+	return true, writePolicyJSON(policyFile, doc)
 }
 
 func readPolicyJSON(path string) (map[string]any, error) {

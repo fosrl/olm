@@ -117,9 +117,10 @@ func (o *Olm) setupDNSBlocking() {
 	}
 	if pageBl != nil {
 		proxy.SetPageBlocklist(pageBl)
-		// May add the CA to the trust store, which can take a while.
-		go o.applyBlockPage(proxy)
 	}
+	// May add the CA to the trust store, which can take a while. With no
+	// page list yet it clears browser policies a previous run left behind.
+	go o.applyBlockPage(proxy)
 	o.applyBlockLogSender(proxy, logBlocks)
 }
 
@@ -127,29 +128,31 @@ func (o *Olm) setupDNSBlocking() {
 // current page list. The server only runs while the system trusts this
 // device's block page CA; otherwise the domains on the page list fail to
 // resolve like any other blocked domain.
+//
+// Browser policies only carry the CA while a page list is in use; otherwise
+// they are taken out again.
 func (o *Olm) applyBlockPage(proxy *dns.DNSProxy) {
+	o.blockPageMu.Lock()
+	defer o.blockPageMu.Unlock()
+
+	// Read under blockPageMu so that of several calls racing, the last one to
+	// run sees the newest list.
 	o.blocklistMu.Lock()
 	pageBl := o.pageBlocklist
 	pageURL := o.pageURL
 	o.blocklistMu.Unlock()
-
-	o.blockPageMu.Lock()
-	defer o.blockPageMu.Unlock()
 
 	if proxy.Stopped() {
 		return
 	}
 	if pageBl.Len() == 0 || pageURL == "" || o.olmConfig.DisableBlockPage {
 		o.stopBlockPageLocked()
+		o.releaseBrowsersLocked()
 		return
 	}
 
 	if o.blockPage == nil {
-		dir := o.olmConfig.BlockPageDir
-		if dir == "" {
-			dir = blockpage.DefaultDir()
-		}
-		o.blockPage = blockpage.NewManager(dir)
+		o.blockPage = blockpage.NewManager(o.blockPageDir())
 	}
 	ca, err := o.blockPage.Prepare()
 	if err != nil {
@@ -194,11 +197,34 @@ func (o *Olm) applyBlockPage(proxy *dns.DNSProxy) {
 	logger.Info("Block page server listening on %s", proxy.GetProxyIP())
 }
 
-// stopBlockPage stops the block page server, if it runs.
+// stopBlockPage stops the block page server, if it runs, and takes the CA out
+// of browser policies. Called when the tunnel goes down.
 func (o *Olm) stopBlockPage() {
 	o.blockPageMu.Lock()
 	defer o.blockPageMu.Unlock()
 	o.stopBlockPageLocked()
+	o.releaseBrowsersLocked()
+}
+
+func (o *Olm) blockPageDir() string {
+	if o.olmConfig.BlockPageDir != "" {
+		return o.olmConfig.BlockPageDir
+	}
+	return blockpage.DefaultDir()
+}
+
+// releaseBrowsersLocked takes the CA out of browser policies. Without a CA
+// directory olm never wrote any (and, not being root, could not remove
+// them), so there is nothing to do.
+func (o *Olm) releaseBrowsersLocked() {
+	if o.blockPageDir() == "" {
+		return
+	}
+	if o.blockPage != nil {
+		o.blockPage.ReleaseBrowsers()
+	} else {
+		blockpage.RemoveBrowserTrust()
+	}
 }
 
 func (o *Olm) stopBlockPageLocked() {

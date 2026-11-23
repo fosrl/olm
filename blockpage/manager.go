@@ -123,6 +123,25 @@ func (m *Manager) syncBrowsersLocked() {
 	}
 }
 
+// ReleaseBrowsers takes the CA back out of browser policies while no block
+// page is in use, so browsers don't stay managed for nothing. The next
+// Prepare adds it again. The CA stays in the system trust store.
+func (m *Manager) ReleaseBrowsers() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.browsersFor = nil
+	RemoveBrowserTrust()
+}
+
+// RemoveBrowserTrust takes olm's CA out of every browser policy it added it
+// to, for when no Manager exists yet (say, left over from a process that did
+// not shut down cleanly). Failures are logged.
+func RemoveBrowserTrust() {
+	if err := removeBrowserTrust(); err != nil {
+		logger.Warn("Could not remove the block page CA from browser policies: %v", err)
+	}
+}
+
 // Status returns the state as of the last Prepare.
 func (m *Manager) Status() Status {
 	m.mu.Lock()
