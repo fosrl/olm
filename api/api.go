@@ -124,6 +124,10 @@ type BlockPageStatus struct {
 	CAPath string `json:"caPath,omitempty"`
 	// Error is why the CA is not trusted, if known.
 	Error string `json:"error,omitempty"`
+	// NeedsTrust is whether the CA exists but is not trusted. A host app can
+	// then fetch it from GET /blockpage/ca, add it to the trust store with
+	// the user's approval, and call POST /blockpage/recheck.
+	NeedsTrust bool `json:"needsTrust,omitempty"`
 }
 
 type MetadataChangeRequest struct {
@@ -175,9 +179,11 @@ type API struct {
 	dnsBlockedProvider func() uint64
 	// blockPageProvider reports the block page status (nil when it is not in
 	// use) and blockPageCAProvider the CA certificate in PEM form (nil when
-	// there is none).
+	// there is none). blockPageRecheck checks the CA's trust again and
+	// returns the new status.
 	blockPageProvider   func() *BlockPageStatus
 	blockPageCAProvider func() []byte
+	blockPageRecheck    func() *BlockPageStatus
 
 	version string
 	agent   string
@@ -257,6 +263,7 @@ func (s *API) Start() error {
 	mux.HandleFunc("/gateway/select", s.handleSelectGateway)
 	mux.HandleFunc("/gateway/disable", s.handleDisableGateway)
 	mux.HandleFunc("/blockpage/ca", s.handleBlockPageCA)
+	mux.HandleFunc("/blockpage/recheck", s.handleBlockPageRecheck)
 
 	s.server = &http.Server{
 		Handler: mux,
@@ -442,12 +449,39 @@ func (s *API) dnsBlocked() uint64 {
 }
 
 // SetBlockPageProviders sets the functions that report the block page status
-// and its CA certificate. Pass nils to clear them.
-func (s *API) SetBlockPageProviders(status func() *BlockPageStatus, caPEM func() []byte) {
+// and its CA certificate, and that check the CA's trust again. Pass nils to
+// clear them.
+func (s *API) SetBlockPageProviders(status func() *BlockPageStatus, caPEM func() []byte, recheck func() *BlockPageStatus) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	s.blockPageProvider = status
 	s.blockPageCAProvider = caPEM
+	s.blockPageRecheck = recheck
+}
+
+// handleBlockPageRecheck checks again whether the system trusts the block
+// page CA and turns the block page on if it now does. A host app calls it
+// after adding the CA to the trust store. It returns the new status.
+func (s *API) handleBlockPageRecheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.statusMu.RLock()
+	recheck := s.blockPageRecheck
+	s.statusMu.RUnlock()
+
+	if recheck == nil {
+		http.Error(w, "Block page not in use", http.StatusNotFound)
+		return
+	}
+	st := recheck()
+	if st == nil {
+		http.Error(w, "Block page not in use", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(st)
 }
 
 func (s *API) blockPage() *BlockPageStatus {

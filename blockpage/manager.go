@@ -21,6 +21,9 @@ var (
 	ErrDisabled = errors.New("block page certificates are not available on this platform")
 	// ErrNotTrusted means the CA exists but the system does not trust it.
 	ErrNotTrusted = errors.New("the system does not trust the block page certificate")
+	// ErrAwaitingHostTrust means the CA exists but is not trusted yet, and the
+	// host app, not olm, adds it to the trust store (see SetHostInstallsTrust).
+	ErrAwaitingHostTrust = errors.New("waiting for the app to add the block page certificate to the trust store")
 )
 
 // Status describes the block page CA, for the local API.
@@ -32,6 +35,10 @@ type Status struct {
 	CAPath string `json:"caPath,omitempty"`
 	// Error is why the CA is not trusted, if known.
 	Error string `json:"error,omitempty"`
+	// NeedsTrust is whether the CA exists but is not trusted, so adding it to
+	// the trust store (by the host app or by hand) would turn HTTPS block
+	// pages on.
+	NeedsTrust bool `json:"needsTrust,omitempty"`
 }
 
 // Manager owns this device's block page CA: it creates it on first use, keeps
@@ -39,11 +46,17 @@ type Status struct {
 type Manager struct {
 	dir string
 
-	mu               sync.Mutex
-	ca               *CA
-	trusted          bool
-	installAttempted bool
-	lastErr          error
+	mu                sync.Mutex
+	hostInstallsTrust bool
+	ca                *CA
+	trusted           bool
+	installAttempted  bool
+	// stagedFor is the CA olm last got ready for the host app to trust (see
+	// stageForHost), and stageFailed whether that failed, in which case
+	// trusting it would not help.
+	stagedFor   *CA
+	stageFailed bool
+	lastErr     error
 	// browsersFor is the CA last added to browser policies, so that happens
 	// once per CA per process.
 	browsersFor *CA
@@ -53,6 +66,16 @@ type Manager struct {
 // HTTPS block pages; see DefaultDir.
 func NewManager(dir string) *Manager {
 	return &Manager{dir: dir}
+}
+
+// SetHostInstallsTrust makes Prepare only check whether the system trusts the
+// CA, never add it itself. Use it where olm runs without a way to get the
+// user's approval, as in the macOS system extension: the host app fetches the
+// CA, adds it with the user's approval, and calls Prepare again.
+func (m *Manager) SetHostInstallsTrust(v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.hostInstallsTrust = v
 }
 
 // Prepare loads the CA, creating it if there is none, and checks that the
@@ -92,6 +115,17 @@ func (m *Manager) prepareLocked() (*CA, error) {
 	if trustedBySystem(m.ca) {
 		m.syncBrowsersLocked()
 		return m.ca, nil
+	}
+	if m.hostInstallsTrust {
+		if m.stagedFor != m.ca {
+			if err := stageForHost(m.ca); err != nil {
+				m.stageFailed = true
+				return nil, fmt.Errorf("prepare block page CA for the app to trust: %w", err)
+			}
+			m.stagedFor = m.ca
+			m.stageFailed = false
+		}
+		return nil, ErrAwaitingHostTrust
 	}
 	if m.installAttempted {
 		return nil, ErrNotTrusted
@@ -149,6 +183,7 @@ func (m *Manager) Status() Status {
 	st := Status{Trusted: m.trusted}
 	if m.ca != nil {
 		st.CAPath = filepath.Join(m.dir, caCertFile)
+		st.NeedsTrust = !m.trusted && !m.stageFailed
 	}
 	if m.lastErr != nil {
 		st.Error = m.lastErr.Error()

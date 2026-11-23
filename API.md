@@ -175,6 +175,7 @@ Returns the current connection status, registration state, and peer information.
   - `trusted`: Whether the system trusts this device's block page certificate authority, which HTTPS block pages need
   - `caPath`: Path of the CA certificate, for installing it by hand or with MDM
   - `error`: Why the block page is off, if it is
+  - `needsTrust`: The CA exists but the system does not trust it yet (omitted when false). A host app can install it with `GET /blockpage/ca`, then call `POST /blockpage/recheck`.
 
 **Error Responses:**
 - `405 Method Not Allowed` - Non-GET requests
@@ -305,7 +306,7 @@ Initiates a graceful shutdown of the Olm process.
 ---
 
 ### GET /blockpage/ca
-Returns this device's block page CA certificate in PEM form. olm creates the CA the first time the server sends domains that get a block page, and adds it to the system trust store where it can (Windows, Linux as root, macOS as root with an administrator's approval). Use this endpoint to install it some other way, for example from a host app or with MDM.
+Returns this device's block page CA certificate in PEM form. olm creates the CA the first time the server sends domains that get a block page, and adds it to the system trust store where it can (Windows, Linux as root). Where the host sets `BlockPageTrustByHost` (the macOS app, whose system extension cannot ask for the user's approval), olm only adds the CA to the System keychain without trust settings, and the host app marks it trusted for TLS in the admin trust domain. Use this endpoint to install it from a host app or with MDM.
 
 **Response:**
 - **Status Code:** `200 OK`
@@ -314,6 +315,28 @@ Returns this device's block page CA certificate in PEM form. olm creates the CA 
 **Error Responses:**
 - `404 Not Found` - No CA has been created yet
 - `405 Method Not Allowed` - Non-GET requests
+
+---
+
+### POST /blockpage/recheck
+Checks again whether the system trusts the block page CA, and turns the block page on if it now does. A host app calls this after adding the CA to the trust store; otherwise olm only checks when the server sends a new blocklist or the tunnel starts.
+
+**Response:**
+- **Status Code:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:** the new block page state, with the same fields as `blockPage` in `GET /status`
+
+```json
+{
+  "active": true,
+  "trusted": true,
+  "caPath": "/Library/Application Support/olm/blockpage/ca.pem"
+}
+```
+
+**Error Responses:**
+- `404 Not Found` - The block page is not in use
+- `405 Method Not Allowed` - Non-POST requests
 
 ---
 

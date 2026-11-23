@@ -105,7 +105,7 @@ func decodeDNSBlocklist(compressed string) (*dns.Blocklist, error) {
 func (o *Olm) setupDNSBlocking() {
 	proxy := o.dnsProxy
 	o.apiServer.SetDNSBlockedProvider(proxy.BlockedCount)
-	o.apiServer.SetBlockPageProviders(o.blockPageStatus, o.blockPageCAPEM)
+	o.apiServer.SetBlockPageProviders(o.blockPageStatus, o.blockPageCAPEM, o.recheckBlockPage)
 
 	o.blocklistMu.Lock()
 	bl := o.blocklist
@@ -153,14 +153,16 @@ func (o *Olm) applyBlockPage(proxy *dns.DNSProxy) {
 
 	if o.blockPage == nil {
 		o.blockPage = blockpage.NewManager(o.blockPageDir())
+		o.blockPage.SetHostInstallsTrust(o.olmConfig.BlockPageTrustByHost)
 	}
 	ca, err := o.blockPage.Prepare()
 	if err != nil {
 		// Logged once per distinct reason, not on every list update.
 		if msg := err.Error(); msg != o.blockPageLastErr {
 			o.blockPageLastErr = msg
-			if errors.Is(err, blockpage.ErrDisabled) {
-				// Expected where olm cannot add a trusted root (mobile).
+			if errors.Is(err, blockpage.ErrDisabled) || errors.Is(err, blockpage.ErrAwaitingHostTrust) {
+				// Expected where olm cannot add a trusted root itself
+				// (mobile), or leaves that to the app (macOS).
 				logger.Info("Block page is off, blocked sites fail to load instead: %v", err)
 			} else {
 				logger.Warn("Block page is off, blocked sites fail to load instead: %v", err)
@@ -271,8 +273,22 @@ func (o *Olm) blockPageStatus() *api.BlockPageStatus {
 		st.Trusted = ms.Trusted
 		st.CAPath = ms.CAPath
 		st.Error = ms.Error
+		st.NeedsTrust = ms.NeedsTrust
 	}
 	return st
+}
+
+// recheckBlockPage checks the CA's trust again, for a host app that just
+// added it to the trust store, and returns the new status (nil when the block
+// page is not in use).
+func (o *Olm) recheckBlockPage() *api.BlockPageStatus {
+	o.blocklistMu.Lock()
+	proxy := o.dnsProxy
+	o.blocklistMu.Unlock()
+	if proxy != nil {
+		o.applyBlockPage(proxy)
+	}
+	return o.blockPageStatus()
 }
 
 func (o *Olm) blockPageCAPEM() []byte {

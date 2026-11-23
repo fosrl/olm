@@ -77,6 +77,10 @@ func installTrust(ca *CA) error {
 	return runUpdate(store)
 }
 
+// stageForHost is a no-op: only macOS splits installing the CA between olm
+// and the host app.
+func stageForHost(*CA) error { return nil }
+
 func removeTrust() error {
 	var errs []error
 	for _, store := range linuxStores {

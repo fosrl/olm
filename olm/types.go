@@ -131,6 +131,12 @@ type OlmConfig struct {
 	// DisableBlockPage turns the block page off: blocked domains always fail
 	// to resolve, and no CA is created or added to the trust store.
 	DisableBlockPage bool
+	// BlockPageTrustByHost leaves adding the CA to the trust store to the
+	// host app, for where olm cannot get the user's approval itself (the
+	// macOS system extension). olm only checks whether the CA is trusted;
+	// the status API reports needsTrust, and the app fetches the CA from
+	// GET /blockpage/ca, installs it, then calls POST /blockpage/recheck.
+	BlockPageTrustByHost bool
 }
 
 type TunnelConfig struct {

@@ -67,6 +67,37 @@ func removeTrust() error {
 	return removeOurCAs(nil)
 }
 
+// stageForHost puts the CA in the System keychain without any trust settings,
+// for the host app to mark trusted. Adding a certificate there needs root,
+// which the app lacks, but no approval; trusting it needs approval, which only
+// the app can ask for. Verification run as root (olm's own check) only finds
+// roots in the System keychain, so the app could not do this part with a
+// keychain of its own.
+func stageForHost(ca *CA) error {
+	if out, err := runSecurity("find-certificate", "-a", "-Z", "-c", caCommonName, systemKeychain); err == nil &&
+		bytes.Contains(out, []byte("SHA-1 hash: "+sha1Hex(ca.cert))) {
+		return nil
+	}
+	// Older olm CAs, from before the key was replaced. Best effort: their
+	// trust settings can only be removed with approval.
+	_ = removeOurCAs(ca.cert.Raw)
+
+	f, err := os.CreateTemp("", "olm-blockpage-*.pem")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(ca.CertPEM()); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	_, err = runSecurity("add-certificates", "-k", systemKeychain, f.Name())
+	return err
+}
+
 // removeOurCAs deletes every olm block page CA in the System keychain except
 // keep, along with its trust settings.
 func removeOurCAs(keep []byte) error {

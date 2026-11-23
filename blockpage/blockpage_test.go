@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -200,5 +201,23 @@ func TestServeTLS(t *testing.T) {
 
 	if _, err := client.Get("https://allowed.example/"); err == nil {
 		t.Error("TLS handshake for a host that is not blocked must fail")
+	}
+}
+
+func TestHostInstallsTrust(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.SetHostInstallsTrust(true)
+
+	// The test CA is new, so the system does not trust it. olm must not try
+	// to install it, only report that the host app needs to.
+	if _, err := m.Prepare(); !errors.Is(err, ErrAwaitingHostTrust) {
+		t.Fatalf("Prepare error = %v, want ErrAwaitingHostTrust", err)
+	}
+	st := m.Status()
+	if st.Trusted || !st.NeedsTrust || st.CAPath == "" {
+		t.Errorf("status = %+v, want untrusted, needsTrust and a CA path", st)
+	}
+	if len(m.CertPEM()) == 0 {
+		t.Error("the CA must be available for the host app to install")
 	}
 }
