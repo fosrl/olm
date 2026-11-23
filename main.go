@@ -10,6 +10,7 @@ import (
 
 	"github.com/fosrl/newt/logger"
 	"github.com/fosrl/newt/updates"
+	"github.com/fosrl/olm/blockpage"
 	olmpkg "github.com/fosrl/olm/olm"
 )
 
@@ -46,6 +47,11 @@ func main() {
 			if err != nil {
 				fmt.Printf("Failed to remove service: %v\n", err)
 				os.Exit(1)
+			}
+			// Take the block page CA out of the trust store with the service
+			// that created it.
+			if err := blockpage.Uninstall(blockpage.DefaultDir()); err != nil {
+				fmt.Printf("Failed to remove the block page certificate: %v\n", err)
 			}
 			fmt.Println("Service removed successfully")
 			return

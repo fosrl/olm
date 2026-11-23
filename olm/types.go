@@ -121,6 +121,16 @@ type OlmConfig struct {
 	WatchdogExecutable string
 	WatchdogSubcommand []string
 	WatchdogLogFile    string
+
+	// BlockPageDir is where olm keeps the certificate authority it creates
+	// to show the block page for blocked HTTPS sites. Empty uses
+	// blockpage.DefaultDir(), which is empty (no HTTPS block pages) on
+	// platforms where olm cannot add a trusted root itself, and when not
+	// running as root.
+	BlockPageDir string
+	// DisableBlockPage turns the block page off: blocked domains always fail
+	// to resolve, and no CA is created or added to the trust store.
+	DisableBlockPage bool
 }
 
 type TunnelConfig struct {

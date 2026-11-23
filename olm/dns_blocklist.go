@@ -3,10 +3,13 @@ package olm
 import (
 	"compress/zlib"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/fosrl/newt/logger"
+	"github.com/fosrl/olm/api"
+	"github.com/fosrl/olm/blockpage"
 	"github.com/fosrl/olm/dns"
 	"github.com/fosrl/olm/websocket"
 )
@@ -17,16 +20,23 @@ import (
 // field clears it. "compressed" is base64(zlib(newline separated domains)).
 // "logBlocks" says whether the server wants blocked queries reported back; it is
 // only set for orgs that have the DNS block log.
+//
+// "pageCompressed" (same encoding) holds blocked domains that browsers are sent
+// to the block page at "pageUrl" for, rather than failing the lookup. The
+// server leaves them out of "compressed". Both are absent when no domain gets
+// the block page.
 func (o *Olm) handleDNSBlocklist(msg websocket.WSMessage) {
 	if !o.tunnelRunning {
 		logger.Debug("Tunnel is no longer running, ignoring DNS blocklist")
 		return
 	}
 
-	var compressed string
+	var compressed, pageCompressed, pageURL string
 	var logBlocks bool
 	if m, ok := msg.Data.(map[string]interface{}); ok {
 		compressed, _ = m["compressed"].(string)
+		pageCompressed, _ = m["pageCompressed"].(string)
+		pageURL, _ = m["pageUrl"].(string)
 		logBlocks, _ = m["logBlocks"].(bool)
 	} else {
 		logger.Error("Invalid DNS blocklist message")
@@ -43,6 +53,11 @@ func (o *Olm) handleDNSBlocklist(msg websocket.WSMessage) {
 			logger.Error("Failed to decode DNS blocklist: %v", err)
 			return
 		}
+		pageBl, err := decodeDNSBlocklist(pageCompressed)
+		if err != nil {
+			logger.Error("Failed to decode DNS block page list: %v", err)
+			return
+		}
 
 		o.blocklistMu.Lock()
 		if o.blocklistSeq.Load() != seq {
@@ -51,6 +66,8 @@ func (o *Olm) handleDNSBlocklist(msg websocket.WSMessage) {
 			return
 		}
 		o.blocklist = bl
+		o.pageBlocklist = pageBl
+		o.pageURL = pageURL
 		logChanged := o.blockLogEnabled != logBlocks
 		o.blockLogEnabled = logBlocks
 		proxy := o.dnsProxy
@@ -58,11 +75,13 @@ func (o *Olm) handleDNSBlocklist(msg websocket.WSMessage) {
 
 		if proxy != nil {
 			proxy.SetBlocklist(bl)
+			proxy.SetPageBlocklist(pageBl)
 			if logChanged {
 				o.applyBlockLogSender(proxy, logBlocks)
 			}
+			o.applyBlockPage(proxy)
 		}
-		logger.Info("DNS blocklist updated: %d domains", bl.Len())
+		logger.Info("DNS blocklist updated: %d domains, %d with block page", bl.Len(), pageBl.Len())
 	}()
 }
 
@@ -86,15 +105,158 @@ func decodeDNSBlocklist(compressed string) (*dns.Blocklist, error) {
 func (o *Olm) setupDNSBlocking() {
 	proxy := o.dnsProxy
 	o.apiServer.SetDNSBlockedProvider(proxy.BlockedCount)
+	o.apiServer.SetBlockPageProviders(o.blockPageStatus, o.blockPageCAPEM)
 
 	o.blocklistMu.Lock()
 	bl := o.blocklist
+	pageBl := o.pageBlocklist
 	logBlocks := o.blockLogEnabled
 	o.blocklistMu.Unlock()
 	if bl != nil {
 		proxy.SetBlocklist(bl)
 	}
+	if pageBl != nil {
+		proxy.SetPageBlocklist(pageBl)
+		// May add the CA to the trust store, which can take a while.
+		go o.applyBlockPage(proxy)
+	}
 	o.applyBlockLogSender(proxy, logBlocks)
+}
+
+// applyBlockPage starts or stops the block page server on proxy to match the
+// current page list. The server only runs while the system trusts this
+// device's block page CA; otherwise the domains on the page list fail to
+// resolve like any other blocked domain.
+func (o *Olm) applyBlockPage(proxy *dns.DNSProxy) {
+	o.blocklistMu.Lock()
+	pageBl := o.pageBlocklist
+	pageURL := o.pageURL
+	o.blocklistMu.Unlock()
+
+	o.blockPageMu.Lock()
+	defer o.blockPageMu.Unlock()
+
+	if proxy.Stopped() {
+		return
+	}
+	if pageBl.Len() == 0 || pageURL == "" || o.olmConfig.DisableBlockPage {
+		o.stopBlockPageLocked()
+		return
+	}
+
+	if o.blockPage == nil {
+		dir := o.olmConfig.BlockPageDir
+		if dir == "" {
+			dir = blockpage.DefaultDir()
+		}
+		o.blockPage = blockpage.NewManager(dir)
+	}
+	ca, err := o.blockPage.Prepare()
+	if err != nil {
+		// Logged once per distinct reason, not on every list update.
+		if msg := err.Error(); msg != o.blockPageLastErr {
+			o.blockPageLastErr = msg
+			if errors.Is(err, blockpage.ErrDisabled) {
+				// Expected where olm cannot add a trusted root (mobile).
+				logger.Info("Block page is off, blocked sites fail to load instead: %v", err)
+			} else {
+				logger.Warn("Block page is off, blocked sites fail to load instead: %v", err)
+			}
+		}
+		o.stopBlockPageLocked()
+		return
+	}
+	o.blockPageLastErr = ""
+
+	if o.blockPageServer != nil && o.blockPageProxy == proxy {
+		proxy.SetBlockPageActive(true)
+		return
+	}
+	o.stopBlockPageLocked()
+
+	httpLn, err := proxy.ListenTCP(80)
+	if err != nil {
+		logger.Error("Failed to start block page server: %v", err)
+		return
+	}
+	httpsLn, err := proxy.ListenTCP(443)
+	if err != nil {
+		_ = httpLn.Close()
+		logger.Error("Failed to start block page server: %v", err)
+		return
+	}
+
+	srv := blockpage.NewServer(ca, proxy.PageBlocked, o.currentPageURL)
+	srv.Serve(httpLn, httpsLn)
+	o.blockPageServer = srv
+	o.blockPageProxy = proxy
+	proxy.SetBlockPageActive(true)
+	logger.Info("Block page server listening on %s", proxy.GetProxyIP())
+}
+
+// stopBlockPage stops the block page server, if it runs.
+func (o *Olm) stopBlockPage() {
+	o.blockPageMu.Lock()
+	defer o.blockPageMu.Unlock()
+	o.stopBlockPageLocked()
+}
+
+func (o *Olm) stopBlockPageLocked() {
+	if o.blockPageProxy != nil {
+		o.blockPageProxy.SetBlockPageActive(false)
+	}
+	if o.blockPageServer != nil {
+		o.blockPageServer.Close()
+		logger.Info("Block page server stopped")
+	}
+	o.blockPageServer = nil
+	o.blockPageProxy = nil
+}
+
+func (o *Olm) currentPageURL() string {
+	o.blocklistMu.Lock()
+	defer o.blocklistMu.Unlock()
+	return o.pageURL
+}
+
+// blockPageStatus reports the block page state for the local API, or nil
+// while the server sends no domains that get the page.
+func (o *Olm) blockPageStatus() *api.BlockPageStatus {
+	o.blocklistMu.Lock()
+	inUse := o.pageBlocklist.Len() > 0 && o.pageURL != ""
+	o.blocklistMu.Unlock()
+	if !inUse {
+		return nil
+	}
+
+	// TryLock: status requests must not wait on a trust store install.
+	if !o.blockPageMu.TryLock() {
+		return &api.BlockPageStatus{Error: "checking the block page certificate"}
+	}
+	defer o.blockPageMu.Unlock()
+
+	st := &api.BlockPageStatus{Active: o.blockPageServer != nil}
+	if o.olmConfig.DisableBlockPage {
+		st.Error = "block page disabled in the client configuration"
+		return st
+	}
+	if o.blockPage != nil {
+		ms := o.blockPage.Status()
+		st.Trusted = ms.Trusted
+		st.CAPath = ms.CAPath
+		st.Error = ms.Error
+	}
+	return st
+}
+
+func (o *Olm) blockPageCAPEM() []byte {
+	o.blockPageMu.Lock()
+	m := o.blockPage
+	o.blockPageMu.Unlock()
+	if m == nil {
+		return nil
+	}
+	return m.CertPEM()
 }
 
 // applyBlockLogSender turns reporting of blocked queries on or off. Reporting is
@@ -124,6 +286,8 @@ func (o *Olm) clearDNSBlocklist() {
 	o.blocklistMu.Lock()
 	o.blocklistSeq.Add(1)
 	o.blocklist = nil
+	o.pageBlocklist = nil
+	o.pageURL = ""
 	o.blockLogEnabled = false
 	o.blocklistMu.Unlock()
 }

@@ -22,11 +22,18 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
+	"gvisor.dev/gvisor/pkg/waiter"
 )
 
 const (
 	DNSPort = 53
+
+	// blockPageTTL is the TTL of the answer that points a blocked domain at
+	// the proxy's own address for the block page. Short, so lifting a block
+	// or losing certificate trust takes effect soon.
+	blockPageTTL = 30
 )
 
 // DNSProxy implements a DNS proxy using gvisor netstack
@@ -76,6 +83,12 @@ type DNSProxy struct {
 	// blockedCount is every query blocked since the proxy started, whether or
 	// not blocks are reported.
 	blockedCount atomic.Uint64
+	// pageList holds blocked domains that browsers are sent to the block page
+	// for. While blockPageActive is set, lookups of them answer with proxyIP,
+	// where the block page server listens; otherwise they fail like the
+	// domains in blocklist. Swapped whole like blocklist.
+	pageList        atomic.Pointer[Blocklist]
+	blockPageActive atomic.Bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -124,10 +137,11 @@ func NewDNSProxy(middleDevice *device.MiddleDevice, mtu int, utilitySubnet strin
 		proxy.tunnelIP = addr
 	}
 
-	// Create gvisor netstack for receiving DNS queries
+	// Create gvisor netstack for receiving DNS queries. TCP is for the block
+	// page server (see ListenTCP).
 	stackOpts := stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
-		TransportProtocols: []stack.TransportProtocolFactory{udp.NewProtocol},
+		TransportProtocols: []stack.TransportProtocolFactory{udp.NewProtocol, tcp.NewProtocol},
 		HandleLocal:        true,
 	}
 
@@ -315,21 +329,29 @@ func (p *DNSProxy) GetProxyIP() netip.Addr {
 	return p.proxyIP
 }
 
+// Stopped reports whether Stop has been called.
+func (p *DNSProxy) Stopped() bool {
+	return p.ctx.Err() != nil
+}
+
 // handlePacket is called by the filter for packets destined to DNS proxy IP
 func (p *DNSProxy) handlePacket(packet []byte) bool {
 	if len(packet) < 20 {
 		return false // Don't drop, malformed
 	}
 
-	// Quick check for UDP port 53
+	// UDP 53 is DNS. All TCP goes to the netstack: the block page server
+	// listens there (see ListenTCP), and closed ports get a reset right away
+	// instead of the connection hanging.
 	proto, ok := util.GetProtocol(packet)
-	if !ok || proto != 17 { // 17 = UDP
-		return false // Not UDP, don't handle
+	if !ok || (proto != 17 && proto != 6) { // 17 = UDP, 6 = TCP
+		return false
 	}
-
-	port, ok := util.GetDestPort(packet)
-	if !ok || port != DNSPort {
-		return false // Not DNS port
+	if proto == 17 {
+		port, ok := util.GetDestPort(packet)
+		if !ok || port != DNSPort {
+			return false // Not DNS port
+		}
 	}
 
 	// Inject packet into our netstack
@@ -423,13 +445,20 @@ func (p *DNSProxy) handleDNSQuery(udpConn *gonet.UDPConn, queryData []byte, clie
 
 	// Blocked names are refused before anything else, including names that
 	// matchDomains would otherwise send straight to the host's own DNS servers.
-	if p.shouldBlock(question.Name) {
-		logger.Debug("Blocking DNS query for %s", question.Name)
+	if decision := p.blockDecision(question.Name); decision != notBlocked {
 		p.blockedCount.Add(1)
 		if bl := p.blockLog.Load(); bl != nil {
 			bl.Record(strings.ToLower(strings.TrimSuffix(question.Name, ".")))
 		}
-		responseData, err := blockedResponse(msg).Pack()
+		var response *dns.Msg
+		if decision == blockWithPage {
+			logger.Debug("Sending DNS query for %s to the block page", question.Name)
+			response = p.blockPageResponse(msg, question)
+		} else {
+			logger.Debug("Blocking DNS query for %s", question.Name)
+			response = blockedResponse(msg)
+		}
+		responseData, err := response.Pack()
 		if err != nil {
 			logger.Error("Failed to pack blocked DNS response: %v", err)
 			return
@@ -501,21 +530,74 @@ func (p *DNSProxy) handleDNSQuery(udpConn *gonet.UDPConn, queryData []byte, clie
 	}
 }
 
-// shouldBlock reports whether a query for name must be refused. Names that have
-// a local record (Pangolin aliases) are never blocked, so a bad blocklist entry
-// cannot break access to private resources.
+type blockDecisionKind int
+
+const (
+	notBlocked blockDecisionKind = iota
+	// blockFail answers NXDOMAIN.
+	blockFail
+	// blockWithPage points the name at the block page server.
+	blockWithPage
+)
+
+// blockDecision decides how to answer a query for name. Names that have a
+// local record (Pangolin aliases) are never blocked, so a bad blocklist entry
+// cannot break access to private resources. A name on the page list fails
+// like any other blocked name while the block page is not active, for example
+// because the system does not trust its certificate.
+func (p *DNSProxy) blockDecision(name string) blockDecisionKind {
+	page := p.pageList.Load().Blocked(name)
+	if !page && !p.blocklist.Load().Blocked(name) {
+		return notBlocked
+	}
+	if p.hasLocalAddressRecord(name) {
+		return notBlocked
+	}
+	if page && p.blockPageActive.Load() {
+		return blockWithPage
+	}
+	return blockFail
+}
+
+// shouldBlock reports whether a query for name must not be resolved normally.
 func (p *DNSProxy) shouldBlock(name string) bool {
-	bl := p.blocklist.Load()
-	if bl == nil || !bl.Blocked(name) {
-		return false
-	}
+	return p.blockDecision(name) != notBlocked
+}
+
+func (p *DNSProxy) hasLocalAddressRecord(name string) bool {
 	if _, exists := p.recordStore.GetRecords(name, RecordTypeA); exists {
-		return false
+		return true
 	}
-	if _, exists := p.recordStore.GetRecords(name, RecordTypeAAAA); exists {
-		return false
+	_, exists := p.recordStore.GetRecords(name, RecordTypeAAAA)
+	return exists
+}
+
+// PageBlocked reports whether host currently gets the block page. The block
+// page server uses it to decide which names it answers for.
+func (p *DNSProxy) PageBlocked(host string) bool {
+	return p.blockDecision(host) == blockWithPage
+}
+
+// blockPageResponse answers a query for a domain that gets the block page: an
+// A record for the proxy's own address, and no records of any other type, so
+// browsers do not try IPv6, HTTPS records or ECH and connect to the proxy.
+func (p *DNSProxy) blockPageResponse(query *dns.Msg, question dns.Question) *dns.Msg {
+	response := new(dns.Msg)
+	response.SetReply(query)
+	response.Authoritative = true
+	response.RecursionAvailable = true
+	if question.Qtype == dns.TypeA && question.Qclass == dns.ClassINET {
+		response.Answer = append(response.Answer, &dns.A{
+			Hdr: dns.RR_Header{
+				Name:   question.Name,
+				Rrtype: dns.TypeA,
+				Class:  dns.ClassINET,
+				Ttl:    blockPageTTL,
+			},
+			A: net.IP(p.proxyIP.AsSlice()),
+		})
 	}
-	return true
+	return response
 }
 
 // blockedResponse builds the reply for a blocked query: NXDOMAIN, so clients
@@ -530,6 +612,42 @@ func blockedResponse(query *dns.Msg) *dns.Msg {
 // SetBlocklist replaces the set of blocked domains. Pass nil to stop blocking.
 func (p *DNSProxy) SetBlocklist(bl *Blocklist) {
 	p.blocklist.Store(bl)
+}
+
+// SetPageBlocklist replaces the set of blocked domains that get the block
+// page. They are blocked whether or not the block page is active. Pass nil to
+// clear it.
+func (p *DNSProxy) SetPageBlocklist(bl *Blocklist) {
+	p.pageList.Store(bl)
+}
+
+// SetBlockPageActive sets whether domains on the page list resolve to the
+// block page server (true) or fail (false). Only set it while a block page
+// server is listening on ports 80 and 443 (see ListenTCP).
+func (p *DNSProxy) SetBlockPageActive(active bool) {
+	p.blockPageActive.Store(active)
+}
+
+// ListenTCP listens on port of the proxy's address inside its netstack. The
+// port can be listened on again right after the listener closes, even while
+// connections it accepted are still in TIME_WAIT.
+func (p *DNSProxy) ListenTCP(port uint16) (net.Listener, error) {
+	var wq waiter.Queue
+	ep, tcpErr := p.stack.NewEndpoint(tcp.ProtocolNumber, ipv4.ProtocolNumber, &wq)
+	if tcpErr != nil {
+		return nil, fmt.Errorf("create TCP endpoint: %v", tcpErr)
+	}
+	ep.SocketOptions().SetReuseAddress(true)
+	addr := tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFrom4(p.proxyIP.As4()), Port: port}
+	if tcpErr := ep.Bind(addr); tcpErr != nil {
+		ep.Close()
+		return nil, fmt.Errorf("bind %s:%d: %v", p.proxyIP, port, tcpErr)
+	}
+	if tcpErr := ep.Listen(64); tcpErr != nil {
+		ep.Close()
+		return nil, fmt.Errorf("listen on %s:%d: %v", p.proxyIP, port, tcpErr)
+	}
+	return gonet.NewTCPListener(p.stack, &wq, ep), nil
 }
 
 // SetBlockLogSender enables reporting of blocked queries. Blocked queries are

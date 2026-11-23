@@ -105,8 +105,25 @@ type StatusResponse struct {
 	GatewayActive   bool                    `json:"gatewayActive,omitempty"`
 	GatewaySiteIds  []int                   `json:"gatewaySiteIds,omitempty"`
 	DNSBlocked      uint64                  `json:"dnsBlocked,omitempty"` // DNS queries refused by the blocklist since the tunnel started
+	BlockPage       *BlockPageStatus        `json:"blockPage,omitempty"`  // set while the server sends domains that get a block page
 
 	GatewaySiteResourceId int `json:"gatewaySiteResourceId,omitempty"` // the gateway site resource the selection belongs to; 0 when inactive
+}
+
+// BlockPageStatus describes whether olm can show the block page for blocked
+// domains. Browsers only accept it over HTTPS when the system trusts this
+// device's block page certificate authority.
+type BlockPageStatus struct {
+	// Active is whether blocked domains are sent to the block page. When
+	// false, their lookups fail instead.
+	Active bool `json:"active"`
+	// Trusted is whether the system trusts the block page CA.
+	Trusted bool `json:"trusted"`
+	// CAPath is the CA certificate file, for installing it by hand or with
+	// MDM. GET /blockpage/ca returns the same certificate.
+	CAPath string `json:"caPath,omitempty"`
+	// Error is why the CA is not trusted, if known.
+	Error string `json:"error,omitempty"`
 }
 
 type MetadataChangeRequest struct {
@@ -156,6 +173,11 @@ type API struct {
 	// dnsBlockedProvider reports the blocked query count. It is a callback
 	// because the count changes on every blocked query.
 	dnsBlockedProvider func() uint64
+	// blockPageProvider reports the block page status (nil when it is not in
+	// use) and blockPageCAProvider the CA certificate in PEM form (nil when
+	// there is none).
+	blockPageProvider   func() *BlockPageStatus
+	blockPageCAProvider func() []byte
 
 	version string
 	agent   string
@@ -234,6 +256,7 @@ func (s *API) Start() error {
 	mux.HandleFunc("/jit-connect", s.handleJITConnect)
 	mux.HandleFunc("/gateway/select", s.handleSelectGateway)
 	mux.HandleFunc("/gateway/disable", s.handleDisableGateway)
+	mux.HandleFunc("/blockpage/ca", s.handleBlockPageCA)
 
 	s.server = &http.Server{
 		Handler: mux,
@@ -418,6 +441,47 @@ func (s *API) dnsBlocked() uint64 {
 	return s.dnsBlockedProvider()
 }
 
+// SetBlockPageProviders sets the functions that report the block page status
+// and its CA certificate. Pass nils to clear them.
+func (s *API) SetBlockPageProviders(status func() *BlockPageStatus, caPEM func() []byte) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.blockPageProvider = status
+	s.blockPageCAProvider = caPEM
+}
+
+func (s *API) blockPage() *BlockPageStatus {
+	if s.blockPageProvider == nil {
+		return nil
+	}
+	return s.blockPageProvider()
+}
+
+// handleBlockPageCA returns the block page CA certificate (PEM), so a host app
+// or an administrator can add it to the trust store when olm could not.
+func (s *API) handleBlockPageCA(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.statusMu.RLock()
+	provider := s.blockPageCAProvider
+	s.statusMu.RUnlock()
+
+	var pem []byte
+	if provider != nil {
+		pem = provider()
+	}
+	if len(pem) == 0 {
+		http.Error(w, "No block page certificate", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.Header().Set("Content-Length", strconv.Itoa(len(pem)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pem)
+}
+
 // SetOrgID sets the organization ID
 func (s *API) SetOrgID(orgID string) {
 	s.statusMu.Lock()
@@ -585,6 +649,7 @@ func (s *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		GatewayActive:   s.gatewayActive,
 		GatewaySiteIds:  s.gatewaySiteIds,
 		DNSBlocked:      s.dnsBlocked(),
+		BlockPage:       s.blockPage(),
 
 		GatewaySiteResourceId: s.gatewaySiteResourceId,
 	}
@@ -759,6 +824,7 @@ func (s *API) GetStatus() StatusResponse {
 		GatewayActive:   s.gatewayActive,
 		GatewaySiteIds:  s.gatewaySiteIds,
 		DNSBlocked:      s.dnsBlocked(),
+		BlockPage:       s.blockPage(),
 
 		GatewaySiteResourceId: s.gatewaySiteResourceId,
 	}

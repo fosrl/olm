@@ -26,6 +26,7 @@ import (
 	"github.com/fosrl/newt/network"
 	"github.com/fosrl/newt/util"
 	"github.com/fosrl/olm/api"
+	"github.com/fosrl/olm/blockpage"
 	olmDevice "github.com/fosrl/olm/device"
 	"github.com/fosrl/olm/dns"
 	dnsOverride "github.com/fosrl/olm/dns/override"
@@ -61,6 +62,20 @@ type Olm struct {
 	// blockLogEnabled is whether the server wants blocked queries reported.
 	blockLogEnabled bool
 	blocklistSeq    atomic.Uint64
+	// pageBlocklist holds the blocked domains that get the block page at
+	// pageURL instead of a failed lookup. Guarded by blocklistMu.
+	pageBlocklist *dns.Blocklist
+	pageURL       string
+	// blockPage owns this device's block page CA, created on first use.
+	// blockPageServer serves the redirect to the block page on
+	// blockPageProxy's address. Guarded by blockPageMu, which can be held for
+	// seconds while the CA is added to the trust store; never take
+	// blocklistMu while holding it.
+	blockPageMu      sync.Mutex
+	blockPage        *blockpage.Manager
+	blockPageServer  *blockpage.Server
+	blockPageProxy   *dns.DNSProxy
+	blockPageLastErr string
 	// pendingSystemDNS holds a SetSystemDNS report received before dnsMonitor exists
 	// (e.g. Android/iOS push a value while the tunnel is still starting up), so it
 	// isn't silently dropped. Drained into dnsMonitor as soon as StartTunnel creates it.
@@ -1059,6 +1074,8 @@ func (o *Olm) Close() {
 		o.dnsProxy.Stop()
 		o.dnsProxy = nil
 	}
+	// After the proxy, so a block page update still in flight sees it stopped.
+	o.stopBlockPage()
 	o.apiServer.SetDNSBlockedProvider(nil)
 	o.clearDNSBlocklist()
 

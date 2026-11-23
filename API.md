@@ -170,6 +170,11 @@ Returns the current connection status, registration state, and peer information.
   - `holepunchConnected`: Whether holepunch connection is established
 - `networkSettings`: Current network configuration including tunnel IP
 - `dnsBlocked`: Number of DNS queries refused by the DNS blocklist since the tunnel started (omitted when zero)
+- `blockPage`: Block page state, present only while the server sends domains that get a block page
+  - `active`: Whether browsers opening those domains are redirected to the block page. When false, their lookups fail like other blocked domains.
+  - `trusted`: Whether the system trusts this device's block page certificate authority, which HTTPS block pages need
+  - `caPath`: Path of the CA certificate, for installing it by hand or with MDM
+  - `error`: Why the block page is off, if it is
 
 **Error Responses:**
 - `405 Method Not Allowed` - Non-GET requests
@@ -296,6 +301,19 @@ Initiates a graceful shutdown of the Olm process.
 
 **Error Responses:**
 - `405 Method Not Allowed` - Non-POST requests
+
+---
+
+### GET /blockpage/ca
+Returns this device's block page CA certificate in PEM form. olm creates the CA the first time the server sends domains that get a block page, and adds it to the system trust store where it can (Windows, Linux as root, macOS as root with an administrator's approval). Use this endpoint to install it some other way, for example from a host app or with MDM.
+
+**Response:**
+- **Status Code:** `200 OK`
+- **Content-Type:** `application/x-pem-file`
+
+**Error Responses:**
+- `404 Not Found` - No CA has been created yet
+- `405 Method Not Allowed` - Non-GET requests
 
 ---
 
