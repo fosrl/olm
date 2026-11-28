@@ -221,7 +221,11 @@ func runOlmMainWithArgs(ctx context.Context, cancel context.CancelFunc, signalCt
 	config.Version = olmVersion
 
 	if err := SaveConfig(config); err != nil {
-		logger.Error("Failed to save full olm config: %v", err)
+		if isReadOnlyConfigError(err) {
+			logger.Info("Config file is not writable, not saving the full olm config: %v", err)
+		} else {
+			logger.Error("Failed to save full olm config: %v", err)
+		}
 	} else {
 		logger.Debug("Saved full olm config with all options")
 	}
