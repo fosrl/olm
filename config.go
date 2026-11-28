@@ -612,14 +612,31 @@ func mergeConfigs(dest, src *OlmConfig) {
 }
 
 // SaveConfig saves the current configuration to the config file.
-// The file contains the client secret, so a new file is created owner-only.
+// The file contains the client secret, so both new and existing files are owner-only.
 func SaveConfig(config *OlmConfig) error {
 	configPath := getOlmConfigPath()
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
-	return os.WriteFile(configPath, data, 0600)
+	// Open without truncating so a permissions failure preserves the old config.
+	file, err := os.OpenFile(configPath, os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	// WriteFile's mode applies only to new files. Restrict existing files too,
+	// before writing any secret values into them.
+	if err := file.Chmod(0600); err != nil {
+		return err
+	}
+	if err := file.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 // isReadOnlyConfigError reports whether err means the config file cannot be

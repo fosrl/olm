@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -26,6 +28,45 @@ func TestSaveConfigCreatesOwnerOnlyFile(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0600 {
 		t.Fatalf("config file mode = %o, want 600", got)
+	}
+}
+
+func TestSaveConfigRestrictsExistingFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes do not apply on Windows")
+	}
+	for _, mode := range []os.FileMode{0644, 0660} {
+		t.Run(mode.String(), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(strings.Repeat("x", 10000)), mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, mode); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("CONFIG_FILE", path)
+			if err := SaveConfig(&OlmConfig{ID: "id", Secret: "secret"}); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != 0600 {
+				t.Fatalf("existing config file mode = %o, want 600", got)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved OlmConfig
+			if err := json.Unmarshal(data, &saved); err != nil {
+				t.Fatalf("saved config has invalid JSON or stale trailing bytes: %v", err)
+			}
+			if saved.ID != "id" || saved.Secret != "secret" {
+				t.Fatal("saved config does not contain the requested values")
+			}
+		})
 	}
 }
 
