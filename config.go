@@ -2,13 +2,16 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -608,14 +611,22 @@ func mergeConfigs(dest, src *OlmConfig) {
 	// }
 }
 
-// SaveConfig saves the current configuration to the config file
+// SaveConfig saves the current configuration to the config file.
+// The file contains the client secret, so a new file is created owner-only.
 func SaveConfig(config *OlmConfig) error {
 	configPath := getOlmConfigPath()
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
-	return os.WriteFile(configPath, data, 0644)
+	return os.WriteFile(configPath, data, 0600)
+}
+
+// isReadOnlyConfigError reports whether err means the config file cannot be
+// written, for example because it is a read-only Docker mount or a Kubernetes
+// secret. Olm can run normally in that case; it only skips saving the file.
+func isReadOnlyConfigError(err error) bool {
+	return errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EROFS)
 }
 
 // ShowConfig prints the configuration and the source of each value
